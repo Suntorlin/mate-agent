@@ -1,0 +1,57 @@
+# Dependency updates: one grouped pull request per ecosystem a week, into `dev`.
+# `main` holds released versions only, so nothing targets it (docs/RELEASING.md).
+# Dependabot security alerts stay on; automatic security pull requests are off, because they
+# always target the default branch (`main`).
+# Not covered on purpose: the sandbox image locks (packages/sandbox-images/locks) are part of
+# the image build key, and the *-infra packages are kept for switching providers later.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 1
+    groups:
+      npm:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/skills/remotion-starter"
+      - "/scripts/bench"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 1
+    groups:
+      npm-tools:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "uv"
+    directory: "/packages/sandbox-runtime"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 1
+    groups:
+      python:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 1
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"

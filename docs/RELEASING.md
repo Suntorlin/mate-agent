@@ -31,6 +31,12 @@ turn (AGENTS.md, "Red lines"); a tag is a push.
    (`git push origin dev vx.y.z main`). Pushing `main` starts the CI workflows on GitHub. No cloud
    environment is touched by a release.
 
+## Dependency updates
+
+Dependabot opens one grouped pull request per ecosystem a week, into `dev`
+(`.github/dependabot.yml`). They reach `main` with the next release, like any other change.
+Dependabot reads that file from `main`, so a change to it takes effect after a release.
+
 ## After the tag
 
 A fix to a released version is a normal commit on `dev` with a new patch number, released the same
