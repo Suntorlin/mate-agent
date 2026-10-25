@@ -1,6 +1,6 @@
 {
   "name": "@open-inspect/demo-app",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "A reference product on the engine: accounts, credits, its own MCP tools, chat and preview",

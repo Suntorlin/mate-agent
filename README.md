@@ -114,9 +114,9 @@ the repository sees the latest release; develop on `dev` and open pull requests 
 repository is not a GitHub fork of Open-Inspect, and takes fixes from it by hand
 ([docs/UPSTREAM.md](docs/UPSTREAM.md)).
 
-The repository has one version, now **0.2.0**: the root `package.json`, every workspace and
+The repository has one version, now **0.2.1**: the root `package.json`, every workspace and
 `package-lock.json` carry the same number, `CHANGELOG.md` has a section for it, and the git tag
-`v0.2.0` marks the commit. `npm run verify` checks that they agree. How to cut one:
+`v0.2.1` marks the commit. `npm run verify` checks that they agree. How to cut one:
 [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Working in this repository

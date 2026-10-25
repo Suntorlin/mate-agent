@@ -1,6 +1,6 @@
 {
   "name": "@open-inspect/gateway",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "The LLM gateway: one core, a Cloudflare Worker host and a Node host",

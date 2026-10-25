@@ -11,6 +11,17 @@ Open-Inspect's own history, from before the fork, is in
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-25
+
+No code changed.
+
+### Changed
+
+- Dependency updates come as one grouped pull request per ecosystem a week, into `dev`
+  (`.github/dependabot.yml`): npm, uv for the sandbox runtime, and GitHub Actions. Dependabot's
+  automatic security pull requests are off, because they always target `main`; the security alerts
+  stay on.
+
 ## [0.2.0] - 2026-10-25
 
 The first public version of Mate Agent: a general-purpose agent runtime built on Open-Inspect
@@ -104,5 +115,6 @@ lines"). Versions 0.1.0 to 0.1.2 were not published.
   not tested.
 - Package names keep the `@open-inspect/*` scope from upstream.
 
-[Unreleased]: https://github.com/Suntorlin/mate-agent/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Suntorlin/mate-agent/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Suntorlin/mate-agent/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Suntorlin/mate-agent/releases/tag/v0.2.0

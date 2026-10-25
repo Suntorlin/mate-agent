@@ -1,6 +1,6 @@
 {
   "name": "@open-inspect/docker-dataplane",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "Local sandbox data plane: serves the control plane's Modal endpoints with Docker",
