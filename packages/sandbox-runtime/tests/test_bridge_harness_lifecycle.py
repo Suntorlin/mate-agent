@@ -163,9 +163,55 @@ class TestSessionIdentity:
         assert bridge.session_id_file.read_text() == "rotated-id"
 
 
+class TestPromptPermissionMode:
+    @staticmethod
+    async def _dispatch(bridge: AgentBridge, **extra: object) -> None:
+        bridge._configure_git_identity = AsyncMock()
+        bridge._send_event = AsyncMock()
+        await bridge._handle_command(
+            {
+                "type": "prompt",
+                "messageId": "m1",
+                "content": "hi",
+                "model": "claude-sonnet-4-6",
+                "author": {"userId": "user-1", "gitIdentity": {"mode": "agent-only"}},
+                **extra,
+            }
+        )
+        task = bridge.activity.current_prompt_task
+        assert task is not None
+        await task
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["auto_within_budget", "confirm_edits", "full_auto"])
+    async def test_the_commands_mode_reaches_the_harness(self, tmp_path: Path, mode: str) -> None:
+        harness = ScriptedHarness()
+        bridge = _bridge(harness)
+        bridge.session_id_file = tmp_path / "agent-session-id"
+
+        await self._dispatch(bridge, permissionMode=mode)
+
+        assert [prompt.permission_mode for prompt in harness.prompts] == [mode]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra", [{}, {"permissionMode": "ask_always"}, {"permissionMode": 3}])
+    async def test_an_absent_or_unknown_mode_reaches_the_harness_as_none(
+        self, tmp_path: Path, extra: dict[str, object]
+    ) -> None:
+        # A control plane older than the field sends none; one newer than this
+        # runtime may send a mode it does not know. Neither fails the prompt.
+        harness = ScriptedHarness()
+        bridge = _bridge(harness)
+        bridge.session_id_file = tmp_path / "agent-session-id"
+
+        await self._dispatch(bridge, **extra)
+
+        assert [prompt.permission_mode for prompt in harness.prompts] == [None]
+
+
 class TestHarnessContracts:
     def test_only_deployable_harness_ids_parse(self) -> None:
-        assert parse_harness_id(None) is HarnessId.OPENCODE
+        assert parse_harness_id(None) is HarnessId.CLAUDE
         assert parse_harness_id("opencode") is HarnessId.OPENCODE
         assert parse_harness_id("claude") is HarnessId.CLAUDE
         with pytest.raises(ValueError, match="Unsupported harness: 'codex'"):

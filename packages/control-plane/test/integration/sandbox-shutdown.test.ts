@@ -512,7 +512,7 @@ describe("sandbox graceful shutdown wiring", () => {
             void task();
           },
         },
-        { processMessageQueue: harness.processQueue },
+        { processMessageQueue: harness.processQueue, reconcileProcessingMessage: () => undefined },
         {
           debug: () => undefined,
           info: () => undefined,

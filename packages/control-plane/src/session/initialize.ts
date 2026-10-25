@@ -1,7 +1,7 @@
 import type { HarnessId } from "@open-inspect/shared/harnesses";
 import type { Env } from "../types";
 import type { RequestContext } from "../routes/shared";
-import type { SpawnSource } from "@open-inspect/shared/types/sessions";
+import type { SessionPermissionMode, SpawnSource } from "@open-inspect/shared/types/sessions";
 import type { SessionVisibility } from "@open-inspect/shared/types/teams";
 import type { RepositoryRef } from "@open-inspect/shared/types/repositories";
 import {
@@ -56,6 +56,8 @@ export interface SessionInitInput {
   harness: HarnessId;
   model: string;
   reasoningEffort: string | null;
+  /** When the agent asks before acting. Absent means DEFAULT_SESSION_PERMISSION_MODE. */
+  permissionMode?: SessionPermissionMode;
   codeServerEnabled?: boolean;
   vncEnabled?: boolean;
   sandboxSettings?: SandboxSettings;
@@ -217,6 +219,7 @@ export async function initializeSession(
           harness: input.harness,
           model: input.model,
           reasoningEffort: input.reasoningEffort,
+          permissionMode: input.permissionMode,
           userId: input.participantUserId,
           canonicalUserId: input.platformUserId,
           scmLogin: input.scmLogin,

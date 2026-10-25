@@ -1,0 +1,26 @@
+.ui-avatar {
+  display: block;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+  background:
+    radial-gradient(circle at var(--avatar-x) var(--avatar-y), var(--avatar-a), transparent 65%),
+    radial-gradient(
+      circle at calc(100% - var(--avatar-x)) calc(100% - var(--avatar-y)),
+      var(--avatar-b),
+      transparent 65%
+    ),
+    var(--avatar-c);
+}
+
+.ui-avatar--sm {
+  width: 32px;
+  height: 32px;
+}
+.ui-avatar--default {
+  width: 44px;
+  height: 44px;
+}
+.ui-avatar--lg {
+  width: 64px;
+  height: 64px;
+}

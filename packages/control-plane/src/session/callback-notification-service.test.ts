@@ -54,7 +54,6 @@ function createMockFetcher() {
 function createTestHarness(overrides?: {
   env?: Partial<CallbackServiceEnv>;
   getSessionId?: () => string;
-  completeAutomationRun?: CallbackServiceDeps["completeAutomationRun"];
 }) {
   const log = createMockLogger();
   const repository = createMockRepository();
@@ -77,7 +76,6 @@ function createTestHarness(overrides?: {
     env,
     log,
     getSessionId: overrides?.getSessionId ?? (() => "session-123"),
-    completeAutomationRun: overrides?.completeAutomationRun,
     sleep,
   };
 
@@ -830,31 +828,6 @@ describe("CallbackNotificationService", () => {
       );
     });
 
-    it("skips automation source because the scheduler has no tool-call consumer", async () => {
-      vi.mocked(harness.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({ automationId: "a1", runId: "r1" }),
-        source: "automation",
-      });
-
-      await harness.service.notifyToolCall("msg-1", {
-        type: "tool_call",
-        tool: "glob",
-        callId: "call-1",
-      });
-
-      // No forward at all; automation callbacks only report completion.
-      const slackFetch = harness.slackBot.fetch;
-      expect(slackFetch).not.toHaveBeenCalled();
-      expect(harness.log.debug).toHaveBeenCalledWith(
-        "callback.tool_call",
-        expect.objectContaining({
-          source: "automation",
-          outcome: "skipped",
-          skip_reason: "automation_no_consumer",
-        })
-      );
-    });
-
     it("skips when no callback context", async () => {
       vi.mocked(harness.repository.getMessageCallbackContext).mockReturnValue(null);
 
@@ -1090,173 +1063,6 @@ describe("CallbackNotificationService", () => {
         });
         expect(fetchMock).toHaveBeenCalledTimes(2);
       });
-    });
-  });
-
-  describe("notifyComplete — automation callback", () => {
-    it("routes automation callbacks to the injected completion function", async () => {
-      const completeAutomationRun = vi.fn(async () => undefined);
-      const h = createTestHarness({
-        completeAutomationRun,
-      });
-
-      vi.mocked(h.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({
-          source: "automation",
-          automationId: "auto-1",
-          runId: "run-1",
-          automationName: "Daily sync",
-        }),
-        source: "automation",
-      });
-
-      await h.service.notifyComplete("msg-1", true);
-
-      expect(completeAutomationRun).toHaveBeenCalledTimes(1);
-      expect(completeAutomationRun).toHaveBeenCalledWith({
-        automationId: "auto-1",
-        runId: "run-1",
-        sessionId: "session-123",
-        messageId: "msg-1",
-        success: true,
-        error: undefined,
-        automationName: "Daily sync",
-      });
-    });
-
-    it("sends failure details for failed automation runs", async () => {
-      const completeAutomationRun = vi.fn(async () => undefined);
-      const h = createTestHarness({
-        completeAutomationRun,
-      });
-
-      vi.mocked(h.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({
-          source: "automation",
-          automationId: "auto-1",
-          runId: "run-1",
-          automationName: "Daily sync",
-        }),
-        source: "automation",
-      });
-
-      await h.service.notifyComplete("msg-1", false, "Sandbox crashed");
-
-      expect(completeAutomationRun).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: false,
-          error: "Sandbox crashed",
-        })
-      );
-    });
-
-    it("skips when no automation completion function is configured", async () => {
-      const h = createTestHarness();
-
-      vi.mocked(h.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({
-          source: "automation",
-          automationId: "auto-1",
-          runId: "run-1",
-          automationName: "Daily sync",
-        }),
-        source: "automation",
-      });
-
-      await h.service.notifyComplete("msg-1", true);
-
-      const terminalEvents = vi
-        .mocked(h.log.info)
-        .mock.calls.filter(([event]) => event === "callback.complete_delivery");
-      expect(terminalEvents).toHaveLength(1);
-      expect(terminalEvents[0][1]).toEqual(
-        expect.objectContaining({
-          session_id: "session-123",
-          message_id: "msg-1",
-          source: "automation",
-          outcome: "rejected",
-          reject_reason: "no_binding",
-          duration_ms: expect.any(Number),
-          attempts: 0,
-          retries: 0,
-        })
-      );
-    });
-
-    it("retries once on automation callback failure", async () => {
-      const completeAutomationRun = vi
-        .fn()
-        .mockRejectedValueOnce(new Error("network error"))
-        .mockResolvedValueOnce(undefined);
-      const h = createTestHarness({
-        completeAutomationRun,
-      });
-
-      vi.mocked(h.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({
-          source: "automation",
-          automationId: "auto-1",
-          runId: "run-1",
-          automationName: "Daily sync",
-        }),
-        source: "automation",
-      });
-
-      await h.service.notifyComplete("msg-1", true);
-
-      expect(completeAutomationRun).toHaveBeenCalledTimes(2);
-      expect(h.log.info).toHaveBeenCalledWith(
-        "callback.complete_delivery",
-        expect.objectContaining({ source: "automation", attempts: 2, retries: 1 })
-      );
-    });
-
-    it("rejects malformed persisted automation context before scheduler completion", async () => {
-      const completeAutomationRun = vi.fn(async () => undefined);
-      const h = createTestHarness({ completeAutomationRun });
-      vi.mocked(h.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({
-          source: "automation",
-          automationId: "auto-1",
-          automationName: "Daily sync",
-        }),
-        source: "automation",
-      });
-
-      await h.service.notifyComplete("msg-1", true);
-
-      expect(completeAutomationRun).not.toHaveBeenCalled();
-      expect(h.log.info).toHaveBeenCalledWith(
-        "callback.complete_delivery",
-        expect.objectContaining({
-          source: "automation",
-          outcome: "rejected",
-          reject_reason: "invalid_callback_context",
-          attempts: 0,
-        })
-      );
-    });
-
-    it("does not route automation callbacks to SLACK_BOT", async () => {
-      const completeAutomationRun = vi.fn(async () => undefined);
-      const h = createTestHarness({
-        completeAutomationRun,
-      });
-
-      vi.mocked(h.repository.getMessageCallbackContext).mockReturnValue({
-        callback_context: JSON.stringify({
-          source: "automation",
-          automationId: "auto-1",
-          runId: "run-1",
-          automationName: "Daily sync",
-        }),
-        source: "automation",
-      });
-
-      await h.service.notifyComplete("msg-1", true);
-
-      const slackFetch = h.slackBot.fetch;
-      expect(slackFetch).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,6 +1,5 @@
 import { createExecutionContext, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TeamStore } from "../../src/db/teams";
 import { TeamMembershipStore } from "../../src/db/team-memberships";
 import { SessionCollaboratorStore } from "../../src/db/session-collaborators";
 import { cleanD1Tables } from "./cleanup";
@@ -10,6 +9,7 @@ import {
   seedActiveUser,
   serviceRequestHeaders,
   waitForSandboxStatus,
+  seedTeam,
 } from "./helpers";
 
 const BASE = "https://test.local";
@@ -70,7 +70,7 @@ describe("HTTP session access by enforcement mode", () => {
   });
 
   async function session(visibility: "team" | "private") {
-    const team = await new TeamStore(env.DB).create({
+    const team = await seedTeam({
       slug: `access-${crypto.randomUUID()}`,
       name: "Access Team",
       joinPolicy: "invite_only",

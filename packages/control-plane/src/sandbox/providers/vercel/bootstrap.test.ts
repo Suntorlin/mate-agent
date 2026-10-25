@@ -8,6 +8,12 @@ describe("buildVercelBootstrapScript", () => {
     expect(script).not.toContain("npm install");
   });
 
+  it("installs the media phase after the default phases", () => {
+    const lines = buildVercelBootstrapScript().split("\n");
+    expect(lines.at(-1)).toMatch(/install\.sh' media$/);
+    expect(lines.at(-2)).toMatch(/install\.sh'$/);
+  });
+
   it("uses the runtime-visible system Git during installation", () => {
     const script = buildVercelBootstrapScript();
     expect(script).toContain(

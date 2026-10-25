@@ -21,6 +21,22 @@ export const sessionStatusSchema = z.enum([
 export type SessionStatus = z.infer<typeof sessionStatusSchema>;
 
 /**
+ * When a session's agent stops to ask its owner before acting: within the
+ * session's cost limit it runs on its own, it asks before changing existing
+ * work or spending, or it never asks. Set at create, changeable for the
+ * session's lifetime, and sent to the sandbox with every prompt.
+ */
+export const SESSION_PERMISSION_MODES = [
+  "auto_within_budget",
+  "confirm_edits",
+  "full_auto",
+] as const;
+export const sessionPermissionModeSchema = z.enum(SESSION_PERMISSION_MODES);
+export type SessionPermissionMode = z.infer<typeof sessionPermissionModeSchema>;
+/** What a session created without a mode gets: the agent never asks. */
+export const DEFAULT_SESSION_PERMISSION_MODE: SessionPermissionMode = "full_auto";
+
+/**
  * The state of a session's CURRENT sandbox incarnation.
  *
  * A session has many incarnations over its lifetime, so this never describes
@@ -48,7 +64,14 @@ export const sandboxStatusSchema = z.enum([
 ]);
 export type SandboxStatus = z.infer<typeof sandboxStatusSchema>;
 
-export const messageStatusSchema = z.enum(["pending", "processing", "completed", "failed"]);
+/** `stopped`: someone stopped the turn; it neither completed nor failed. */
+export const messageStatusSchema = z.enum([
+  "pending",
+  "processing",
+  "completed",
+  "failed",
+  "stopped",
+]);
 export type MessageStatus = z.infer<typeof messageStatusSchema>;
 
 export const messageSourceSchema = z.enum([
@@ -71,6 +94,7 @@ export const spawnSourceSchema = z.enum([
   "github-bot",
   "linear-bot",
   "slack-bot",
+  "app",
 ]);
 export type SpawnSource = z.infer<typeof spawnSourceSchema>;
 
@@ -129,6 +153,17 @@ export const sessionReadStateSchema = z.union([
 ]);
 export type SessionReadState = z.infer<typeof sessionReadStateSchema>;
 
+/** The artifact types a session card can show as its cover. */
+export const sessionCoverTypeSchema = z.enum(["screenshot", "video"]);
+export type SessionCoverType = z.infer<typeof sessionCoverTypeSchema>;
+
+/** A session's first image or video, fetched from its protected media endpoint. */
+export const sessionCoverSchema = z.object({
+  artifactId: z.string(),
+  type: sessionCoverTypeSchema,
+});
+export type SessionCover = z.infer<typeof sessionCoverSchema>;
+
 /** Fields shared only by the list, inbox, and direct-child response projections. */
 export const sessionSummaryBaseSchema = z.object({
   id: z.string(),
@@ -161,6 +196,10 @@ export const childSessionSummarySchema = sessionSummaryBaseSchema.extend({
   activeDurationMs: z.number(),
   messageCount: z.number(),
   prCount: z.number(),
+  /** Null until the session has produced an image or a video. */
+  cover: sessionCoverSchema.nullable(),
+  /** How many images and videos the session has produced. */
+  mediaCount: z.number(),
 });
 export type ChildSessionSummary = z.infer<typeof childSessionSummarySchema>;
 
@@ -264,6 +303,13 @@ export const sessionMessageSchema = z.object({
   createdAt: z.number(),
   startedAt: z.number().nullable(),
   completedAt: z.number().nullable(),
+  /**
+   * The highest cumulative cost the runtime reported for the turn, in USD (0 until it reports).
+   * Optional only so trace exports written before it still validate; the engine always sends it.
+   */
+  costUsd: z.number().optional(),
+  /** Where the turn ran: `inline` (the control plane) or `sandbox`; null until it starts. */
+  runtime: z.enum(["inline", "sandbox"]).nullable().optional(),
 });
 export type SessionMessage = z.infer<typeof sessionMessageSchema>;
 

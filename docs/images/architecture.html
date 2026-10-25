@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<!-- 主题：data-theme="light"（默认）或 "dark"。换主题只改这一个属性。 -->
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mate Agent architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    /* ================================================================
+       颜色：全部集中在这里。SVG 和 HTML 里不写任何颜色值，只用下面的 class。
+       ================================================================ */
+    :root {
+      /* 字体：JetBrains Mono 管西文和数字；中文字符自动落到后面的中文字体。
+         Menlo/Consolas 放在中文字体前，离线时西文仍是等宽。 */
+      --font: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Microsoft YaHei', monospace;
+
+      /* ---- 浅色（默认） ---- */
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --panel-border: #e2e8f0;
+      --mask: #ffffff;              /* 盖住箭头的不透明底色 */
+      --grid: #e2e8f0;
+      --text: #0f172a;
+      --text-muted: #475569;
+      --text-faint: #94a3b8;
+      --lane-fill: #f1f5f9;
+      --lane-stroke: #cbd5e1;
+      --region-fill: rgba(217, 119, 6, 0.05);
+      --edge: #475569;              /* 普通线 */
+      --edge-main: #334155;         /* 主路粗线 */
+      --effect: #d97706;            /* 线上的效果数字 */
+      --btn-bg: #f1f5f9;
+      --btn-bg-hover: #e2e8f0;
+
+      /* 语义色：X = 描边/强调，X-fill = 框填充，X-text = 彩色文字 */
+      --cyan: #0891b2;    --cyan-fill: #ecfeff;    --cyan-text: #0e7490;
+      --emerald: #059669; --emerald-fill: #ecfdf5; --emerald-text: #047857;
+      --violet: #7c3aed;  --violet-fill: #f5f3ff;  --violet-text: #6d28d9;
+      --amber: #d97706;   --amber-fill: #fffbeb;   --amber-text: #b45309;
+      --rose: #e11d48;    --rose-fill: #fff1f2;    --rose-text: #be123c;
+      --orange: #ea580c;  --orange-fill: #fff7ed;  --orange-text: #c2410c;
+      --slate: #475569;   --slate-fill: #f8fafc;   --slate-text: #334155;
+    }
+
+    [data-theme="dark"] {
+      --bg: #020617;
+      --panel: rgba(15, 23, 42, 0.5);
+      --panel-border: #1e293b;
+      --mask: #0b1324;
+      --grid: #1e293b;
+      --text: #ffffff;
+      --text-muted: #94a3b8;
+      --text-faint: #475569;
+      --lane-fill: rgba(30, 41, 59, 0.35);
+      --lane-stroke: #334155;
+      --region-fill: rgba(251, 191, 36, 0.05);
+      --edge: #94a3b8;
+      --edge-main: #e2e8f0;
+      --effect: #fbbf24;
+      --btn-bg: rgba(30, 41, 59, 0.8);
+      --btn-bg-hover: rgba(51, 65, 85, 0.8);
+
+      --cyan: #22d3ee;    --cyan-fill: rgba(8, 51, 68, 0.4);     --cyan-text: #67e8f9;
+      --emerald: #34d399; --emerald-fill: rgba(6, 78, 59, 0.4);  --emerald-text: #6ee7b7;
+      --violet: #a78bfa;  --violet-fill: rgba(76, 29, 149, 0.4); --violet-text: #c4b5fd;
+      --amber: #fbbf24;   --amber-fill: rgba(120, 53, 15, 0.3);  --amber-text: #fcd34d;
+      --rose: #fb7185;    --rose-fill: rgba(136, 19, 55, 0.4);   --rose-text: #fda4af;
+      --orange: #fb923c;  --orange-fill: rgba(251, 146, 60, 0.3); --orange-text: #fdba74;
+      --slate: #94a3b8;   --slate-fill: rgba(30, 41, 59, 0.5);   --slate-text: #cbd5e1;
+    }
+
+    /* ================================================================
+       页面
+       ================================================================ */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    /* 等宽字体的空格太宽，中文词组之间显得散：统一收窄 */
+    svg text, h1, .subtitle, .card h3, .card li, .footer { word-spacing: -0.3em; }
+
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { margin-bottom: 2rem; }
+    .header-row { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
+
+    .pulse-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+      background: var(--cyan);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; }
+    .subtitle { color: var(--text-muted); font-size: 0.95rem; margin-left: 1.75rem; }
+
+    .diagram-container {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      overflow-x: auto;
+    }
+    svg.diagram { width: 100%; min-width: 900px; display: block; }
+
+    /* 说明卡片：可选，默认不放。见 SKILL.md「说明卡片」 */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 2rem; }
+    .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 0.75rem; padding: 1.25rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.cyan { background: var(--cyan); }
+    .card-dot.emerald { background: var(--emerald); }
+    .card-dot.violet { background: var(--violet); }
+    .card-dot.amber { background: var(--amber); }
+    .card-dot.rose { background: var(--rose); }
+    .card-dot.orange { background: var(--orange); }
+    .card h3 { font-size: 0.95rem; font-weight: 600; }
+    .card ul { list-style: none; color: var(--text-muted); font-size: 0.85rem; }
+    .card li { margin-bottom: 0.375rem; }
+
+    .footer { text-align: center; margin-top: 1.5rem; color: var(--text-faint); font-size: 0.8rem; }
+
+    /* ================================================================
+       SVG 元素样式（只用 class，不写 fill/stroke 颜色属性）
+       ================================================================ */
+    svg.diagram text { font-family: var(--font); fill: var(--text); }
+
+    .grid-line { fill: none; stroke: var(--grid); stroke-width: 0.5; }
+
+    /* 组件框：<rect class="mask"> 在下，<rect class="box cyan"> 在上 */
+    .mask { fill: var(--mask); }
+    .box { stroke-width: 1.5; }
+    .box.cyan    { fill: var(--cyan-fill);    stroke: var(--cyan); }
+    .box.emerald { fill: var(--emerald-fill); stroke: var(--emerald); }
+    .box.violet  { fill: var(--violet-fill);  stroke: var(--violet); }
+    .box.amber   { fill: var(--amber-fill);   stroke: var(--amber); }
+    .box.rose    { fill: var(--rose-fill);    stroke: var(--rose); }
+    .box.orange  { fill: var(--orange-fill);  stroke: var(--orange); }
+    .box.slate   { fill: var(--slate-fill);   stroke: var(--slate); }
+
+    /* 泳道、区域边界、安全组 */
+    .lane    { fill: var(--lane-fill); stroke: var(--lane-stroke); stroke-width: 1; }
+    .divider { stroke: var(--lane-stroke); stroke-width: 1; stroke-dasharray: 2,4; }
+    .region  { fill: var(--region-fill); stroke: var(--amber); stroke-width: 1; stroke-dasharray: 8,4; }
+    .group   { fill: none; stroke: var(--rose); stroke-width: 1; stroke-dasharray: 4,4; }
+
+    /* 连线：.edge 普通；.main 主路粗线；.dash 虚线（兜底/反馈/辅路）；加颜色 class 换色 */
+    .edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+    .edge.main { stroke: var(--edge-main); stroke-width: 2.5; }
+    .edge.dash { stroke-dasharray: 5,4; }
+    .edge.cyan { stroke: var(--cyan); }       .edge.emerald { stroke: var(--emerald); }
+    .edge.violet { stroke: var(--violet); }   .edge.amber { stroke: var(--amber); }
+    .edge.rose { stroke: var(--rose); }       .edge.orange { stroke: var(--orange); }
+
+    /* 箭头 marker 里的三角形 */
+    .mk { fill: var(--edge); }
+    .mk.main { fill: var(--edge-main); }
+    .mk.cyan { fill: var(--cyan); }       .mk.emerald { fill: var(--emerald); }
+    .mk.violet { fill: var(--violet); }   .mk.amber { fill: var(--amber); }
+    .mk.rose { fill: var(--rose); }       .mk.orange { fill: var(--orange); }
+
+    /* 线上的效果标签底框（圆角胶囊） */
+    .pill { fill: var(--mask); stroke: var(--effect); stroke-width: 1; }
+
+    /* 文字。字号是 viewBox 单位，按 viewBox 宽 1000 定的下限，见 SKILL.md */
+    svg.diagram .t-label  { font-size: 13px; font-weight: 600; fill: var(--text); }     /* 节点主标签 */
+    svg.diagram .t-label-lg { font-size: 15px; font-weight: 600; fill: var(--text); }   /* 大节点主标签 */
+    svg.diagram .t-sub    { font-size: 10px; fill: var(--text-muted); }                 /* 节点副标签 */
+    svg.diagram .t-note   { font-size: 10px; fill: var(--text-muted); }                 /* 注释 */
+    svg.diagram .t-edge   { font-size: 10.5px; fill: var(--text-muted); }               /* 线上标签 */
+    svg.diagram .t-effect { font-size: 10.5px; font-weight: 600; fill: var(--effect); } /* 线上效果数字 */
+    svg.diagram .t-lane   { font-size: 16px; font-weight: 700; fill: var(--text); }     /* 泳道标题 */
+    svg.diagram .t-lane-desc { font-size: 11px; fill: var(--text-muted); }              /* 泳道说明 */
+    svg.diagram .t-region { font-size: 11px; font-weight: 600; fill: var(--amber); }    /* 区域边界标题 */
+    svg.diagram .t-legend-title { font-size: 11px; font-weight: 600; fill: var(--text); }
+    svg.diagram .t-legend { font-size: 10px; fill: var(--text-muted); }
+    svg.diagram .t-badge  { font-size: 13px; font-weight: 700; }                        /* 圆圈序号 */
+    /* 彩色文字（副标签、线上标签可叠加） */
+    svg.diagram .tc-cyan { fill: var(--cyan-text); }       svg.diagram .tc-emerald { fill: var(--emerald-text); }
+    svg.diagram .tc-violet { fill: var(--violet-text); }   svg.diagram .tc-amber { fill: var(--amber-text); }
+    svg.diagram .tc-rose { fill: var(--rose-text); }       svg.diagram .tc-orange { fill: var(--orange-text); }
+    svg.diagram .tc-slate { fill: var(--slate-text); }
+    /* 强调色文字（与描边同色，用于线上标签、区域标题） */
+    svg.diagram .ts-cyan { fill: var(--cyan); }       svg.diagram .ts-emerald { fill: var(--emerald); }
+    svg.diagram .ts-violet { fill: var(--violet); }   svg.diagram .ts-amber { fill: var(--amber); }
+    svg.diagram .ts-rose { fill: var(--rose); }       svg.diagram .ts-orange { fill: var(--orange); }
+
+    /* ================================================================
+       导出工具栏
+       ================================================================ */
+    .toolbar { display: flex; gap: 0.5rem; margin-left: auto; flex-shrink: 0; align-items: center; }
+    .toolbar-toggle {
+      background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+      font-size: 1.25rem; line-height: 1; padding: 0.25rem 0.5rem; border-radius: 0.375rem;
+      transition: color 0.2s, background 0.2s;
+    }
+    .toolbar-toggle:hover { color: var(--text-muted); background: var(--btn-bg); }
+    .toolbar-actions { display: none; gap: 0.5rem; }
+    .toolbar.expanded .toolbar-actions { display: flex; }
+    .toolbar-actions button {
+      background: var(--btn-bg); border: 1px solid var(--panel-border); color: var(--text-muted);
+      padding: 0.375rem 0.75rem; border-radius: 0.375rem; font-family: inherit; font-size: 0.75rem;
+      cursor: pointer; transition: all 0.2s; white-space: nowrap;
+    }
+    .toolbar-actions button:hover { background: var(--btn-bg-hover); color: var(--text); }
+
+    @media print {
+      body { padding: 1rem; }
+      .toolbar { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <!-- 标题 -->
+    <div class="header">
+      <div class="header-row">
+        <div class="pulse-dot"></div>
+        <h1>Mate Agent architecture</h1>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button onclick="toggleTheme()">◐ Theme</button>
+            <button onclick="copyAsImage(this)">📋 Copy</button>
+            <button onclick="downloadPNG(this)">🖼️ PNG</button>
+            <button onclick="downloadPDF(this)">📄 PDF</button>
+          </div>
+          <button class="toolbar-toggle" onclick="this.parentElement.classList.toggle('expanded')" title="Export" aria-label="Export">⋯</button>
+        </div>
+      </div>
+      <p class="subtitle">Your product brings the users, credits and tools. Mate Agent runs the agent and meters the models.</p>
+    </div>
+
+    <!-- 主图 -->
+    <div class="diagram-container">
+      <svg class="diagram" viewBox="0 0 1000 592">
+        <defs>
+          <!-- 箭头：markerUnits=userSpaceOnUse，粗线不会把箭头放大 -->
+          <marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><polygon class="mk" points="0 0, 10 3.5, 0 7"/></marker>
+          <marker id="ah-main" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><polygon class="mk main" points="0 0, 12 4.5, 0 9"/></marker>
+          <marker id="ah-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><polygon class="mk cyan" points="0 0, 10 3.5, 0 7"/></marker>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path class="grid-line" d="M 40 0 L 0 0 0 40"/>
+          </pattern>
+        </defs>
+
+        <!-- 背景网格 -->
+        <rect width="100%" height="100%" fill="url(#grid)"/>
+
+        <!-- ============ lanes and region ============ -->
+        <rect class="lane" x="10" y="12" width="215" height="535" rx="12"/>
+        <text class="t-lane" x="26" y="40">Your product</text>
+        <rect class="region" x="250" y="12" width="515" height="535" rx="12"/>
+        <text class="t-lane ts-amber" x="266" y="40">Mate Agent</text>
+        <rect class="lane" x="790" y="12" width="200" height="535" rx="12"/>
+        <text class="t-lane" x="806" y="40">Model providers</text>
+
+        <!-- ============ edges ============ -->
+        <line class="edge main" x1="110" y1="126" x2="110" y2="168" marker-end="url(#ah-main)"/>
+        <text class="t-edge" x="120" y="151">HTTPS · SSE</text>
+
+        <line class="edge main" x1="195" y1="196" x2="278" y2="196" marker-end="url(#ah-main)"/>
+        <rect class="mask" x="214" y="176" width="46" height="15" rx="3"/>
+        <text class="t-edge" x="237" y="187" text-anchor="middle">as app</text>
+        <line class="edge dash" x1="280" y1="224" x2="197" y2="224" marker-end="url(#ah)"/>
+        <rect class="mask" x="214" y="229" width="46" height="15" rx="3"/>
+        <text class="t-edge" x="237" y="240" text-anchor="middle">events</text>
+
+        <line class="edge main" x1="405" y1="270" x2="405" y2="348" marker-end="url(#ah-main)"/>
+        <text class="t-edge" x="415" y="314">turns · events</text>
+        <line class="edge dash" x1="665" y1="270" x2="665" y2="348" marker-end="url(#ah)"/>
+        <text class="t-edge" x="675" y="314">memory jobs</text>
+
+        <line class="edge cyan" x1="280" y1="405" x2="197" y2="405" marker-end="url(#ah-cyan)"/>
+        <rect class="mask" x="205" y="385" width="64" height="15" rx="3"/>
+        <text class="t-edge ts-cyan" x="237" y="396" text-anchor="middle">MCP tools</text>
+        <path class="edge cyan dash" d="M 280 258 H 150 V 368" marker-end="url(#ah-cyan)"/>
+        <text class="t-edge ts-cyan" x="160" y="290">inline</text>
+
+        <line class="edge" x1="530" y1="398" x2="588" y2="398" marker-end="url(#ah)"/>
+        <text class="t-edge" x="559" y="389" text-anchor="middle">calls</text>
+        <line class="edge main" x1="740" y1="398" x2="808" y2="398" marker-end="url(#ah-main)"/>
+        <rect class="mask" x="743" y="378" width="62" height="15" rx="3"/>
+        <text class="t-edge" x="774" y="389" text-anchor="middle">Anthropic</text>
+        <path class="edge dash" d="M 530 432 H 560 V 500 H 808" marker-end="url(#ah)"/>
+        <text class="t-edge" x="686" y="491" text-anchor="middle">own key or subscription</text>
+
+        <!-- ============ your product ============ -->
+        <rect class="mask" x="25" y="70" width="170" height="56" rx="6"/>
+        <rect class="box slate" x="25" y="70" width="170" height="56" rx="6"/>
+        <text class="t-label" x="110" y="93" text-anchor="middle">Users</text>
+        <text class="t-sub" x="110" y="111" text-anchor="middle">browser · app</text>
+
+        <rect class="mask" x="25" y="170" width="170" height="70" rx="6"/>
+        <rect class="box cyan" x="25" y="170" width="170" height="70" rx="6"/>
+        <text class="t-label" x="110" y="193" text-anchor="middle">Product backend</text>
+        <text class="t-sub" x="110" y="211" text-anchor="middle">accounts · credits</text>
+        <text class="t-sub tc-cyan" x="110" y="227" text-anchor="middle">e.g. Demo Studio</text>
+
+        <rect class="mask" x="25" y="370" width="170" height="70" rx="6"/>
+        <rect class="box cyan" x="25" y="370" width="170" height="70" rx="6"/>
+        <text class="t-label" x="110" y="393" text-anchor="middle">MCP server</text>
+        <text class="t-sub" x="110" y="411" text-anchor="middle">tools · persona</text>
+        <text class="t-sub tc-cyan" x="110" y="427" text-anchor="middle">token per user</text>
+
+        <!-- ============ Mate Agent ============ -->
+        <rect class="mask" x="280" y="50" width="460" height="220" rx="8"/>
+        <rect class="box emerald" x="280" y="50" width="460" height="220" rx="8"/>
+        <text class="t-label-lg" x="510" y="76" text-anchor="middle">Control plane</text>
+        <text class="t-sub" x="510" y="94" text-anchor="middle">sessions · events · state · spend</text>
+        <text class="t-sub tc-emerald" x="510" y="110" text-anchor="middle">Node host (SQLite) or Cloudflare Workers + Durable Objects</text>
+
+        <rect class="box emerald" x="292" y="124" width="100" height="56" rx="6"/>
+        <text class="t-label" x="342" y="147" text-anchor="middle">Sessions</text>
+        <text class="t-sub" x="342" y="165" text-anchor="middle">one per chat</text>
+        <rect class="box emerald" x="404" y="124" width="100" height="56" rx="6"/>
+        <text class="t-label" x="454" y="147" text-anchor="middle">Router</text>
+        <text class="t-sub" x="454" y="165" text-anchor="middle">which runtime</text>
+        <rect class="box emerald" x="516" y="124" width="100" height="56" rx="6"/>
+        <text class="t-label" x="566" y="147" text-anchor="middle">Inline</text>
+        <text class="t-sub" x="566" y="165" text-anchor="middle">short turns</text>
+        <rect class="box emerald" x="628" y="124" width="100" height="56" rx="6"/>
+        <text class="t-label" x="678" y="147" text-anchor="middle">Memory</text>
+        <text class="t-sub" x="678" y="165" text-anchor="middle">files · per user</text>
+
+        <rect class="box violet" x="292" y="196" width="136" height="50" rx="6"/>
+        <text class="t-label" x="360" y="216" text-anchor="middle">D1 · SQLite</text>
+        <text class="t-sub" x="360" y="234" text-anchor="middle">sessions · users</text>
+        <rect class="box violet" x="440" y="196" width="136" height="50" rx="6"/>
+        <text class="t-label" x="508" y="216" text-anchor="middle">R2 · SeaweedFS</text>
+        <text class="t-sub" x="508" y="234" text-anchor="middle">media · files</text>
+        <rect class="box orange" x="588" y="196" width="140" height="50" rx="6"/>
+        <text class="t-label" x="658" y="216" text-anchor="middle">Queues</text>
+        <text class="t-sub tc-orange" x="658" y="234" text-anchor="middle">retries · DLQ</text>
+
+        <rect class="mask" x="280" y="350" width="250" height="96" rx="8"/>
+        <rect class="box emerald" x="280" y="350" width="250" height="96" rx="8"/>
+        <text class="t-label-lg" x="405" y="378" text-anchor="middle">Sandbox</text>
+        <text class="t-sub" x="405" y="397" text-anchor="middle">Claude Code or OpenCode</text>
+        <text class="t-sub tc-emerald" x="405" y="414" text-anchor="middle">skills · mem · library · MCP proxy</text>
+        <text class="t-note" x="405" y="468" text-anchor="middle">Docker (local) · Vercel · Modal · Daytona · E2B</text>
+
+        <rect class="mask" x="590" y="350" width="150" height="96" rx="8"/>
+        <rect class="box emerald" x="590" y="350" width="150" height="96" rx="8"/>
+        <text class="t-label-lg" x="665" y="378" text-anchor="middle">LLM gateway</text>
+        <text class="t-sub" x="665" y="397" text-anchor="middle">budgets · ledger</text>
+        <text class="t-sub tc-emerald" x="665" y="414" text-anchor="middle">usage to product</text>
+
+        <!-- ============ model providers ============ -->
+        <rect class="mask" x="810" y="370" width="160" height="56" rx="6"/>
+        <rect class="box slate" x="810" y="370" width="160" height="56" rx="6"/>
+        <text class="t-label" x="890" y="393" text-anchor="middle">OpenRouter</text>
+        <text class="t-sub" x="890" y="411" text-anchor="middle">Claude models</text>
+
+        <rect class="mask" x="810" y="472" width="160" height="56" rx="6"/>
+        <rect class="box slate" x="810" y="472" width="160" height="56" rx="6"/>
+        <text class="t-label" x="890" y="495" text-anchor="middle">OpenAI · xAI</text>
+        <text class="t-sub" x="890" y="513" text-anchor="middle">direct</text>
+
+        <!-- ============ legend ============ -->
+        <text class="t-legend-title" x="20" y="578">Legend</text>
+        <rect class="box cyan" x="74" y="569" width="16" height="10" rx="2"/>
+        <text class="t-legend" x="96" y="578">your product</text>
+        <rect class="box emerald" x="190" y="569" width="16" height="10" rx="2"/>
+        <text class="t-legend" x="212" y="578">Mate Agent</text>
+        <rect class="box violet" x="296" y="569" width="16" height="10" rx="2"/>
+        <text class="t-legend" x="318" y="578">storage</text>
+        <rect class="box orange" x="378" y="569" width="16" height="10" rx="2"/>
+        <text class="t-legend" x="400" y="578">queue</text>
+        <rect class="box slate" x="450" y="569" width="16" height="10" rx="2"/>
+        <text class="t-legend" x="472" y="578">external</text>
+        <line class="edge main" x1="540" y1="574" x2="568" y2="574"/>
+        <text class="t-legend" x="574" y="578">main path</text>
+        <line class="edge dash" x1="650" y1="574" x2="678" y2="574"/>
+        <text class="t-legend" x="684" y="578">async or optional</text>
+      </svg>
+    </div>
+
+    <!-- 说明卡片：默认删掉。只在用户要求、或正文里没有对应说明时才保留。
+    <div class="cards">
+      <div class="card">
+        <div class="card-header"><div class="card-dot cyan"></div><h3>卡片标题</h3></div>
+        <ul>
+          <li>• 第一条</li>
+          <li>• 第二条</li>
+        </ul>
+      </div>
+    </div>
+    -->
+
+    <!-- 页脚 -->
+    <p class="footer">Mate Agent • github.com/Suntorlin/mate-agent</p>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      const html = document.documentElement;
+      html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+    }
+
+    // html2canvas 把 SVG 序列化成图片再画，页面 CSS（class、变量、字体）会丢。
+    // onclone 里把每个 SVG 元素的计算样式写成内联样式，导出结果和页面一致。
+    const SVG_PROPS = ['fill', 'stroke', 'stroke-width', 'stroke-dasharray', 'opacity', 'fill-opacity', 'stroke-opacity',
+      'font-family', 'font-size', 'font-weight', 'word-spacing', 'letter-spacing'];
+    function inlineSvgStyles(doc) {
+      doc.querySelectorAll('svg, svg *').forEach(el => {
+        const cs = doc.defaultView.getComputedStyle(el);
+        SVG_PROPS.forEach(p => el.style.setProperty(p, cs.getPropertyValue(p)));
+      });
+    }
+
+    async function captureCanvas() {
+      const el = document.getElementById('report-container');
+      const r = el.getBoundingClientRect();
+      const pad = 32;
+      return html2canvas(document.body, {
+        backgroundColor: getComputedStyle(document.body).backgroundColor,
+        scale: 2, useCORS: true,
+        ignoreElements: (e) => e.classList && e.classList.contains('toolbar'),
+        onclone: inlineSvgStyles,
+        x: r.left + window.scrollX - pad, y: r.top + window.scrollY - pad,
+        width: r.width + pad * 2, height: r.height + pad * 2
+      });
+    }
+
+    async function copyAsImage(btn) {
+      const orig = btn.textContent;
+      try {
+        const canvas = await captureCanvas();
+        const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        btn.textContent = '✓ Copied!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPNG(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const canvas = await captureCanvas();
+        const link = document.createElement('a');
+        link.download = 'diagram.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+
+    async function downloadPDF(btn) {
+      const orig = btn.textContent;
+      btn.textContent = '⏳ ...';
+      try {
+        const canvas = await captureCanvas();
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const orientation = canvas.width > canvas.height ? 'landscape' : 'portrait';
+        const pdf = new jsPDF({ orientation, unit: 'px', format: [canvas.width, canvas.height], hotfixes: ['px_scaling'] });
+        pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+        pdf.save('diagram.pdf');
+        btn.textContent = '✓ Done!';
+      } catch (e) {
+        btn.textContent = '✗ Failed';
+      }
+      setTimeout(() => btn.textContent = orig, 2000);
+    }
+  </script>
+</body>
+</html>

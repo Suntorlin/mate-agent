@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 from tests.conftest import MockResponse, wire_opencode_transport
 
 
@@ -77,6 +78,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     bridge.harness.session_id = "oc-session-123"
     wire_opencode_transport(bridge, MockHttpClient())
@@ -96,6 +98,29 @@ class TestHandleStop:
 
         with pytest.raises(asyncio.CancelledError):
             await task
+
+    @pytest.mark.asyncio
+    async def test_handle_stop_reports_a_stopped_turn(self, bridge: AgentBridge):
+        """A stop ends the turn as stopped, so the control plane does not call it a failure."""
+        sent_events: list[dict] = []
+
+        async def capture_send(event: dict) -> None:
+            sent_events.append(event)
+
+        bridge._send_event = capture_send
+        task = asyncio.create_task(asyncio.Event().wait())
+        bridge.activity.track_prompt("msg-stop", task)
+
+        await bridge._handle_stop()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.05)
+
+        terminals = [e for e in sent_events if e.get("type") == "execution_complete"]
+        assert len(terminals) == 1
+        assert terminals[0]["messageId"] == "msg-stop"
+        assert terminals[0]["success"] is False
+        assert terminals[0]["stopped"] is True
 
     @pytest.mark.asyncio
     async def test_handle_stop_with_no_running_task(self, bridge: AgentBridge):

@@ -33,6 +33,7 @@ export type AlarmFinding =
   | { outcome: "heartbeat_stale"; ageMs: number; isBooting: boolean }
   | { outcome: "boot_budget_exceeded"; elapsedMs: number }
   | { outcome: "inactivity_timeout" }
+  | { outcome: "unprompted_timeout" }
   | { outcome: "inactivity_warning"; extensionMs: number }
   | { outcome: "healthy"; nextCheckMs: number };
 
@@ -41,7 +42,8 @@ export function evaluateAlarmPolicy(
   sandbox: AlarmSandbox,
   config: AlarmPolicyConfig,
   now: number,
-  connectedClientCount: number
+  connectedClientCount: number,
+  unprompted = false
 ): AlarmFinding {
   if (isDeadSandboxStatus(sandbox.status)) return { outcome: "terminal" };
 
@@ -72,13 +74,20 @@ export function evaluateAlarmPolicy(
   }
 
   const inactivity = evaluateInactivityTimeout(
-    { lastActivity: sandbox.last_activity, status: sandbox.status, connectedClientCount },
+    {
+      lastActivity: sandbox.last_activity,
+      status: sandbox.status,
+      connectedClientCount,
+      unprompted,
+    },
     config.inactivity,
     now
   );
   switch (inactivity.action) {
     case "timeout":
-      return { outcome: "inactivity_timeout" };
+      // Only reached with no client connected, so an unprompted session's
+      // sandbox serves nobody.
+      return unprompted ? { outcome: "unprompted_timeout" } : { outcome: "inactivity_timeout" };
     case "extend":
       return { outcome: "inactivity_warning", extensionMs: inactivity.extensionMs };
     case "schedule":

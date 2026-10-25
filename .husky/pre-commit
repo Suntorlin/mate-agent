@@ -3,4 +3,5 @@ if [ -f packages/modal-infra/.venv/bin/activate ]; then
   . packages/modal-infra/.venv/bin/activate
 fi
 
+node scripts/check-public-safety.ts --staged
 npx lint-staged

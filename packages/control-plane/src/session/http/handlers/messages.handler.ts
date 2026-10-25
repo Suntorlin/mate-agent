@@ -21,6 +21,44 @@ import {
 } from "../../message-queue";
 
 /**
+ * The response for a prompt the queue refused, or null for an unexpected
+ * error. Shared by every internal route that enqueues a prompt.
+ */
+export function enqueuePromptErrorResponse(error: unknown): Response | null {
+  if (error instanceof SessionAttachmentError) {
+    return Response.json({ error: error.message }, { status: 400 });
+  }
+  if (error instanceof SessionNotPromptableError) {
+    return Response.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof SandboxPromptBlockedError) {
+    return Response.json(
+      { error: error.message, code: "SANDBOX_RECOVERY_REQUIRED" },
+      { status: 409 }
+    );
+  }
+  if (error instanceof BudgetExhaustedError) {
+    return Response.json({ error: error.message, code: "BUDGET_EXHAUSTED" }, { status: 409 });
+  }
+  if (error instanceof PromptQueueFullError) {
+    return Response.json({ error: error.message, code: "PROMPT_QUEUE_FULL" }, { status: 429 });
+  }
+  if (error instanceof HarnessModelIncompatibleError) {
+    return Response.json(
+      { error: error.message, code: "HARNESS_MODEL_INCOMPATIBLE" },
+      { status: 400 }
+    );
+  }
+  if (error instanceof PromptRequestConflictError) {
+    return Response.json(
+      { error: error.message, code: "PROMPT_REQUEST_CONFLICT" },
+      { status: 409 }
+    );
+  }
+  return null;
+}
+
+/**
  * HTTP boundary for the prompt/event/artifact/message/trace endpoints: parses
  * requests, delegates to the message service, and maps thrown domain errors
  * to statuses.
@@ -39,36 +77,8 @@ export class MessagesHandler {
       const body: EnqueuePromptRequest = result.data;
       return Response.json(await this.messageService.enqueuePrompt(body));
     } catch (error) {
-      if (error instanceof SessionAttachmentError) {
-        return Response.json({ error: error.message }, { status: 400 });
-      }
-      if (error instanceof SessionNotPromptableError) {
-        return Response.json({ error: error.message }, { status: 409 });
-      }
-      if (error instanceof SandboxPromptBlockedError) {
-        return Response.json(
-          { error: error.message, code: "SANDBOX_RECOVERY_REQUIRED" },
-          { status: 409 }
-        );
-      }
-      if (error instanceof BudgetExhaustedError) {
-        return Response.json({ error: error.message, code: "BUDGET_EXHAUSTED" }, { status: 409 });
-      }
-      if (error instanceof PromptQueueFullError) {
-        return Response.json({ error: error.message, code: "PROMPT_QUEUE_FULL" }, { status: 429 });
-      }
-      if (error instanceof HarnessModelIncompatibleError) {
-        return Response.json(
-          { error: error.message, code: "HARNESS_MODEL_INCOMPATIBLE" },
-          { status: 400 }
-        );
-      }
-      if (error instanceof PromptRequestConflictError) {
-        return Response.json(
-          { error: error.message, code: "PROMPT_REQUEST_CONFLICT" },
-          { status: 409 }
-        );
-      }
+      const response = enqueuePromptErrorResponse(error);
+      if (response) return response;
       log.error("handleEnqueuePrompt error", {
         error: error instanceof Error ? error : String(error),
       });

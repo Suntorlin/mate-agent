@@ -29,6 +29,9 @@ type SessionRow = {
   active_duration_ms: number;
   message_count: number;
   pr_count: number;
+  cover_artifact_id: string | null;
+  cover_artifact_type: string | null;
+  media_count: number;
   input_tokens: number;
   output_tokens: number;
   reasoning_tokens: number;
@@ -232,6 +235,9 @@ class FakeD1Database {
           active_duration_ms: 0,
           message_count: 0,
           pr_count: 0,
+          cover_artifact_id: null,
+          cover_artifact_type: null,
+          media_count: 0,
           input_tokens: 0,
           output_tokens: 0,
           reasoning_tokens: 0,
@@ -405,7 +411,7 @@ describe("SessionIndexStore", () => {
       expect(result).toEqual({
         ...session,
         // Defaults applied for missing optional fields
-        harness: "opencode",
+        harness: "claude",
         parentSessionId: null,
         spawnSource: "user",
         spawnDepth: 0,
@@ -417,6 +423,8 @@ describe("SessionIndexStore", () => {
         activeDurationMs: 0,
         messageCount: 0,
         prCount: 0,
+        cover: null,
+        mediaCount: 0,
         inputTokens: 0,
         outputTokens: 0,
         reasoningTokens: 0,

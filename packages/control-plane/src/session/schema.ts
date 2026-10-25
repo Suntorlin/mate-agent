@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS session (
   base_sha TEXT,                                    -- SHA of base branch at session start
   current_sha TEXT,                                 -- Current HEAD SHA
   agent_session_id TEXT,                            -- The agent's own conversation id (1:1 mapping)
-  harness TEXT NOT NULL DEFAULT 'opencode',         -- Agent harness: 'opencode' | 'claude'; fixed at create
+  harness TEXT NOT NULL DEFAULT 'claude',           -- Agent harness, fixed at create
   model TEXT DEFAULT 'anthropic/claude-haiku-4-5',   -- LLM model to use
   reasoning_effort TEXT,                            -- Session-level reasoning effort default
   status TEXT DEFAULT 'created',                    -- 'created', 'active', 'completed', 'failed', 'archived', 'cancelled'
@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS session (
   total_cost REAL NOT NULL DEFAULT 0,              -- Running session cost from step_finish events
   sandbox_settings TEXT DEFAULT NULL,               -- JSON blob of SandboxSettings (resolved at session creation)
   max_cost_usd REAL,                                -- Mutable effective session cost limit; NULL = unlimited
+  permission_mode TEXT NOT NULL DEFAULT 'full_auto', -- When the agent asks before acting; mutable (SessionPermissionMode)
   budget_exhausted INTEGER NOT NULL DEFAULT 0,      -- Pauses prompt admission and dispatch
   environment_id TEXT,                              -- Launch environment provenance; NULL for repo-launched/ad-hoc sessions
   created_at INTEGER NOT NULL,
@@ -160,6 +161,7 @@ CREATE TABLE IF NOT EXISTS messages (
   error_message TEXT,                               -- If status='failed'
   stop_confirmation_deadline INTEGER,               -- Blocks dispatch until stop is confirmed or times out
   reported_cost_usd REAL NOT NULL DEFAULT 0,        -- Highest cumulative cost the runtime reported for this turn
+  runtime TEXT,                                     -- 'inline' (the control plane ran it) or 'sandbox'
   created_at INTEGER NOT NULL,
   started_at INTEGER,                               -- When processing began
   completed_at INTEGER,                             -- When processing finished
@@ -182,7 +184,7 @@ ${STEP_USAGE_TABLE_SQL};
 -- Artifacts (PRs, screenshots, video recordings, preview URLs)
 CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,                               -- 'pr', 'screenshot', 'video', 'preview', 'branch'
+  type TEXT NOT NULL,                               -- 'pr', 'screenshot', 'video', 'page', 'file', 'preview', 'branch'
   url TEXT,
   metadata TEXT,                                    -- JSON
   created_at INTEGER NOT NULL,
@@ -758,6 +760,21 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
     id: 56,
     description: "Retain rejected sandbox startup cleanup intent",
     run: "ALTER TABLE sandbox ADD COLUMN startup_rejected INTEGER NOT NULL DEFAULT 0",
+  },
+  {
+    id: 57,
+    description: "Add the session permission mode",
+    run: "ALTER TABLE session ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'full_auto'",
+  },
+  {
+    id: 58,
+    description: "Add the session model tier",
+    run: "ALTER TABLE session ADD COLUMN model_tier TEXT",
+  },
+  {
+    id: 59,
+    description: "Record which runtime ran each message (inline or sandbox)",
+    run: "ALTER TABLE messages ADD COLUMN runtime TEXT",
   },
 ];
 

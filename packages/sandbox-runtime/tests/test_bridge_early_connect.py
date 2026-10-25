@@ -196,6 +196,42 @@ class TestHarnessAttach:
         assert ready["harness"] == "opencode"
         assert bridge.session_id_file.read_text() == "oc-persisted"
 
+    async def test_attach_starts_the_agent_for_a_harness_that_can_prewarm(
+        self, tmp_path, monkeypatch
+    ):
+        calls: list[str] = []
+
+        class PrewarmingHarness(OpeningHarness):
+            async def create_session(self) -> None:
+                calls.append("create_session")
+                self.session_id = "new-session"
+
+            async def prewarm(self) -> None:
+                calls.append(f"prewarm:{self.session_id}")
+
+        harness = PrewarmingHarness(calls)
+        bridge = _bridge(tmp_path, monkeypatch, factory=lambda: harness)
+        bridge._send_event = AsyncMock(side_effect=lambda event: calls.append(event["type"]))
+        _write_lines(_phase(1, "sync", "started"), HARNESS_COMPLETED)
+
+        await bridge.boot_attach._relay_boot_events()
+        assert bridge._prewarm_task is not None
+        await bridge._prewarm_task
+
+        # Ready goes out first; the agent then starts under a saved session id.
+        assert calls == ["open", "ready", "create_session", "prewarm:new-session"]
+        assert bridge.session_id_file.read_text() == "new-session"
+
+    async def test_attach_leaves_harnesses_without_prewarm_alone(self, tmp_path, monkeypatch):
+        harness = ScriptedHarness()
+        bridge = _bridge(tmp_path, monkeypatch, factory=lambda: harness)
+        bridge._send_event = AsyncMock()
+        _write_lines(_phase(1, "sync", "started"), HARNESS_COMPLETED)
+
+        await bridge.boot_attach._relay_boot_events()
+
+        assert bridge._prewarm_task is None
+
     async def test_registry_harness_is_built_only_at_attach(self, tmp_path, monkeypatch):
         build = MagicMock(return_value=ScriptedHarness())
         monkeypatch.setattr("sandbox_runtime.bridge.build_agent_harness", build)

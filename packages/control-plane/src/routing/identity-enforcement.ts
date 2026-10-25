@@ -20,7 +20,7 @@ import type { RequestContext } from "../http/request-context";
 const logger = createLogger("identity-enforcement");
 
 /** The route families that consume caller-supplied identity. */
-type IdentityRoute = "session-create" | "ws-token" | "prompt" | "automation-create";
+type IdentityRoute = "session-create" | "ws-token" | "prompt";
 
 const SPAWNING_FORBIDDEN_FIELDS = [
   "userId",
@@ -45,7 +45,6 @@ const FORBIDDEN_IDENTITY_FIELDS: Record<IdentityRoute, readonly string[]> = {
   "session-create": SPAWNING_FORBIDDEN_FIELDS,
   "ws-token": ["userId", "scmToken", "scmRefreshToken", "scmUserId"],
   prompt: ["authorId"],
-  "automation-create": SPAWNING_FORBIDDEN_FIELDS,
 };
 
 /**
@@ -56,7 +55,6 @@ const FORBIDDEN_IDENTITY_FIELDS: Record<IdentityRoute, readonly string[]> = {
 const REQUIRES_USER_MESSAGE = {
   "session-create": "A user identity is required to create a session",
   "ws-token": "A user identity is required for a websocket token",
-  "automation-create": "A user identity is required to create an automation",
 } as const;
 
 type RequiresUserRoute = keyof typeof REQUIRES_USER_MESSAGE;

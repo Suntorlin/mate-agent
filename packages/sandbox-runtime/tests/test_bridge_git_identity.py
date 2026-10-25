@@ -6,6 +6,7 @@ import pytest
 
 from sandbox_runtime.bridge import AgentBridge
 from sandbox_runtime.git_signing import GitSigningError
+from sandbox_runtime.harness import HarnessId
 from sandbox_runtime.types import GitUser
 from tests.conftest import ScriptedHarness
 
@@ -23,6 +24,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     b.harness.session_id = "oc-session-123"
     return b

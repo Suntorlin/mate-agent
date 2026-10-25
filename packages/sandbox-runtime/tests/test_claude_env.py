@@ -13,6 +13,7 @@ from sandbox_runtime.harness.claude_env import (
     CLAUDE_POLICY_SETTINGS,
     CLI_BASH_MAX_TIMEOUT_SECONDS,
     OAUTH_CREDENTIAL_VARS,
+    RUNTIME_BASH_MAX_TIMEOUT_MS,
     STREAM_SILENCE_MARGIN_SECONDS,
     ClaudeAuthMode,
     ClaudeCredential,
@@ -161,6 +162,18 @@ class TestDenylist:
         env = harness_env(tmp_path, ClaudeCredential.oauth_token("tok"))
         assert env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
 
+    def test_harness_env_turns_off_claude_codes_own_memory(self, tmp_path: Path) -> None:
+        # Claude Code's auto memory tells the agent to keep notes in local files,
+        # which never reach the engine's user memory (`mem`).
+        env = harness_env(tmp_path, ClaudeCredential.oauth_token("tok"))
+        assert env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1"
+
+    def test_harness_env_keeps_a_products_persona_whole(self, tmp_path: Path) -> None:
+        # The persona comes as the product's MCP server instructions; Claude Code would cut
+        # them at 2,048 characters.
+        env = harness_env(tmp_path, ClaudeCredential.oauth_token("tok"))
+        assert int(env["CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH"]) >= 16_000
+
     def test_harness_env_sets_config_dir_and_policy(self, tmp_path: Path) -> None:
         env = harness_env(tmp_path, ClaudeCredential.oauth_token("tok"))
         assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path)
@@ -184,8 +197,20 @@ class TestDenylist:
 class TestBashTimeoutCeiling:
     """The ceiling the child enforces, which is how long the stream may be silent."""
 
-    def test_the_cli_builtin_applies_when_the_environment_says_nothing(self) -> None:
-        assert bash_timeout_ceiling_seconds({}) == CLI_BASH_MAX_TIMEOUT_SECONDS
+    def test_the_runtime_default_applies_when_the_environment_says_nothing(self) -> None:
+        assert bash_timeout_ceiling_seconds({}) == RUNTIME_BASH_MAX_TIMEOUT_MS / 1000
+        assert bash_timeout_ceiling_seconds({BASH_MAX_TIMEOUT_ENV_VAR: ""}) == 3600.0
+
+    def test_the_child_gets_the_runtime_defaults_unless_the_environment_sets_them(
+        self, tmp_path: Path
+    ) -> None:
+        env = harness_env(tmp_path, ClaudeCredential.oauth_token("tok"), environ={})
+        assert env[BASH_DEFAULT_TIMEOUT_ENV_VAR] == "600000"
+        assert env[BASH_MAX_TIMEOUT_ENV_VAR] == "3600000"
+        own = {BASH_MAX_TIMEOUT_ENV_VAR: "1200000"}
+        env = harness_env(tmp_path, ClaudeCredential.oauth_token("tok"), environ=own)
+        assert BASH_MAX_TIMEOUT_ENV_VAR not in env
+        assert env[BASH_DEFAULT_TIMEOUT_ENV_VAR] == "600000"
 
     def test_the_environment_raises_it(self) -> None:
         assert bash_timeout_ceiling_seconds({BASH_MAX_TIMEOUT_ENV_VAR: "1200000"}) == 1200.0
@@ -196,11 +221,12 @@ class TestBashTimeoutCeiling:
         assert bash_timeout_ceiling_seconds(environ) == 900.0
 
     def test_the_environment_can_lower_it(self) -> None:
-        assert bash_timeout_ceiling_seconds({BASH_MAX_TIMEOUT_ENV_VAR: "60000"}) == 120.0
+        environ = {BASH_MAX_TIMEOUT_ENV_VAR: "60000", BASH_DEFAULT_TIMEOUT_ENV_VAR: "120000"}
+        assert bash_timeout_ceiling_seconds(environ) == 120.0
 
     def test_values_the_cli_ignores_are_ignored_here_too(self) -> None:
-        for raw in ("", "soon", "0", "-1", "nan", "inf"):
-            environ = {BASH_MAX_TIMEOUT_ENV_VAR: raw}
+        for raw in ("soon", "0", "-1", "nan", "inf"):
+            environ = {BASH_MAX_TIMEOUT_ENV_VAR: raw, BASH_DEFAULT_TIMEOUT_ENV_VAR: "120000"}
             assert bash_timeout_ceiling_seconds(environ) == CLI_BASH_MAX_TIMEOUT_SECONDS
 
     def test_the_budget_clears_the_ceiling_by_the_margin(self) -> None:

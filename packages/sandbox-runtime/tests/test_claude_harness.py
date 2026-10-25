@@ -38,11 +38,13 @@ from sandbox_runtime.credentials.provider_credential_client import (
     RuntimeCredentialUnavailable,
 )
 from sandbox_runtime.harness import AgentHarness, HarnessPrompt, HarnessStartError, PromptLimits
+from sandbox_runtime.harness import claude as claude_module
 from sandbox_runtime.harness.claude import (
     AUTHENTICATION_FAILED_MESSAGE,
     MAX_STDOUT_MESSAGE_BYTES,
     ClaudeHarness,
     ClaudeHarnessConfig,
+    _default_restored_cost,
     bare_model_id,
     mcp_server_options,
     reasoning_options,
@@ -104,8 +106,13 @@ class FakeSdkClient:
     hang_disconnect: bool = False
     fail_disconnect: bool = False
     fail_connect: bool = False
+    connect_gate: asyncio.Event | None = None
+    # The SDK's control channel, where the harness sends apply_flag_settings (None: no channel).
+    _query: Any = None
 
     async def connect(self) -> None:
+        if self.connect_gate is not None:
+            await self.connect_gate.wait()
         if self.fail_connect:
             raise RuntimeError("spawn failed")
         if self.hang_connect:
@@ -164,6 +171,7 @@ class Harness:
         credential_client = overrides.pop("credential_client", None)
         environ = overrides.pop("environ", {"ANTHROPIC_API_KEY": "sk-ant-key", "PATH": "/bin"})
         transcript_exists = overrides.pop("transcript_exists", lambda _id, _dir, _cfg: False)
+        restored_cost = overrides.pop("restored_cost", None)
         self.config = ClaudeHarnessConfig(
             workdir=tmp_path / "repo",
             config_dir=tmp_path / "claude",
@@ -172,6 +180,7 @@ class Harness:
             oauth_managed=oauth_managed,
             system_prompt_append=overrides.pop("system_prompt_append", None),
             tools=None,
+            default_reasoning_effort=overrides.pop("default_reasoning_effort", None),
         )
         binary = tmp_path / "claude-bin"
         binary.write_text("#!/bin/sh\n")
@@ -190,7 +199,9 @@ class Harness:
             client_factory=client_factory,
             options_factory=lambda **kwargs: kwargs,
             transcript_exists=transcript_exists,
+            restored_cost=restored_cost,
             binary=binary,
+            mcp_proxies=overrides.pop("mcp_proxies", None),
         )
 
     @property
@@ -336,6 +347,8 @@ class TestOptions:
         assert options["effort"] == "high"
         assert options["permission_mode"] == "dontAsk"
         assert options["disallowed_tools"] == ["AskUserQuestion"]
+        # Built-in definitions are limited to what the session may call.
+        assert options["tools"] == [*claude_module.ALLOWED_TOOLS]
         assert json.loads(options["settings"]) == {
             "attribution": {"commit": "", "pr": "", "sessionUrl": False},
             "feedbackDrafts": "off",
@@ -412,6 +425,119 @@ class TestOptions:
         assert mcp_server_options(({"name": "x", "type": "local", "command": []},)) == {}
 
 
+class FakeMcpProxy:
+    def __init__(self, url: str = "http://127.0.0.1:4321/mcp", *, fail: bool = False) -> None:
+        self.url = url
+        self.fail = fail
+        self.started = 0
+        self.closed = 0
+
+    async def start(self) -> str:
+        self.started += 1
+        if self.fail:
+            raise OSError("no port")
+        return self.url
+
+    async def aclose(self) -> None:
+        self.closed += 1
+
+
+STATIC_APP = {
+    "name": "app",
+    "type": "remote",
+    "url": "https://app.example/mcp",
+    "headers": {"Authorization": "Bearer boot-token"},
+}
+
+
+class TestMcpProxies:
+    @pytest.mark.asyncio
+    async def test_a_proxied_server_points_at_the_proxy_without_credentials(
+        self, tmp_path: Path
+    ) -> None:
+        proxy = FakeMcpProxy()
+        h = Harness(tmp_path, mcp_servers=(STATIC_APP,), mcp_proxies={"app": proxy})
+        await h.harness.open()
+        await h.harness.create_session()
+        options = h.harness.build_options("claude-sonnet-4-6", None)
+        assert options["mcp_servers"]["app"] == {
+            "type": "http",
+            "url": "http://127.0.0.1:4321/mcp",
+        }
+        assert "mcp__app__*" in options["allowed_tools"]
+        await h.harness.close()
+        assert (proxy.started, proxy.closed) == (1, 1)
+
+    @pytest.mark.asyncio
+    async def test_a_proxy_that_cannot_start_falls_back_to_the_static_entry(
+        self, tmp_path: Path
+    ) -> None:
+        proxy = FakeMcpProxy(fail=True)
+        h = Harness(tmp_path, mcp_servers=(STATIC_APP,), mcp_proxies={"app": proxy})
+        await h.harness.open()
+        await h.harness.create_session()
+        options = h.harness.build_options("claude-sonnet-4-6", None)
+        assert options["mcp_servers"]["app"]["url"] == "https://app.example/mcp"
+        await h.harness.close()
+        assert proxy.closed == 0
+
+
+GATEWAY_ENVIRON = {
+    "PATH": "/bin",
+    "ANTHROPIC_API_KEY": "gw.jwt.token",
+    "ANTHROPIC_BASE_URL": "https://gw.example/llm",
+    "GATEWAY_URL": "https://gw.example",
+    "GATEWAY_TOKEN": "gw.jwt.token",
+    "CONTROL_PLANE_URL": "https://cp.example",
+    "SANDBOX_AUTH_TOKEN": "sandbox-token",
+}
+
+
+class TestGatewayKeyHelper:
+    """A gateway token lasts two hours, so Claude Code asks the helper for it."""
+
+    @pytest.mark.asyncio
+    async def test_a_gateway_session_takes_its_key_from_the_helper(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, environ=dict(GATEWAY_ENVIRON))
+        await h.harness.open()
+        await h.harness.create_session()
+        options = h.harness.build_options("claude-sonnet-4-6", None)
+        settings = json.loads(options["settings"])
+        assert settings["apiKeyHelper"].endswith("/bin/gateway-key")
+        # The key from the environment would go out in x-api-key ahead of the helper's.
+        assert options["env"]["ANTHROPIC_API_KEY"] == ""
+        assert options["env"]["ANTHROPIC_BASE_URL"] == "https://gw.example/llm"
+        assert options["env"]["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"] == str(30 * 60 * 1000)
+
+    @pytest.mark.asyncio
+    async def test_a_users_own_api_key_is_left_alone(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, environ={**GATEWAY_ENVIRON, "ANTHROPIC_API_KEY": "sk-ant-own"})
+        await h.harness.open()
+        await h.harness.create_session()
+        options = h.harness.build_options("claude-sonnet-4-6", None)
+        assert "apiKeyHelper" not in json.loads(options["settings"])
+        assert options["env"]["ANTHROPIC_API_KEY"] == "sk-ant-own"
+
+    @pytest.mark.asyncio
+    async def test_without_a_gateway_url_the_key_is_read_once(self, tmp_path: Path) -> None:
+        environ = {k: v for k, v in GATEWAY_ENVIRON.items() if k != "GATEWAY_URL"}
+        h = Harness(tmp_path, environ=environ)
+        await h.harness.open()
+        await h.harness.create_session()
+        options = h.harness.build_options("claude-sonnet-4-6", None)
+        assert "apiKeyHelper" not in json.loads(options["settings"])
+
+    @pytest.mark.asyncio
+    async def test_without_the_control_plane_the_key_is_read_once(self, tmp_path: Path) -> None:
+        environ = {k: v for k, v in GATEWAY_ENVIRON.items() if k != "SANDBOX_AUTH_TOKEN"}
+        h = Harness(tmp_path, environ=environ)
+        await h.harness.open()
+        await h.harness.create_session()
+        options = h.harness.build_options("claude-sonnet-4-6", None)
+        assert "apiKeyHelper" not in json.loads(options["settings"])
+        assert options["env"]["ANTHROPIC_API_KEY"] == "gw.jwt.token"
+
+
 class TestTranslation:
     @pytest.mark.asyncio
     async def test_step_ids_match_each_turn_and_are_unique(self, tmp_path: Path) -> None:
@@ -438,6 +564,37 @@ class TestTranslation:
         assert second_start["stepId"] == second_finish["stepId"]
         assert first_start["stepId"] != second_start["stepId"]
         assert next(e for e in unmatched if e["type"] == "step_finish")["stepId"]
+
+    @pytest.mark.asyncio
+    async def test_a_reply_never_shows_an_undecodable_character(self, tmp_path: Path) -> None:
+        # Seen on dev: a reply opened with a text part that was only U+FFFD.
+        turn = [
+            SystemMessage(subtype="init", data={"model": "claude-opus-5-5", "tools": ["Bash"]}),
+            _stream("message_start", message={"id": "msg_1"}),
+            _text_delta("\ufffd"),
+            AssistantMessage(
+                content=[
+                    TextBlock("\ufffd"),
+                    ToolUseBlock(id="tu_1", name="Bash", input={"command": "ls"}),
+                ],
+                model="claude-opus-5-5",
+                message_id="msg_1",
+            ),
+            UserMessage(content=[ToolResultBlock(tool_use_id="tu_1", content="a.txt")]),
+            _stream("message_start", message={"id": "msg_2"}),
+            _text_delta("读\ufffd完了"),
+            AssistantMessage(
+                content=[TextBlock("读\ufffd完了")], model="claude-opus-5-5", message_id="msg_2"
+            ),
+            _result(0.1),
+        ]
+        h = Harness(tmp_path, turns=[turn])
+        await h.harness.open()
+        await h.harness.create_session()
+        events, _ = await _run(h.harness)
+
+        tokens = [e["content"] for e in events if e["type"] == "token"]
+        assert tokens == ["读完了"]
 
     @pytest.mark.asyncio
     async def test_a_turn_with_text_and_a_tool_call(self, tmp_path: Path) -> None:
@@ -585,6 +742,11 @@ class TestTranslation:
                         name="mcp__linear__create_issue",
                         input={"title": "bug"},
                     ),
+                    ToolUseBlock(
+                        id="tu_ask",
+                        name="mcp__oi__ask_user",
+                        input={"title": "q", "kind": "binary"},
+                    ),
                 ],
                 model="m",
                 message_id="msg_1",
@@ -598,7 +760,47 @@ class TestTranslation:
         tools = [e["tool"] for e in events if e["type"] == "tool_call"]
         # First-party tools carry the ids OpenCode emits; external MCP tools
         # keep their server-qualified names.
-        assert tools == ["create-pull-request", "mcp__linear__create_issue"]
+        assert tools == ["create-pull-request", "mcp__linear__create_issue", "ask_user"]
+
+    @pytest.mark.asyncio
+    async def test_naming_the_project_becomes_the_session_title_not_a_step(
+        self, tmp_path: Path
+    ) -> None:
+        turn = [
+            AssistantMessage(
+                content=[
+                    ToolUseBlock(
+                        id="tu_name",
+                        name="mcp__oi__name_project",
+                        input={"title": " 颜料宇宙 · 30 秒动效片 "},
+                    ),
+                    ToolUseBlock(id="tu_bad", name="mcp__oi__name_project", input={"title": " "}),
+                    ToolUseBlock(id="tu_bash", name="Bash", input={"command": "ls"}),
+                ],
+                model="m",
+                message_id="msg_1",
+            ),
+            UserMessage(
+                content=[
+                    ToolResultBlock(tool_use_id="tu_name", content="Named.", is_error=False),
+                    ToolResultBlock(tool_use_id="tu_bad", content="Not named.", is_error=True),
+                    ToolResultBlock(tool_use_id="tu_bash", content="a.txt", is_error=False),
+                ]
+            ),
+            _result(0.1),
+        ]
+        h = Harness(tmp_path, turns=[turn])
+        await h.harness.open()
+        await h.harness.create_session()
+        events, _ = await _run(h.harness)
+        assert [e for e in events if e["type"] == "session_title"] == [
+            {"type": "session_title", "title": "颜料宇宙 · 30 秒动效片"}
+        ]
+        # Neither the call nor its result is a row on the timeline.
+        assert [(e["tool"], e["status"]) for e in events if e["type"] == "tool_call"] == [
+            ("Bash", "running"),
+            ("Bash", "completed"),
+        ]
 
     @pytest.mark.asyncio
     async def test_compaction_and_provider_warnings(self, tmp_path: Path) -> None:
@@ -719,7 +921,8 @@ class TestCostBaseline:
         assert second.message_cost_usd == pytest.approx(0.25)
         assert len(h.clients) == 1
 
-        # A transport drop forces a reconnect: the new child restarts its total.
+        # A transport drop forces a reconnect. This transcript records no
+        # cost-state, so the resumed child restarts its total at zero.
         h.harness._needs_reconnect = True
         _, third = await _run(h.harness, HarnessPrompt(message_id="m3", text="c"))
         assert third.message_cost_usd == pytest.approx(0.05)
@@ -786,6 +989,183 @@ class TestCostBaseline:
         assert fourth.success is False  # no scripted turn left; baseline is re-anchored at 0.40
 
 
+def _cost_state(session_id: str, total: Any) -> str:
+    return json.dumps({"type": "cost-state", "sessionId": session_id, "totalCostUSD": total})
+
+
+def _write_transcript(config_dir: Path, session_id: str, *lines: str) -> Path:
+    project_dir = config_dir / "projects" / "-workspace"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    path = project_dir / f"{session_id}.jsonl"
+    path.write_text("".join(f"{line}\n" for line in lines))
+    return path
+
+
+SESSION_UUID = "617347e9-9ff5-4205-9efe-c185b3459127"
+
+
+class TestCostAcrossResume:
+    """A resumed child's running total includes the spend recorded before it."""
+
+    @pytest.mark.asyncio
+    async def test_first_turn_after_a_snapshot_restore_is_only_its_own_cost(
+        self, tmp_path: Path
+    ) -> None:
+        # The regression: 11.84 spent before the snapshot, 2.85 after the restore;
+        # the CLI's first total after resuming is 14.69.
+        h = Harness(
+            tmp_path,
+            turns=[[_result(14.69)], [_result(15.19)]],
+            transcript_exists=lambda _id, _dir, _cfg: True,
+        )
+        _write_transcript(
+            h.config.config_dir,
+            SESSION_UUID,
+            json.dumps({"type": "user", "message": {"content": "hi"}}),
+            _cost_state(SESSION_UUID, 11.84),
+        )
+        await h.harness.open()
+        assert await h.harness.resume_session(SESSION_UUID) is True
+        _, first = await _run(h.harness, HarnessPrompt(message_id="m1", text="a"))
+        _, second = await _run(h.harness, HarnessPrompt(message_id="m2", text="b"))
+        assert h.clients[0].options["resume"] == SESSION_UUID
+        assert first.message_cost_usd == pytest.approx(2.85)
+        assert second.message_cost_usd == pytest.approx(0.50)
+
+    @pytest.mark.asyncio
+    async def test_an_in_sandbox_reconnect_reads_the_total_the_old_child_saved(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(tmp_path, turns=[[_result(0.10)], [_result(0.40)]])
+        await h.harness.open()
+        await h.harness.create_session()
+        session_id = h.harness.session_id
+        assert session_id is not None
+        _, first = await _run(h.harness, HarnessPrompt(message_id="m1", text="a"))
+        # The old child exits and records its total; the new one resumes from it.
+        _write_transcript(h.config.config_dir, session_id, _cost_state(session_id, 0.10))
+        h.harness._needs_reconnect = True
+        _, second = await _run(h.harness, HarnessPrompt(message_id="m2", text="b"))
+        assert first.message_cost_usd == pytest.approx(0.10)
+        assert second.message_cost_usd == pytest.approx(0.30)
+        assert h.clients[1].options["resume"] == session_id
+
+    @pytest.mark.asyncio
+    async def test_a_new_session_ignores_any_transcript(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, turns=[[_result(0.2)]], restored_cost=lambda _id, _cfg: 5.0)
+        await h.harness.open()
+        await h.harness.create_session()
+        _, outcome = await _run(h.harness)
+        assert outcome.message_cost_usd == pytest.approx(0.2)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_restored_total_charges_nothing_and_re_anchors(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(
+            tmp_path,
+            turns=[[_result(9.0)], [_result(9.5)]],
+            transcript_exists=lambda _id, _dir, _cfg: True,
+            restored_cost=lambda _id, _cfg: None,
+        )
+        await h.harness.open()
+        await h.harness.resume_session(SESSION_UUID)
+        events, first = await _run(h.harness, HarnessPrompt(message_id="m1", text="a"))
+        _, second = await _run(h.harness, HarnessPrompt(message_id="m2", text="b"))
+        assert first.message_cost_usd == 0.0
+        assert any(e["type"] == "warning" for e in events)
+        assert second.message_cost_usd == pytest.approx(0.5)
+
+
+class TestDefaultRestoredCost:
+    def test_no_transcript_restores_nothing(self, tmp_path: Path) -> None:
+        assert _default_restored_cost(SESSION_UUID, tmp_path) == 0.0
+        _write_transcript(tmp_path, SESSION_UUID, json.dumps({"type": "user"}))
+        assert _default_restored_cost(SESSION_UUID, tmp_path) == 0.0
+
+    def test_the_last_record_for_the_session_wins(self, tmp_path: Path) -> None:
+        _write_transcript(
+            tmp_path,
+            SESSION_UUID,
+            _cost_state(SESSION_UUID, 1.5),
+            json.dumps({"type": "assistant", "text": 'mentions "cost-state"'}),
+            _cost_state(SESSION_UUID, 4.25),
+            _cost_state("someone-else", 99.0),
+            '{"type":"cost-state","sessionId":"' + SESSION_UUID + '","totalCost',
+        )
+        assert _default_restored_cost(SESSION_UUID, tmp_path) == pytest.approx(4.25)
+
+    @pytest.mark.parametrize("total", [None, "3.0", True, float("nan")])
+    def test_an_unusable_total_is_unknown(self, tmp_path: Path, total: Any) -> None:
+        # json.dumps writes NaN as the bare token NaN, which json.loads accepts.
+        _write_transcript(tmp_path, SESSION_UUID, _cost_state(SESSION_UUID, total))
+        assert _default_restored_cost(SESSION_UUID, tmp_path) is None
+
+
+class FakeControl:
+    """Stands in for the SDK's control channel; records the requests sent on it."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.fail = fail
+
+    async def _send_control_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self.fail:
+            raise RuntimeError("control request failed")
+        self.requests.append(request)
+        return {}
+
+
+def _opus(message_id: str, effort: str) -> HarnessPrompt:
+    return HarnessPrompt(
+        message_id=message_id, text="a", model="anthropic/claude-opus-5-5", reasoning_effort=effort
+    )
+
+
+class TestEffortSwitch:
+    """A running agent changes effort in place: no restart, same conversation."""
+
+    @pytest.mark.asyncio
+    async def test_an_effort_change_is_applied_to_the_running_agent(self, tmp_path: Path) -> None:
+        control = FakeControl()
+        h = Harness(
+            tmp_path, turns=[[_result(0.1)], [_result(0.1)]], client_kwargs={"_query": control}
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await h.harness._ensure_client("claude-opus-5-5", "medium")
+        await _run(h.harness, _opus("m1", "low"))
+        await _run(h.harness, _opus("m2", "medium"))
+        assert len(h.clients) == 1
+        assert control.requests == [
+            {"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}},
+            {"subtype": "apply_flag_settings", "settings": {"effortLevel": "medium"}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_switch_starts_the_agent_again(self, tmp_path: Path) -> None:
+        h = Harness(
+            tmp_path, turns=[[_result(0.1)]], client_kwargs={"_query": FakeControl(fail=True)}
+        )
+        await h.harness.open()
+        await h.harness.create_session()
+        await h.harness._ensure_client("claude-opus-5-5", "medium")
+        await _run(h.harness, _opus("m1", "low"))
+        assert len(h.clients) == 2
+        assert h.clients[1].options["effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_max_is_not_a_setting_so_it_starts_the_agent_again(self, tmp_path: Path) -> None:
+        control = FakeControl()
+        h = Harness(tmp_path, turns=[[_result(0.1)]], client_kwargs={"_query": control})
+        await h.harness.open()
+        await h.harness.create_session()
+        await h.harness._ensure_client("claude-opus-5-5", "medium")
+        await _run(h.harness, _opus("m1", "max"))
+        assert len(h.clients) == 2
+        assert control.requests == []
+
+
 class TestReconnectPolicy:
     @pytest.mark.asyncio
     async def test_model_or_effort_change_reconnects_with_resume(self, tmp_path: Path) -> None:
@@ -803,19 +1183,65 @@ class TestReconnectPolicy:
         assert h.clients[1].options["resume"] == h.harness.session_id
 
     @pytest.mark.asyncio
-    async def test_reconnect_budget_is_three_per_session(self, tmp_path: Path) -> None:
+    async def test_a_reconnect_before_the_first_prompt_does_not_resume(
+        self, tmp_path: Path
+    ) -> None:
+        # The agent is started ahead of the first prompt; a prompt at another effort
+        # replaces it, and there is no conversation to resume yet.
+        h = Harness(tmp_path, turns=[[_result(0.1)], [_result(0.1)]])
+        await h.harness.open()
+        await h.harness.create_session()
+        await h.harness._ensure_client("claude-opus-5-5", "high")
+        await _run(
+            h.harness,
+            HarnessPrompt(
+                message_id="m1",
+                text="a",
+                model="anthropic/claude-opus-5-5",
+                reasoning_effort="medium",
+            ),
+        )
+        assert len(h.clients) == 2
+        assert "resume" not in h.clients[1].options
+        assert h.clients[1].options["session_id"] == h.harness.session_id
+
+    @pytest.mark.asyncio
+    async def test_a_finished_turn_resets_the_reconnect_budget(self, tmp_path: Path) -> None:
         h = Harness(tmp_path, turns=[[_result(0.1)] for _ in range(6)])
         await h.harness.open()
         await h.harness.create_session()
         await _run(h.harness)
-        for _ in range(3):
+        for _ in range(5):
             h.harness._needs_reconnect = True
             _, outcome = await _run(h.harness)
             assert outcome.success is True
-        h.harness._needs_reconnect = True
-        _, outcome = await _run(h.harness)
-        assert outcome.success is False
-        assert "repeatedly" in (outcome.error or "")
+            assert h.harness._reconnects == 0
+        assert len(h.clients) == 6
+
+    @pytest.mark.asyncio
+    async def test_stops_do_not_spend_the_reconnect_budget(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, turns=[[_result(0.1)] for _ in range(6)])
+        await h.harness.open()
+        await h.harness.create_session()
+        await h.harness._ensure_client("claude-sonnet-4-6", None)
+        for _ in range(5):
+            assert await h.harness.abort() is True
+            await h.harness._ensure_client("claude-sonnet-4-6", None)
+        assert h.harness._reconnects == 0
+        assert len(h.clients) == 6
+
+    @pytest.mark.asyncio
+    async def test_a_failed_connect_after_a_stop_is_counted(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path, turns=[[_result(0.1)]])
+        await h.harness.open()
+        await h.harness.create_session()
+        await _run(h.harness)
+        assert await h.harness.abort() is True
+        h.client_kwargs = {"fail_connect": True}
+        outcomes = [(await _run(h.harness))[1] for _ in range(5)]
+        # The stop's restart is free; the three failures after it are not.
+        assert all("failed to start" in (o.error or "") for o in outcomes[:4])
+        assert "repeatedly" in (outcomes[4].error or "")
 
     @pytest.mark.asyncio
     async def test_failed_connects_spend_the_reconnect_budget(self, tmp_path: Path) -> None:
@@ -957,3 +1383,99 @@ class TestDefaultTranscriptLookup:
         )
         assert not _default_transcript_exists("not-a-uuid", tmp_path / "repo", config_dir)
         assert not _default_transcript_exists(session_id, tmp_path / "repo", tmp_path / "missing")
+
+
+DEFAULT_SHAPE = {"model": "anthropic/claude-sonnet-4-6", "reasoning_effort": "high"}
+
+
+class TestPrewarm:
+    async def _opened(self, tmp_path: Path, **overrides: Any) -> Harness:
+        h = Harness(tmp_path, default_reasoning_effort="high", **overrides)
+        await h.harness.open()
+        await h.harness.create_session()
+        return h
+
+    @pytest.mark.asyncio
+    async def test_starts_the_agent_that_the_first_prompt_reuses(self, tmp_path: Path) -> None:
+        h = await self._opened(tmp_path, turns=[[_result(0.1)]])
+        await h.harness.prewarm()
+        assert len(h.clients) == 1 and h.client.connected
+        assert h.client.options["model"] == "claude-sonnet-4-6"
+        assert h.client.options["effort"] == "high"
+
+        _, outcome = await _run(
+            h.harness, HarnessPrompt(message_id="m1", text="hi", **DEFAULT_SHAPE)
+        )
+        assert outcome.success is True
+        assert len(h.clients) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_arriving_mid_start_waits_and_reuses_it(self, tmp_path: Path) -> None:
+        gate = asyncio.Event()
+        h = await self._opened(
+            tmp_path, turns=[[_result(0.1)]], client_kwargs={"connect_gate": gate}
+        )
+        prewarm = asyncio.create_task(h.harness.prewarm())
+        await asyncio.sleep(0)
+        prompt = asyncio.create_task(
+            _run(h.harness, HarnessPrompt(message_id="m1", text="hi", **DEFAULT_SHAPE))
+        )
+        await asyncio.sleep(0)
+        gate.set()
+        await prewarm
+        _, outcome = await prompt
+        assert outcome.success is True
+        assert len(h.clients) == 1
+
+    @pytest.mark.asyncio
+    async def test_without_a_default_effort_it_leaves_the_start_to_the_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        h = Harness(tmp_path)
+        await h.harness.open()
+        await h.harness.create_session()
+        await h.harness.prewarm()
+        assert h.clients == []
+
+    @pytest.mark.asyncio
+    async def test_does_nothing_once_a_prompt_has_started_the_agent(self, tmp_path: Path) -> None:
+        h = await self._opened(tmp_path, turns=[[_result(0.1)]])
+        await _run(h.harness, HarnessPrompt(message_id="m1", text="hi", **DEFAULT_SHAPE))
+        await h.harness.prewarm()
+        assert len(h.clients) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_is_dropped_without_spending_a_reconnect(
+        self, tmp_path: Path
+    ) -> None:
+        h = await self._opened(
+            tmp_path, turns=[[_result(0.1)]], client_kwargs={"fail_connect": True}
+        )
+        await h.harness.prewarm()
+        assert h.harness._client is None
+        assert h.harness._reconnects == 0
+
+        h.client_kwargs = {}
+        _, outcome = await _run(
+            h.harness, HarnessPrompt(message_id="m1", text="hi", **DEFAULT_SHAPE)
+        )
+        assert outcome.success is True
+        assert len(h.clients) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_start_that_hangs_is_abandoned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(claude_module, "PREWARM_CONNECT_TIMEOUT_SECONDS", 0.05)
+        h = await self._opened(
+            tmp_path, turns=[[_result(0.1)]], client_kwargs={"hang_connect": True}
+        )
+        await h.harness.prewarm()
+        assert h.harness._client is None
+        assert h.clients[0].disconnected is True
+
+        h.client_kwargs = {}
+        _, outcome = await _run(
+            h.harness, HarnessPrompt(message_id="m1", text="hi", **DEFAULT_SHAPE)
+        )
+        assert outcome.success is True

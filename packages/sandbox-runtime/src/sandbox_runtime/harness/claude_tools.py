@@ -22,6 +22,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+from ..direct_upload import DirectUploadError, put_parts
 from ..repo_config import load_repo_manifest
 
 if TYPE_CHECKING:
@@ -30,10 +31,61 @@ if TYPE_CHECKING:
 OI_TOOL_SERVER_NAME: Final = "oi"
 TOOL_REQUEST_TIMEOUT_SECONDS: Final = 30.0
 MEDIA_UPLOAD_TIMEOUT_SECONDS: Final = 120.0
+# Videos up to this size are posted through the control plane; larger videos
+# and every file artifact go straight to storage (``direct_upload``).
+VIDEO_INLINE_MAX_BYTES: Final = 100 * 1024 * 1024
 # ``POST /pr`` waits synchronously for the sandbox push; the control plane
 # gives that push 360 seconds before it reports a timeout of its own. The tool
 # must outlast the server so a slow push is reported once, by the server.
 PULL_REQUEST_TIMEOUT_SECONDS: Final = 390.0
+ASK_USER_TOOL_NAME: Final = "ask_user"
+# What the agent reads once its card is on screen. The sandbox may be saved
+# while the creator thinks, so nothing waits here: the turn has to end.
+ASK_USER_SHOWN_MESSAGE: Final = (
+    "The question is now on the user's screen (questionId {question_id}). End your turn now: "
+    "do not call any more tools and do not write anything else. The user's answer will arrive "
+    'as the next user message, starting with "[回答 {question_id}" or "[用户".'
+)
+ASK_USER_DESCRIPTION: Final = (
+    "Ask the user ONE question as an interactive card in the product's UI, then end your turn. "
+    "Use it whenever you need the user to choose between options, fill in information you "
+    "cannot infer, upload a file, or approve a spend before you generate paid media "
+    "(kind 'confirm_cost' with the credit cost). Do not use it for questions you can answer "
+    "yourself, and never ask in plain text when a card fits. One question per call and one call "
+    "per turn: after it returns, stop immediately (no more tool calls, no more text); the answer "
+    "arrives as the next user message. Card kinds and the fields each needs: 'single' (options; "
+    "allowOther adds a free-text 其他 row), 'multi' (options, pick several), 'binary' (exactly 2 "
+    "options), 'voice' (options whose artifactId is a preview audio you uploaded), 'image' "
+    "(options whose artifactId is an image you uploaded), 'fields' (fields to fill in), "
+    "'multi_question' (questions: several option groups on one card), 'confirm_cost' (cost: "
+    "totalCredits and lines), 'upload' (upload: accept, e.g. 'video/*'). 'secondary' adds up to "
+    "4 extra buttons such as 换一批 or 重画; pressing one answers with its value. "
+    "Write title, labels and option text in the user's language."
+)
+NAME_PROJECT_TOOL_NAME: Final = "name_project"
+# Longer than any title reads well in the project list; the control plane has its own cap.
+PROJECT_NAME_MAX_CHARS: Final = 60
+NAME_PROJECT_DESCRIPTION: Final = (
+    "Name this project: the title the user sees on the project page and in their history. "
+    "Until you call it the project is listed under the first words of their first message, or "
+    "as untitled when that was only a link. Call it once, as soon as you know what is being "
+    "made (the brief is clear, or the user picked a direction). Write a short title in the "
+    "user's language that says what the piece is, the way a finished work is titled: "
+    "「颜料宇宙 · 30 秒动效片」, 'Oat latte launch film'. Not a file name or code name, no "
+    "link, date or version number, and not the user's sentence repeated back. The name lands "
+    "only while nobody has named the project: after that, renaming is the user's, by clicking "
+    "the title. Nothing appears in the conversation, so do not mention the call."
+)
+NAME_PROJECT_SCHEMA: Final = {
+    "type": "object",
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": f"The project's name, at most {PROJECT_NAME_MAX_CHARS} characters.",
+        }
+    },
+    "required": ["title"],
+}
 
 _STATUS_LABELS: Final = {
     "created": "PENDING",
@@ -70,6 +122,8 @@ _MEDIA_MIME_TYPES: Final = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".mp4": "video/mp4",
+    ".html": "text/html",
+    ".htm": "text/html",
 }
 
 
@@ -100,6 +154,10 @@ class ControlPlaneToolClient:
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(timeout=TOOL_REQUEST_TIMEOUT_SECONDS)
         return self._http_client
+
+    def http(self) -> httpx.AsyncClient:
+        """The underlying client, for requests outside the control plane (signed storage URLs)."""
+        return self._client()
 
     async def aclose(self) -> None:
         if self._http_client is not None:
@@ -158,8 +216,32 @@ def _format_timestamp(value: Any) -> str:
         return str(value)
 
 
+def project_name(args: Mapping[str, Any]) -> str | None:
+    """The title a ``name_project`` call gives the project, or ``None`` when it is not usable."""
+    raw = args.get("title")
+    if not isinstance(raw, str):
+        return None
+    title = " ".join(raw.split())
+    return title if 0 < len(title) <= PROJECT_NAME_MAX_CHARS else None
+
+
 def _text_result(text: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}]}
+
+
+def _error_result(text: str) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": text}], "is_error": True}
+
+
+def _issues(response: httpx.Response) -> list[str]:
+    """The control plane's list of what is wrong with a card, or its error message."""
+    try:
+        body = response.json()
+    except ValueError:
+        return [response.text]
+    if isinstance(body, dict) and isinstance(body.get("issues"), list) and body["issues"]:
+        return [str(issue) for issue in body["issues"]]
+    return [_error_text(response)]
 
 
 def _pull_request_failure(message: str) -> str:
@@ -628,14 +710,21 @@ class OpenInspectTools:
         path = Path(raw_path).expanduser()
         if not path.is_file():
             return _text_result(f"upload-media requires a path to a file (got {raw_path!r}).")
+        artifact_type = str(args.get("artifactType") or "screenshot")
+        if artifact_type == "file":
+            return await self._upload_file(path, args)
         mime = _MEDIA_MIME_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0]
         if mime not in _MEDIA_MIME_TYPES.values():
             return _text_result(
-                "upload-media only supports .png, .jpg, .jpeg, .webp, and .mp4 files."
+                "upload-media only previews .png, .jpg, .jpeg, .webp, .mp4, and .html files; "
+                "send any other file with artifactType 'file'."
             )
-        artifact_type = str(args.get("artifactType") or "screenshot")
         if mime == "video/mp4" and artifact_type != "video":
             return _text_result("MP4 files must be uploaded with artifactType 'video'.")
+        if mime == "text/html" and artifact_type != "page":
+            return _text_result("HTML files must be uploaded with artifactType 'page'.")
+        if artifact_type == "page" and mime != "text/html":
+            return _text_result("artifactType 'page' requires an .html file.")
         data: dict[str, Any] = {"artifactType": artifact_type}
         for key in ("caption", "sourceUrl", "endUrl"):
             if args.get(key):
@@ -656,11 +745,13 @@ class OpenInspectTools:
                 data[key] = str(args[key])
             data["dimensions"] = _dimensions_field(args["dimensions"])
             data["truncated"] = "true" if args.get("truncated") else "false"
-            # The endpoint rejects audio tracks; refuse here so the agent gets a
-            # clear message instead of a 400 after uploading the whole file.
-            if args.get("hasAudio") is True:
-                return _text_result("Video uploads do not support audio (hasAudio must be false).")
-            data["hasAudio"] = "false"
+            # The MP4 is stored as uploaded; the flag only describes it.
+            data["hasAudio"] = "true" if args.get("hasAudio") is True else "false"
+            if path.stat().st_size > VIDEO_INLINE_MAX_BYTES:
+                video = {key: value for key, value in data.items() if key != "artifactType"}
+                return await self._upload_direct(
+                    path, {"artifactType": "video", "filename": path.name}, {"video": video}
+                )
         try:
             response = await self.client.request(
                 "POST",
@@ -674,6 +765,226 @@ class OpenInspectTools:
         if response.status_code >= 400:
             return _text_result(f"Failed to upload media: {_error_text(response)}")
         return _text_result(json.dumps(response.json(), indent=2))
+
+    async def _upload_file(self, path: Path, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Any file, handed to the user as a download."""
+        filename = str(args.get("name") or path.name)
+        start: dict[str, Any] = {"artifactType": "file", "filename": filename}
+        content_type = mimetypes.guess_type(filename)[0]
+        if content_type:
+            start["contentType"] = content_type
+        extra: dict[str, Any] = {}
+        if args.get("caption"):
+            extra["caption"] = str(args["caption"])
+        if args.get("kind") in ("file", "project"):
+            extra["kind"] = args["kind"]
+        return await self._upload_direct(path, start, extra)
+
+    async def _upload_direct(
+        self, path: Path, start: dict[str, Any], extra: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Open a direct upload, send the parts to storage, and record the artifact."""
+        try:
+            size = path.stat().st_size
+            if size == 0:
+                return _text_result("upload-media cannot upload an empty file.")
+            response = await self.client.request(
+                "POST", "/uploads", json_body={**start, "sizeBytes": size}
+            )
+            if response.status_code >= 400:
+                return _text_result(f"Failed to upload media: {_error_text(response)}")
+            upload = response.json()
+            identity = {
+                "artifactType": start["artifactType"],
+                "uploadId": upload["uploadId"],
+                "filename": upload["filename"],
+            }
+            try:
+                parts = await put_parts(
+                    self.client.http(),
+                    path,
+                    size,
+                    list(upload["parts"]),
+                    int(upload["partSizeBytes"]),
+                )
+            except DirectUploadError:
+                await self.client.request(
+                    "POST", f"/uploads/{upload['artifactId']}/abort", json_body=identity
+                )
+                raise
+            complete = {**identity, **extra, "parts": parts}
+            if "contentType" in start:
+                complete["contentType"] = start["contentType"]
+            response = await self.client.request(
+                "POST",
+                f"/uploads/{upload['artifactId']}/complete",
+                json_body=complete,
+                timeout_seconds=MEDIA_UPLOAD_TIMEOUT_SECONDS,
+            )
+        except (httpx.HTTPError, OSError, DirectUploadError, KeyError, ValueError) as error:
+            return _text_result(f"Failed to upload media: {error}")
+        if response.status_code >= 400:
+            return _text_result(f"Failed to upload media: {_error_text(response)}")
+        return _text_result(json.dumps(response.json(), indent=2))
+
+    # --- questions ------------------------------------------------------------
+
+    async def ask_user(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Show a question card; the turn ends and the answer comes back as a prompt."""
+        card = {key: value for key, value in args.items() if value is not None}
+        try:
+            response = await self.client.request("POST", "/questions", json_body=card)
+        except httpx.HTTPError as error:
+            return _error_result(
+                f"The question was not shown ({error}). Ask it in plain text instead, then end "
+                "your turn."
+            )
+        if response.status_code == 400:
+            issues = _issues(response)
+            return _error_result(
+                "The question was not shown because the card is invalid:\n"
+                + "\n".join(f"- {issue}" for issue in issues)
+                + "\nFix these and call ask_user again."
+            )
+        if response.status_code >= 400:
+            return _error_result(
+                f"The question was not shown: {_error_text(response)} "
+                f"(HTTP {response.status_code}). Ask it in plain text instead, then end your turn."
+            )
+        question_id = str(response.json().get("questionId") or "")
+        return _text_result(ASK_USER_SHOWN_MESSAGE.format(question_id=question_id))
+
+    async def name_project(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """Name the project; the harness sends the name on as the session's title."""
+        if project_name(args) is None:
+            return _error_result(
+                f"The project was not named: title must be 1 to {PROJECT_NAME_MAX_CHARS} "
+                "characters on one line. Call name_project again with a shorter title."
+            )
+        return _text_result("Named. Carry on without mentioning it.")
+
+
+_TEXT: Final = {"type": "string"}
+_OPTION_SCHEMA: Final = {
+    "type": "object",
+    "properties": {
+        "value": {"type": "string", "description": "What the answer reports when this is picked."},
+        "title": {"type": "string", "description": "The option as the user sees it."},
+        "description": _TEXT,
+        "tag": {"type": "string", "description": "A short badge, e.g. 推荐."},
+        "aside": {"type": "string", "description": "A note on the right, e.g. a price."},
+        "artifactId": {
+            "type": "string",
+            "description": "voice: the preview audio; image: the picture (an uploaded artifact).",
+        },
+    },
+    "required": ["value", "title"],
+}
+ASK_USER_SCHEMA: Final = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "The question itself, shown as the heading."},
+        "kind": {
+            "type": "string",
+            "enum": [
+                "single",
+                "multi",
+                "binary",
+                "voice",
+                "image",
+                "fields",
+                "multi_question",
+                "confirm_cost",
+                "upload",
+            ],
+        },
+        "options": {
+            "type": "array",
+            "items": _OPTION_SCHEMA,
+            "description": "single / multi / binary (exactly 2) / voice / image.",
+        },
+        "allowOther": {
+            "type": "boolean",
+            "description": "single: add a last 其他 row with a text input.",
+        },
+        "fields": {
+            "type": "array",
+            "description": "fields: the inputs to fill in.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": _TEXT,
+                    "label": _TEXT,
+                    "placeholder": _TEXT,
+                    "defaultValue": _TEXT,
+                    "required": {"type": "boolean"},
+                    "help": _TEXT,
+                },
+                "required": ["key", "label"],
+            },
+        },
+        "questions": {
+            "type": "array",
+            "description": "multi_question: option groups shown together.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": _TEXT,
+                    "label": _TEXT,
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"value": _TEXT, "label": _TEXT},
+                            "required": ["value", "label"],
+                        },
+                    },
+                    "defaultValue": _TEXT,
+                },
+                "required": ["key", "label", "options"],
+            },
+        },
+        "cost": {
+            "type": "object",
+            "description": "confirm_cost: what the user is asked to spend, in the product's credits.",
+            "properties": {
+                "totalCredits": {"type": "number"},
+                "lines": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"label": _TEXT, "credits": {"type": "number"}},
+                        "required": ["label", "credits"],
+                    },
+                },
+            },
+            "required": ["totalCredits", "lines"],
+        },
+        "upload": {
+            "type": "object",
+            "description": "upload: which files to ask for.",
+            "properties": {
+                "accept": {"type": "string", "description": "e.g. video/*,audio/*"},
+                "hint": _TEXT,
+            },
+            "required": ["accept"],
+        },
+        "submitLabel": {
+            "type": "string",
+            "description": "The main button's label; defaults to 确定.",
+        },
+        "secondary": {
+            "type": "array",
+            "description": "Up to 4 extra buttons, e.g. 换一批.",
+            "items": {
+                "type": "object",
+                "properties": {"value": _TEXT, "label": _TEXT},
+                "required": ["value", "label"],
+            },
+        },
+    },
+    "required": ["title", "kind"],
+}
 
 
 def build_tools(client: ControlPlaneToolClient) -> list[Any]:
@@ -880,9 +1191,12 @@ def build_tools(client: ControlPlaneToolClient) -> list[Any]:
     tools.append(
         tool(
             "upload-media",
-            "Upload a screenshot (.png, .jpg, .jpeg, .webp) or a screen recording (.mp4, with "
-            "artifactType 'video') from the sandbox filesystem so it appears in the session timeline. "
-            "Use it after capturing media you want the user to see.",
+            "Upload a screenshot (.png, .jpg, .jpeg, .webp), a video preview (H.264 .mp4, with "
+            "artifactType 'video'), a self-contained HTML page (.html, with artifactType 'page') "
+            "or any other file for the user to download (artifactType 'file': documents, archives, "
+            "editing-app project files, masters in any codec, up to 4 GiB) from the sandbox "
+            "filesystem so it appears in the session. Use it after making something you want the "
+            "user to see or take away.",
             {
                 "type": "object",
                 "properties": {
@@ -892,8 +1206,18 @@ def build_tools(client: ControlPlaneToolClient) -> list[Any]:
                     },
                     "artifactType": {
                         "type": "string",
-                        "enum": ["screenshot", "video"],
-                        "description": "Defaults to screenshot; .mp4 files require video.",
+                        "enum": ["screenshot", "video", "page", "file"],
+                        "description": "Defaults to screenshot; .mp4 previews require video, .html "
+                        "files page; 'file' takes any file as a download.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "File only: the name it downloads under (defaults to the file's own).",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["file", "project"],
+                        "description": "File only: 'project' marks a bundle of the whole project.",
                     },
                     "caption": {
                         "type": "string",
@@ -939,13 +1263,18 @@ def build_tools(client: ControlPlaneToolClient) -> list[Any]:
                     "truncated": {"type": "boolean", "description": "Video only."},
                     "hasAudio": {
                         "type": "boolean",
-                        "enum": [False],
-                        "description": "Video only. Audio tracks are not supported.",
+                        "description": "Video only. True when the MP4 has an audio track; it is kept and played.",
                     },
                 },
                 "required": ["filePath"],
             },
         )(handlers.upload_media)
+    )
+    tools.append(tool(ASK_USER_TOOL_NAME, ASK_USER_DESCRIPTION, ASK_USER_SCHEMA)(handlers.ask_user))
+    tools.append(
+        tool(NAME_PROJECT_TOOL_NAME, NAME_PROJECT_DESCRIPTION, NAME_PROJECT_SCHEMA)(
+            handlers.name_project
+        )
     )
     return tools
 

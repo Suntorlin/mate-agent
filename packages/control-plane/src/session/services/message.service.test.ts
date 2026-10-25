@@ -311,4 +311,41 @@ describe("MessageService", () => {
 
     expect(result.messages).toEqual([expect.objectContaining({ attachments: null })]);
   });
+
+  it("reports each turn's cost and the runtime that ran it, for products that bill per turn", () => {
+    const { service, repository } = createService();
+    const row = {
+      id: "m1",
+      author_id: "p1",
+      content: "hello",
+      source: "web",
+      model: null,
+      reasoning_effort: null,
+      attachments: null,
+      callback_context: null,
+      client_request_id: null,
+      request_fingerprint: null,
+      autofix_feedback_key: null,
+      autofix_pr_key: null,
+      origin_context: null,
+      status: "completed",
+      error_message: null,
+      stop_confirmation_deadline: null,
+      reported_cost_usd: 0.0123,
+      created_at: 1000,
+      started_at: 1001,
+      completed_at: 1002,
+    } as const;
+    vi.mocked(repository.listMessages).mockReturnValue([
+      { ...row, runtime: "inline" },
+      { ...row, id: "m2", reported_cost_usd: 0, status: "pending" },
+    ]);
+
+    const result = service.listMessages({ cursor: null, limit: 2, status: null });
+
+    expect(result.messages).toEqual([
+      expect.objectContaining({ id: "m1", costUsd: 0.0123, runtime: "inline" }),
+      expect.objectContaining({ id: "m2", costUsd: 0, runtime: null }),
+    ]);
+  });
 });

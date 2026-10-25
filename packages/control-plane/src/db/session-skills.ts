@@ -13,12 +13,14 @@ const LEGACY_SESSION_SKILL_SELECTION = { mode: "all" as const };
 /** Snapshot rows preserve resolution-time provenance independently of the mutable catalog. */
 interface ManifestRow {
   session_id: string;
-  selection_mode: "all" | "none" | "profile";
+  selection_mode: "all" | "none" | "profile" | "ids";
   profile_id: string | null;
   profile_name: string | null;
+  selected_skill_ids?: string | null;
   resolver_version: number;
   manifest_sha256: string;
   resolved_at: number;
+  disabled_bundled_skills?: string | null;
 }
 
 interface RevisionRow {
@@ -80,6 +82,7 @@ export class SessionSkillStore {
         return { name: row.skill_name, files };
       }),
       nextCursor: hasMore ? String(revisions[revisions.length - 1]?.position) : null,
+      disabledBundledSkills: this.disabledBundledSkills(loaded.manifest),
     };
     const parsed = sandboxSkillInstallationSchema.safeParse(installation);
     if (!parsed.success) {
@@ -126,6 +129,18 @@ export class SessionSkillStore {
     return { manifest, revisions: revisions.results ?? [] };
   }
 
+  /** Pinned built-in switches; unreadable values fail open to "none disabled". */
+  private disabledBundledSkills(manifest: ManifestRow): string[] {
+    try {
+      const parsed: unknown = JSON.parse(manifest.disabled_bundled_skills ?? "[]");
+      return Array.isArray(parsed)
+        ? parsed.filter((name): name is string => typeof name === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
   private selection(manifest: ManifestRow): SessionSkillsView["selection"] {
     if (manifest.resolver_version !== SKILL_RESOLVER_VERSION) {
       throw new Error(`Unsupported managed skill resolver version: ${manifest.resolver_version}`);
@@ -142,6 +157,18 @@ export class SessionSkillStore {
     }
     if (manifest.profile_id !== null || manifest.profile_name !== null) {
       throw new Error("Invalid non-profile selection: profile fields must be null");
+    }
+    if (manifest.selection_mode === "ids") {
+      let skillIds: unknown;
+      try {
+        skillIds = JSON.parse(manifest.selected_skill_ids ?? "");
+      } catch {
+        throw new Error("Invalid ids selection: selected skill ids are unreadable");
+      }
+      if (!Array.isArray(skillIds) || !skillIds.every((id) => typeof id === "string")) {
+        throw new Error("Invalid ids selection: selected skill ids are unreadable");
+      }
+      return { mode: "ids", skillIds };
     }
     return { mode: manifest.selection_mode };
   }

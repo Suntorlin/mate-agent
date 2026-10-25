@@ -65,6 +65,21 @@ describe("deriveIdentity", () => {
     });
   });
 
+  it("derives the product principals from their asserted app actor", () => {
+    const appActor: ResolvedIdentity = {
+      provider: "app",
+      providerUserId: "uid-42",
+      canonicalUserId: "canon-9",
+      participantUserId: "app:uid-42",
+    };
+    expect(deriveIdentity({ kind: "service", service: "app", actor: appActor })).toEqual({
+      participantUserId: "app:uid-42",
+      canonicalUserId: "canon-9",
+      actor: appActor,
+      spawnSource: "app",
+    });
+  });
+
   it("derives nothing for sandbox and absent principals", () => {
     expect(deriveIdentity({ kind: "sandbox", sessionId: "s1" })).toBeNull();
     expect(deriveIdentity(undefined)).toBeNull();
@@ -102,7 +117,7 @@ describe("applyIdentityEnforcement — forbidden-field rejection", () => {
 
   it("rejects every spawning-route identity and credential field", () => {
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    for (const route of ["session-create", "automation-create"] as const) {
+    for (const route of ["session-create"] as const) {
       for (const field of [
         "userId",
         "spawnSource",
@@ -163,7 +178,6 @@ describe("applyIdentityEnforcement — requires-user rejection", () => {
   it.each([
     ["session-create", "A user identity is required to create a session"],
     ["ws-token", "A user identity is required for a websocket token"],
-    ["automation-create", "A user identity is required to create an automation"],
   ] as const)("403s %s when the principal derives no participant", async (route, message) => {
     const { rejection } = applyIdentityEnforcement(createCtx(ACTORLESS_BOT), route, {});
     expect(rejection).toBeDefined();

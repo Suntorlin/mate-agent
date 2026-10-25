@@ -3,7 +3,10 @@ import type { Logger } from "../../../logger";
 import type { RepositoryRef } from "@open-inspect/shared/types/repositories";
 import { getValidHarnessOrDefault, harnessIdSchema } from "@open-inspect/shared/harnesses";
 import { getValidModelOrDefault, isValidModel } from "@open-inspect/shared/models";
-import type { SpawnSource } from "@open-inspect/shared/types/sessions";
+import {
+  sessionPermissionModeSchema,
+  spawnSourceSchema,
+} from "@open-inspect/shared/types/sessions";
 import { normalizeSandboxSettings } from "../../../sandbox/settings";
 import { DEFAULT_BASE_BRANCH } from "../../../repos/default-branch";
 import { validateReasoningEffort } from "../../reasoning-effort";
@@ -17,15 +20,6 @@ const repositoryRefSchema = z.object({
   repoId: z.number(),
   baseBranch: z.string(),
 }) satisfies z.ZodType<RepositoryRef>;
-
-const spawnSourceSchema = z.enum([
-  "user",
-  "agent",
-  "automation",
-  "github-bot",
-  "linear-bot",
-  "slack-bot",
-] satisfies [SpawnSource, ...SpawnSource[]]);
 
 /**
  * Request body for the /internal/init endpoint.
@@ -51,6 +45,7 @@ const initRequestSchema = z.object({
   harness: harnessIdSchema.optional(),
   model: z.string().optional(),
   reasoningEffort: z.string().nullable().optional(),
+  permissionMode: sessionPermissionModeSchema.optional(),
   userId: z.string(),
   /** Canonical platform user ID for analytics attribution; null when unresolved. */
   canonicalUserId: z.string().nullable().optional(),
@@ -214,6 +209,7 @@ export class SessionInitHandler {
           ? JSON.stringify(normalizedSandboxSettings)
           : null,
         maxCostUsd: normalizedSandboxSettings?.maxSessionCostUsd ?? null,
+        permissionMode: body.permissionMode,
         environmentId: body.environmentId ?? null,
         createdAt: now,
         updatedAt: now,

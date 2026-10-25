@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { MIN_COMPATIBLE_RUNTIME_VERSION } from "../image-builds/model";
-import { MIN_REBUILD_RUNTIME_VERSION } from "../image-builds/rebuild-policy";
 import { OPENCOMPUTER_SANDBOX_VERSION } from "./opencomputer-rest-client";
 import { VERCEL_SANDBOX_VERSION } from "./providers/vercel/bootstrap";
 import {
@@ -18,7 +17,6 @@ describe("sandbox runtime manifest", () => {
     expect(VERCEL_SANDBOX_VERSION).toBe(SANDBOX_RUNTIME_VERSION);
     expect(SANDBOX_RUNTIME_VERSION).toMatch(new RegExp(`^v${SANDBOX_RUNTIME_GENERATION}`));
     expect(MIN_COMPATIBLE_RUNTIME_VERSION).toBe(MIN_COMPATIBLE_RUNTIME_GENERATION);
-    expect(MIN_REBUILD_RUNTIME_VERSION).toBe(MIN_REBUILD_RUNTIME_GENERATION);
     expect(MIN_SHUTDOWN_PROTOCOL_RUNTIME_GENERATION).toBeGreaterThanOrEqual(
       MIN_COMPATIBLE_RUNTIME_GENERATION
     );

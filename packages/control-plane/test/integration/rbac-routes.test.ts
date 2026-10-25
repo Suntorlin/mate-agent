@@ -107,7 +107,7 @@ describe("RBAC routes", () => {
       .run();
 
     const response = await serviceFetch("https://cp.test/me/authorization");
-    const personalRoute = await serviceFetch("https://cp.test/keyboard-shortcuts");
+    const personalRoute = await serviceFetch("https://cp.test/skill-profiles");
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ code: "assignment_required" });
@@ -259,18 +259,6 @@ describe("RBAC routes", () => {
       .bind(user!.id)
       .run();
 
-    const response = await serviceFetch("https://cp.test/secrets", {
-      method: "PUT",
-      body: JSON.stringify({ secrets: { SHOULD_NOT_WRITE: "secret" } }),
-      headers: { "Content-Type": "application/json" },
-    });
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      code: "permission_required",
-      permission: "global_secrets.manage",
-    });
-
     await env.DB.prepare(
       `INSERT INTO sessions (id, repo_owner, repo_name, status, created_at, updated_at)
        VALUES ('viewer-session', 'acme', 'app', 'completed', 1, 1)`
@@ -296,9 +284,6 @@ describe("RBAC routes", () => {
       ["/skill-profiles", "POST", "skill_profiles.manage_own", { name: "Denied", skillIds: [] }],
       ["/skill-profiles/profile-1", "PATCH", "skill_profiles.manage_own", { name: "Denied" }],
       ["/skill-profiles/profile-1", "DELETE", "skill_profiles.manage_own", undefined],
-      ["/model-provider-accounts", "GET", "provider_accounts.read", undefined],
-      ["/model-provider-account-defaults", "GET", "provider_accounts.read", undefined],
-      ["/model-provider-accounts/legacy-credentials", "GET", "provider_accounts.read", undefined],
     ] as const) {
       const denied = await serviceFetch(`https://cp.test${path}`, {
         method,
@@ -587,7 +572,7 @@ describe("RBAC routes", () => {
     await seedOwner();
     await env.DB.prepare("UPDATE users SET suspended_at = 1").run();
 
-    const response = await serviceFetch("https://cp.test/repos");
+    const response = await serviceFetch("https://cp.test/sessions");
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
       error: "Forbidden",

@@ -1,0 +1,22 @@
+.chat-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-pane--empty {
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.chat-pane--empty h2 {
+  font-size: var(--text-heading);
+  line-height: var(--leading-heading);
+}
+.chat-pane--empty p {
+  color: var(--social-fg-muted);
+}

@@ -4,6 +4,7 @@
  * Uses a mock SqlStorage to verify SQL operations are called correctly.
  */
 
+import { DEFAULT_SESSION_PERMISSION_MODE } from "@open-inspect/shared/types/sessions";
 import { DatabaseSync } from "node:sqlite";
 import { describe, it, expect, beforeEach } from "vitest";
 import { createNodeSqlStorage } from "../node/sqlite-storage";
@@ -25,7 +26,7 @@ function sessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     base_sha: null,
     current_sha: null,
     agent_session_id: null,
-    harness: "opencode",
+    harness: "claude",
     model: "claude-sonnet-4",
     reasoning_effort: null,
     status: "created",
@@ -38,6 +39,7 @@ function sessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     total_cost: 0,
     sandbox_settings: null,
     max_cost_usd: null,
+    permission_mode: "full_auto",
     budget_exhausted: 0,
     environment_id: null,
     created_at: 1000,
@@ -171,7 +173,7 @@ describe("SessionCoreRepository", () => {
         "repo",
         null,
         "main",
-        "opencode",
+        "claude",
         "claude-sonnet-4",
         null,
         "created",
@@ -183,6 +185,7 @@ describe("SessionCoreRepository", () => {
         null,
         null,
         null,
+        "full_auto",
         1000,
         2000,
       ]);
@@ -317,6 +320,61 @@ describe("SessionCoreRepository", () => {
       expect(mock.calls[0].query).toContain("max_cost_usd = ?");
       expect(mock.calls[0].query).toContain("budget_exhausted = ?");
       expect(mock.calls[0].params).toEqual([20, 0, 5000]);
+    });
+  });
+
+  describe("permission mode", () => {
+    it("writes the new mode against the single session row", () => {
+      repo.setPermissionMode("confirm_edits", 5000);
+
+      expect(mock.calls[0].query).toContain("permission_mode = ?");
+      expect(mock.calls[0].params).toEqual(["confirm_edits", 5000]);
+    });
+
+    it("defaults a session created without a mode, and keeps a changed mode across a repeated init", () => {
+      const base = {
+        sessionName: "test-session",
+        title: null,
+        repoOwner: null,
+        repoName: null,
+        model: "claude-sonnet-4",
+        status: "created" as const,
+        createdAt: 1000,
+        updatedAt: 1000,
+      };
+      const open = () => {
+        const db = new DatabaseSync(":memory:");
+        const storage = createNodeSqlStorage(db);
+        initSchema(storage.sql);
+        return { db, repo: new SessionCoreRepository(storage.sql, storage.transactionSync) };
+      };
+
+      const unset = open();
+      const chosen = open();
+      try {
+        unset.repo.upsertSession({ ...base, id: "sess-1" });
+        expect(unset.repo.getSession()).toMatchObject({
+          permission_mode: DEFAULT_SESSION_PERMISSION_MODE,
+        });
+
+        chosen.repo.upsertSession({ ...base, id: "sess-2", permissionMode: "auto_within_budget" });
+        expect(chosen.repo.getSession()).toMatchObject({ permission_mode: "auto_within_budget" });
+
+        chosen.repo.setPermissionMode("confirm_edits", 2000);
+        chosen.repo.upsertSession({
+          ...base,
+          id: "sess-2",
+          permissionMode: "full_auto",
+          updatedAt: 3000,
+        });
+        expect(chosen.repo.getSession()).toMatchObject({
+          permission_mode: "confirm_edits",
+          updated_at: 3000,
+        });
+      } finally {
+        unset.db.close();
+        chosen.db.close();
+      }
     });
   });
 

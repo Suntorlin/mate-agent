@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 from sandbox_runtime.push_operation import PushRequest, PushResult
 
 
@@ -26,7 +27,9 @@ async def drain_pushes(bridge: AgentBridge) -> None:
     ],
 )
 async def test_push_dispatch_emits_one_result(metadata, error):
-    bridge = AgentBridge("sandbox", "session", "http://localhost:8787", "token")
+    bridge = AgentBridge(
+        "sandbox", "session", "http://localhost:8787", "token", harness_id=HarnessId.OPENCODE
+    )
     bridge._send_event = AsyncMock()
     raw_spec = {"opaque": "passed unchanged"}
     result = PushResult(
@@ -69,7 +72,9 @@ async def test_push_dispatch_emits_one_result(metadata, error):
 
 @pytest.mark.parametrize("cmd", [{"type": "push"}, {"type": "push", "pushSpec": ["invalid"]}])
 async def test_push_passes_missing_or_invalid_spec_to_operation(cmd):
-    bridge = AgentBridge("sandbox", "session", "http://localhost:8787", "token")
+    bridge = AgentBridge(
+        "sandbox", "session", "http://localhost:8787", "token", harness_id=HarnessId.OPENCODE
+    )
     bridge._send_event = AsyncMock()
     with patch("sandbox_runtime.bridge.PushOperation") as operation:
         operation.return_value.execute = AsyncMock(

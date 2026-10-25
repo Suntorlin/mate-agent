@@ -1,6 +1,11 @@
 import { toolCallIdentityKey } from "@open-inspect/shared/types/sandbox-events";
 import type { SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
 import {
+  cardDismissedEventSchema,
+  type CardDismissedEvent,
+} from "@open-inspect/shared/types/session-cards";
+import type { MediaGenerationEvent } from "@open-inspect/shared/types/media-generation";
+import {
   eventTimelineCursorFromRow,
   type EventListCursor,
   type EventTimelineCursor,
@@ -84,6 +89,41 @@ export class EventRepository {
     return (result.rowsWritten ?? 0) > 0;
   }
 
+  /** One event by id, or null when there is none. */
+  getEventById(id: string): EventRow | null {
+    const rows = this.sql.exec(`SELECT * FROM events WHERE id = ? LIMIT 1`, id).toArray();
+    return rows.length > 0 ? parseEventRow(rows[0]) : null;
+  }
+
+  /**
+   * Cards closed since the agent was last given a prompt, oldest first: the
+   * `card_dismissed` events after the newest `user_message`. Dispatching a
+   * prompt records its `user_message`, which marks everything before it as
+   * told; a prompt whose send fails loses that row again, so its dismissals
+   * stay pending for the retry.
+   */
+  listCardDismissalsSinceLastPrompt(): CardDismissedEvent[] {
+    return this.sql
+      .exec(
+        `SELECT * FROM events
+         WHERE type = 'card_dismissed'
+           AND timeline_sequence > COALESCE(
+             (SELECT MAX(timeline_sequence) FROM events WHERE type = 'user_message'), 0)
+         ORDER BY timeline_sequence ASC`
+      )
+      .toArray()
+      .flatMap((row) => {
+        let data: unknown;
+        try {
+          data = JSON.parse(parseEventRow(row).data);
+        } catch {
+          return [];
+        }
+        const event = cardDismissedEventSchema.safeParse(data);
+        return event.success ? [event.data] : [];
+      });
+  }
+
   createContextCompactionEvent(data: CreateEventData & { messageId: string }): void {
     this.transactionSync(() => {
       this.sql.exec(
@@ -125,6 +165,46 @@ export class EventRepository {
     this.upsertEventByMessageId("token", messageId, event, createdAt, id, Boolean(event.partId));
   }
 
+  /**
+   * A message's stored text as SandboxStreamingEventHandler cut it: its
+   * ordinary token row, its parts, and how many compactions it went through.
+   */
+  listTurnText(messageId: string): {
+    text: string | null;
+    parts: Array<{ partId: string; content: string }>;
+    compactions: number;
+  } {
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM events
+         WHERE message_id = ? AND type IN ('token', 'context_compacted')
+         ORDER BY timeline_sequence ASC`,
+        messageId
+      )
+      .toArray()
+      .map(parseEventRow);
+    let text: string | null = null;
+    let compactions = 0;
+    const parts: Array<{ partId: string; content: string }> = [];
+    for (const row of rows) {
+      if (row.type === "context_compacted") {
+        compactions += 1;
+        continue;
+      }
+      let data: { content?: unknown; partId?: unknown };
+      try {
+        data = JSON.parse(row.data) as typeof data;
+      } catch {
+        continue;
+      }
+      if (typeof data.content !== "string") continue;
+      if (row.id === `token:${messageId}`) text = data.content;
+      else if (typeof data.partId === "string")
+        parts.push({ partId: data.partId, content: data.content });
+    }
+    return { text, parts, compactions };
+  }
+
   upsertToolCallEvent(messageId: string, event: ToolCallEvent, createdAt: number): void {
     const id = `tool_call:${toolCallIdentityKey(event)}`;
     this.sql.exec(
@@ -147,6 +227,45 @@ export class EventRepository {
     createdAt: number
   ): void {
     this.upsertEventByMessageId("execution_complete", messageId, event, createdAt);
+  }
+
+  /**
+   * A media generation's one row, created by its first report and rewritten by later ones. The
+   * row keeps its turn, time and timeline position, so the generation stays where it started.
+   */
+  upsertMediaGenerationEvent(id: string, event: MediaGenerationEvent, createdAt: number): void {
+    this.sql.exec(
+      `INSERT INTO events (id, type, data, message_id, created_at, timeline_sequence)
+       VALUES (?, ?, ?, ?, ?, ${NEXT_TIMELINE_SEQUENCE_SQL})
+       ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+      id,
+      event.type,
+      JSON.stringify(event),
+      event.messageId,
+      createdAt
+    );
+  }
+
+  /**
+   * USD the session's media generations hold or were charged: each generation's latest `costUsd`
+   * (held while it runs, net of refunds once it finished). A generation is one row, rewritten by
+   * every report of it, so a re-poll, a retry or a second reporter never counts it twice. A
+   * session has tens of them, so they are summed here.
+   */
+  sumMediaGenerationCostUsd(): number {
+    const rows = this.sql
+      .exec(`SELECT data FROM events WHERE type = 'media_generation'`)
+      .toArray() as Array<{ data: string }>;
+    let total = 0;
+    for (const row of rows) {
+      try {
+        const cost = (JSON.parse(row.data) as { costUsd?: unknown }).costUsd;
+        if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) total += cost;
+      } catch {
+        // A row that does not parse has no cost to count.
+      }
+    }
+    return total;
   }
 
   listEventPage(options: ListEventPageOptions): EventPage {

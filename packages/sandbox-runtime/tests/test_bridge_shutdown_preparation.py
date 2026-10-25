@@ -159,7 +159,7 @@ async def test_shutdown_override_wins_when_prompt_returns_success_during_cancell
 
     harness = RacingHarness()
     bridge = make_bridge(harness)
-    bridge._prepare_turn = AsyncMock(return_value=(harness, None))
+    bridge._prepare_turn = AsyncMock(return_value=(harness, None, None))
     bridge._persist_rotated_session_id = AsyncMock()
     await establish_generation(bridge)
 
@@ -637,3 +637,31 @@ async def test_late_generation_prepare_cannot_fence_current_generation() -> None
 def test_ready_advertises_shutdown_protocol_version() -> None:
     bridge = make_bridge(ShutdownPreparationHarness())
     assert bridge._build_ready_event()["preservationProtocolVersion"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_brings_the_workspace_copy_up_to_date_within_the_stop_deadline() -> None:
+    bridge = make_bridge(ShutdownPreparationHarness())
+    copier = MagicMock()
+    copier.save_before_shutdown = AsyncMock()
+    bridge.workspace_copy = copier
+    await establish_generation(bridge)
+
+    before = asyncio.get_running_loop().time()
+    await bridge._handle_command(prepare_command())
+
+    copier.save_before_shutdown.assert_awaited_once()
+    (deadline,) = copier.save_before_shutdown.await_args.args
+    # The command's stopByMs, five seconds out, as an event-loop time.
+    assert before + 4 < deadline < before + 6
+    prepared = bridge._send_event.await_args_list[-1].args[0]
+    assert prepared["type"] == "preservation_prepared"
+    assert prepared["executionStopped"] is True
+
+
+@pytest.mark.asyncio
+async def test_sessions_with_a_repository_keep_no_workspace_copies(monkeypatch) -> None:
+    monkeypatch.setenv("REPO_NAME", "web")
+    assert make_bridge(ShutdownPreparationHarness()).workspace_copy is None
+    monkeypatch.delenv("REPO_NAME")
+    assert make_bridge(ShutdownPreparationHarness()).workspace_copy is not None

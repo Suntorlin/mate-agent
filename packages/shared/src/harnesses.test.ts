@@ -15,9 +15,9 @@ import {
 import { VALID_MODELS } from "./models";
 
 describe("harness catalog", () => {
-  it("lists only harnesses the runtime can boot, built-in first", () => {
-    expect(HARNESS_IDS).toEqual(["opencode", "claude"]);
-    expect(DEFAULT_HARNESS).toBe("opencode");
+  it("lists only harnesses the runtime can boot, the default first", () => {
+    expect(HARNESS_IDS).toEqual(["claude", "opencode"]);
+    expect(DEFAULT_HARNESS).toBe("claude");
   });
 
   it("never brands the Claude harness as Claude Code", () => {
@@ -25,10 +25,10 @@ describe("harness catalog", () => {
   });
 
   it("resolves an absent or unknown harness to the default", () => {
-    expect(getValidHarnessOrDefault(undefined)).toBe("opencode");
-    expect(getValidHarnessOrDefault(null)).toBe("opencode");
-    expect(getValidHarnessOrDefault("codex")).toBe("opencode");
-    expect(getValidHarnessOrDefault("claude")).toBe("claude");
+    expect(getValidHarnessOrDefault(undefined)).toBe("claude");
+    expect(getValidHarnessOrDefault(null)).toBe("claude");
+    expect(getValidHarnessOrDefault("codex")).toBe("claude");
+    expect(getValidHarnessOrDefault("opencode")).toBe("opencode");
     expect(isValidHarness("claude")).toBe(true);
     expect(isValidHarness("codex")).toBe(false);
     expect(isValidHarness(42)).toBe(false);

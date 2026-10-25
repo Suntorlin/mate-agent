@@ -1,0 +1,26 @@
+# Python libraries for the media-edit skill, installed into the runtime venv by install/media-edit.sh.
+# Regenerate media-edit.txt after editing (constrained by runtime.txt so runtime packages keep
+# their versions; scenedetect's opencv-python is dropped for the headless build):
+#   uv pip compile packages/sandbox-images/locks/media-edit.in \
+#     --override packages/sandbox-images/locks/media-edit-overrides.txt \
+#     -c packages/sandbox-images/locks/runtime.txt --generate-hashes \
+#     --python-version 3.12 --python-platform x86_64-manylinux_2_28 \
+#     -o packages/sandbox-images/locks/media-edit.txt
+numpy==2.5.3
+scipy==1.18.1
+# ASR. PyAV 16 breaks faster-whisper 1.2.1.
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+av==15.1.0
+# OpenCV 5 removed Haar and moved APIs; 4.x has FaceDetectorYN (YuNet).
+opencv-python-headless==4.14.0.94
+scenedetect==0.7.1
+librosa==1.0.0
+soundfile==0.14.0
+pillow==12.3.0
+jieba==0.42.1
+python-docx==1.2.0
+# Attached spreadsheets and slides: .xlsx, .xls, .pptx.
+openpyxl==3.1.5
+xlrd==2.0.2
+python-pptx==1.0.2

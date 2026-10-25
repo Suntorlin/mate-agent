@@ -1,0 +1,39 @@
+# Single public entry for the local demo stack: the gateway paths go to the LLM gateway, signed object
+# store requests to the S3 store, everything else (HTTP + WebSocket) to the control plane.
+# flush_interval -1 keeps SSE streams unbuffered.
+#
+# Signed object URLs: the control plane signs them against this origin (OBJECT_STORE_PUBLIC_ENDPOINT,
+# set to the tunnel URL by deploy/compose/vercel.yml), path style in the media bucket
+# (OBJECT_STORE_BUCKET=media), so every one starts with /media/<key prefix>:
+#   /media/sessions/*  sandboxes upload file artifacts, large videos and workspace copies; browsers
+#                      and sandboxes download them
+#   /media/users/*     browsers upload composer and library files in parts (the bucket's CORS rule,
+#                      OBJECT_STORE_CORS_ORIGINS, admits the web origin); sandboxes read them into
+#                      /workspace/inputs and through `library`
+# Only these key prefixes are published, not the bucket root or the backup bucket, and no control
+# plane route starts with /media (packages/control-plane/src/storage/edge-object-paths.test.ts checks
+# both). Every request there must carry a valid signature; the Host header is passed through
+# unchanged because it is signed. Parts (64 MiB from sandboxes, 16 MB from browsers) stay under
+# Cloudflare's 100 MB request body limit.
+{
+	auto_https off
+	admin off
+}
+:8799 {
+	@gateway path /llm /llm/*
+	reverse_proxy @gateway host.docker.internal:8790 {
+		flush_interval -1
+	}
+	@objects path /media/sessions/* /media/users/*
+	reverse_proxy @objects host.docker.internal:9000 {
+		flush_interval -1
+		request_buffers 0
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+	reverse_proxy host.docker.internal:8787 {
+		flush_interval -1
+	}
+}

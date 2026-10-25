@@ -5,8 +5,9 @@ This package contains the code that runs inside sandboxes regardless of provider
 - Bridge: WebSocket/SSE communication with the control plane
 - Entrypoint: Supervisor process managing sandbox lifecycle
 - Auth: GitHub App and internal HMAC authentication
-- Plugins: OpenCode plugins (codex auth proxy)
-- Tools: OpenCode custom tools (PR creation, task management)
+- Harness: the Claude agent (claude-agent-sdk) and its in-process tools, or OpenCode
+- Plugins: OpenCode plugins (ChatGPT and SuperGrok auth, inspect)
+- Tools: OpenCode custom tools (child sessions, Slack)
 """
 
 from .types import (

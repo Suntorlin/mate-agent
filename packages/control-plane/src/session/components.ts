@@ -21,6 +21,10 @@
  * Deployment-time validation is the gate for configuration, not the runtime.
  */
 
+import { createInlineDispatch } from "../inline/create";
+import { appSandboxMcpServer, readAppConfig, sessionAppUser } from "../app/product";
+import { createJevEffortChooser } from "./auto-reasoning-effort";
+import { latestWorkspaceCopyUrl } from "../storage/workspace-copies";
 import { resolveAppName } from "@open-inspect/shared/app-name";
 import { DEFAULT_MODEL } from "@open-inspect/shared/models";
 import { sandboxPromptBlockReason } from "@open-inspect/shared/types/sandbox-shutdown";
@@ -47,7 +51,10 @@ import {
   type SlackAgentNotifyLookup,
   type SandboxShutdownLifecycle,
 } from "../sandbox/lifecycle/manager";
-import { resolveBootBudgetTimeoutMs } from "../sandbox/lifecycle/decisions";
+import {
+  resolveBootBudgetTimeoutMs,
+  resolveInactivityTimeoutMs,
+} from "../sandbox/lifecycle/decisions";
 import { McpServerStore } from "../db/mcp-servers";
 import { UserStore } from "../db/user-store";
 import { IntegrationSettingsStore, resolveSlackSettings } from "../db/integration-settings";
@@ -95,14 +102,21 @@ import { ParticipantService } from "./participant-service";
 import { resolveCurrentGitHubAccessToken } from "./identity";
 import { CallbackNotificationService } from "./callback-notification-service";
 import { UserEnvResolver } from "./user-env-resolver";
+import { readGatewayConfig } from "../gateway/config";
+import { buildGatewaySandboxEnv } from "../gateway/sandbox-env";
+import { createGatewayTurnCostSource } from "./turn-cost";
+import { createGatewayRunningTurnSpend } from "./running-turn-spend";
+import { RunningTurnBudgetWatch } from "./running-turn-budget";
+import { queueUserMemoryExtraction } from "../memory/extract";
+import { UserMemoryService } from "../memory/service";
+import { UserMemoryStore } from "../memory/store";
 import { resolveSessionRepoId } from "./repo-id-resolution";
-import { Scheduler } from "../scheduler/scheduler";
 import { PresenceService } from "./presence-service";
 import { SessionMessageQueue } from "./message-queue";
 import { SessionBudgetService } from "./budget-service";
 import { ExecutionStopCoordinator } from "./execution-stop-coordinator";
 import { MessageFailureService } from "./message-failure-service";
-import { SandboxShutdownCoordinator } from "./sandbox-shutdown";
+import { resolveLifetimeExtensionStepMs, SandboxShutdownCoordinator } from "./sandbox-shutdown";
 import { SandboxShutdownRepository } from "./sandbox-shutdown-repository";
 import { SandboxArtifactEventHandler } from "./sandbox-events/artifact.handler";
 import { SandboxExecutionEventHandler } from "./sandbox-events/execution.handler";
@@ -117,12 +131,17 @@ import { AutofixHandler } from "./http/handlers/autofix.handler";
 import { MessagesHandler } from "./http/handlers/messages.handler";
 import { ChildSessionsHandler } from "./http/handlers/child-sessions.handler";
 import { ChildSummaryHandler } from "./http/handlers/child-summary.handler";
+import { UserMemoryEventsHandler } from "./http/handlers/memory-events.handler";
+import { QuestionsHandler } from "./http/handlers/questions.handler";
+import { MediaGenerationsHandler } from "./http/handlers/media-generations.handler";
 import { SessionInitHandler } from "./http/handlers/session-init.handler";
 import { SandboxHandler } from "./http/handlers/sandbox.handler";
 import { AttachmentsHandler } from "./http/handlers/attachments.handler";
 import { WsTokenHandler } from "./http/handlers/ws-token.handler";
 import { SessionLifecycleHandler } from "./http/handlers/session-lifecycle.handler";
 import { SessionBudgetHandler } from "./http/handlers/session-budget.handler";
+import { SessionPermissionModeHandler } from "./http/handlers/session-permission-mode.handler";
+import { CardDismissHandler } from "./http/handlers/card-dismiss.handler";
 import { PullRequestHandler } from "./http/handlers/pull-request.handler";
 import { ParticipantsHandler } from "./http/handlers/participants.handler";
 import { MessageService } from "./services/message.service";
@@ -343,6 +362,18 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     repoSecretsEncryptionKey,
     secretsCapEnforcement: env.SECRETS_CAP_ENFORCEMENT,
     log,
+    resolveGatewayEnv: async (sessionId) => {
+      const gateway = readGatewayConfig(env);
+      if (!gateway) return null;
+      const owner = (await sessionIndexStore.get(sessionId))?.userId;
+      if (!owner) return null;
+      return buildGatewaySandboxEnv(gateway, {
+        userId: owner,
+        sessionId,
+        nowMs: Date.now(),
+        appUserId: await sessionAppUser(db, sessionId),
+      });
+    },
   });
 
   const terminalMessageProjection = new SessionTerminalMessageProjection({
@@ -387,12 +418,10 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
         : undefined,
   });
 
-  const scheduler = new Scheduler(db, env, backgroundTasks);
   const callbackService = new CallbackNotificationService({
     repository: sessionCoreRepository,
     messageRepository,
     env,
-    completeAutomationRun: (completion) => scheduler.runComplete(completion),
     log,
     getSessionId: () => resolvePublicSessionId(sessionCoreRepository.getSession(), durableObjectId),
   });
@@ -418,6 +447,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     statusService,
     backgroundTasks,
     sessionIndexStore,
+    earliestPrompts: () => messageRepository.getEarliestMessageContents(),
     durableObjectId,
     now: () => Date.now(),
   });
@@ -463,6 +493,11 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     onLifecycleChange: () => messageQueue.processMessageQueue(),
     reconcileStatusFromMessages: () => statusService.reconcileFromMessageState(),
     retireAccess: () => lifecycleManager.retireShutdownAccess(),
+    // "In use" means what the inactivity watchdog would not yet call idle.
+    lifetimeExtension: {
+      stepMs: resolveLifetimeExtensionStepMs(env.SANDBOX_LIFETIME_EXTENSION_MS),
+      activityWindowMs: resolveInactivityTimeoutMs(env.SANDBOX_INACTIVITY_TIMEOUT_MS),
+    },
   });
   const lifecycleManager = createLifecycleManager({
     provider: sandboxProvider,
@@ -495,6 +530,33 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     (): void => messageQueue.broadcastPromptQueue(),
     (): Promise<void> => messageQueue.processMessageQueue()
   );
+  // Prompts that need no computer run in the control plane (src/inline); with it on, sandboxes
+  // start only when a prompt needs one, not ahead on create or typing.
+  const inline = createInlineDispatch({
+    env,
+    log,
+    messageRepository,
+    emit: (event) => sandboxEventProcessor.processSandboxEvent(event),
+    sessionId: () => {
+      const current = sessionCoreRepository.getSession();
+      return current ? resolvePublicSessionId(current, durableObjectId) : null;
+    },
+    // The same block a sandbox's agent reads at session start, so short answers know the user too.
+    memory: async () => {
+      const current = sessionCoreRepository.getSession();
+      if (!current) return null;
+      const sessionId = resolvePublicSessionId(current, durableObjectId);
+      const owner = (await sessionIndexStore.get(sessionId))?.userId;
+      if (!owner) return null;
+      const service = new UserMemoryService({
+        store: new UserMemoryStore(db),
+        generateId: () => generateId(),
+      });
+      const context = await service.context(owner);
+      // An empty memory's line is about recording with `mem`, which an inline turn cannot do.
+      return context.entryIds.length > 0 ? context.text : null;
+    },
+  });
   const messageQueue: SessionMessageQueue = new SessionMessageQueue(
     backgroundTasks,
     log,
@@ -516,7 +578,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     executionStop,
     getExecutionTimeoutMs,
     () => lifecycleManager.mayProcessQueuedWork(),
-    () => sandboxPromptBlockReason(lifecycleManager.shutdownSnapshot())
+    () => sandboxPromptBlockReason(lifecycleManager.shutdownSnapshot()),
+    createJevEffortChooser({ apiKey: env.JEV_API_KEY?.trim() || undefined, log }),
+    inline
   );
 
   // Tier 7 — services over the queue and lifecycle.
@@ -526,7 +590,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     send: (ws, msg) => wsManager.send(ws, msg),
     getSandboxSocket: () => wsManager.getSandboxSocket(),
     isSpawning: () => lifecycleManager.isSpawning(),
-    spawnSandbox: () => lifecycleManager.spawnSandbox(),
+    spawnSandbox: () => (inline ? Promise.resolve() : lifecycleManager.spawnSandbox()),
+    backgroundTasks,
     log,
   });
 
@@ -541,6 +606,10 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     transaction,
   });
   const autofixHandler = new AutofixHandler(messageQueue);
+  // The product's media generations are priced in USD by their own records (the media's one
+  // ledger), apart from the model cost the gateway's ledger gives, so counting the one in the
+  // other's total never counts anything twice.
+  const mediaCostUsd = () => eventRepository.sumMediaGenerationCostUsd();
   const budgetService = new SessionBudgetService(
     sessionCoreRepository,
     messageRepository,
@@ -548,7 +617,8 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     messenger,
     executionStop,
     () => messageQueue.processMessageQueue(),
-    generateId
+    generateId,
+    mediaCostUsd
   );
 
   const updateLastActivity = (timestamp: number) => lifecycleManager.updateLastActivity(timestamp);
@@ -585,7 +655,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     transaction,
     (title) => {
       titleService.applySessionTitleUpdate(title, { onlyIfUnset: true });
-    }
+    },
+    (messageId) =>
+      queueUserMemoryExtraction(env, () => sessionIndexStore.get(getPublicSessionId()), messageId)
   );
   const runtimeEventHandler = new SandboxRuntimeEventHandler(
     sessionCoreRepository,
@@ -609,6 +681,22 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
   const pushService = new SandboxPushService(log, wsManager, () =>
     lifecycleManager.pushAdmissionDecision()
   );
+  // A capped session's running turn is held to the cap by the gateway's ledger, not only by the
+  // cost the runtime reports when the turn ends.
+  const runningTurnSpend = createGatewayRunningTurnSpend(env, {
+    getSessionId: getPublicSessionId,
+    log,
+  });
+  const runningTurnBudget = runningTurnSpend
+    ? new RunningTurnBudgetWatch({
+        getSession: () => sessionCoreRepository.getSession(),
+        getRunningTurn: () => messageRepository.getRunningTurnCost(),
+        spend: runningTurnSpend,
+        budget: budgetService,
+        backgroundTasks,
+        log,
+      })
+    : undefined;
   const sandboxEventProcessor = new SessionSandboxEventProcessor(
     log,
     messageRepository,
@@ -621,7 +709,9 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     {
       generationReady: (event) => lifecycleManager.onShutdownGenerationReady(event),
       prepared: (event) => lifecycleManager.onShutdownPrepared(event),
-    }
+    },
+    createGatewayTurnCostSource(env, { getSessionId: getPublicSessionId, log }) ?? undefined,
+    runningTurnBudget
   );
 
   const alarmHandler = createAlarmHandler({
@@ -677,6 +767,22 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     sessionCoreRepository,
     messenger,
     messageService
+  );
+  const userMemoryEventsHandler = new UserMemoryEventsHandler(messenger);
+  const questionsHandler = new QuestionsHandler(
+    eventRepository,
+    messageRepository,
+    messenger,
+    messageService,
+    generateId
+  );
+  const mediaGenerationsHandler = new MediaGenerationsHandler(
+    eventRepository,
+    messageRepository,
+    artifactRepository,
+    messenger,
+    Date.now,
+    (messageId, now) => budgetService.observeMediaSpend(messageId, now)
   );
   const childSummaryHandler = new ChildSummaryHandler(
     sessionCoreRepository,
@@ -736,10 +842,12 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     sandboxRepository,
     participantRepository,
     durableObjectId,
-    () =>
+    () => {
+      if (inline) return;
       backgroundTasks.submit(() => lifecycleManager.warmSandbox(), {
         name: "sandbox.warm",
-      }),
+      });
+    },
     (token) => encryptToken(token, tokenEncryptionKey),
     generateId
   );
@@ -753,10 +861,23 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     durableObjectId,
     async () => {
       await statusService.cancel(() => messageQueue.cancelExecution());
-    }
+    },
+    backgroundTasks
   );
-  const sessionBudgetHandler = new SessionBudgetHandler(sessionCoreRepository, budgetService, () =>
+  const sessionBudgetHandler = new SessionBudgetHandler(
+    sessionCoreRepository,
+    budgetService,
+    () => Date.now(),
+    messageRepository
+  );
+  const sessionPermissionModeHandler = new SessionPermissionModeHandler(sessionCoreRepository, () =>
     Date.now()
+  );
+  const cardDismissHandler = new CardDismissHandler(
+    sessionCoreRepository,
+    eventRepository,
+    messenger,
+    () => Date.now()
   );
 
   const prCreationClaims = new PullRequestCreationClaims();
@@ -805,6 +926,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     db,
     durableObjectId,
     transaction,
+    getMediaCostUsd: mediaCostUsd,
     log,
   });
 
@@ -829,7 +951,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     snapshotReader,
     schedulePullRequestRefresh,
     scmProviderName,
-    resolveSessionViewer: async (userId) => {
+    resolveSessionViewer: async (userId, ownSessionsOnly) => {
       try {
         const mode = parseTeamsEnforcementMode(env.TEAMS_ENFORCEMENT);
         const [authorization, session] = await Promise.all([
@@ -856,6 +978,7 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
             permissions: authorization.permissions,
             suspended: false,
             memberships,
+            ...(ownSessionsOnly ? { ownSessionsOnly } : {}),
           },
           row: {
             id: session.id,
@@ -909,7 +1032,17 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     wsToken: (request, _url, requestLog) => wsTokenHandler.generateWsToken(request, requestLog),
     updateTitle: (request) => sessionLifecycleHandler.updateTitle(request),
     budget: (request) => sessionBudgetHandler.update(request),
+    permissionMode: (request) => sessionPermissionModeHandler.update(request),
+    dismissCard: (request) => cardDismissHandler.dismiss(request),
+    spend: () => sessionBudgetHandler.read(),
     archive: () => sessionLifecycleHandler.archive(),
+    // The workflow executor's liveness ping: renews inactivity only while
+    // the runner thread is alive, so a crashed run still gets reclaimed.
+    workflowActivity: () => {
+      lifecycleManager.updateLastActivity(Date.now());
+      void lifecycleManager.scheduleInactivityCheck();
+      return Response.json({ ok: true });
+    },
     unarchive: () => sessionLifecycleHandler.unarchive(),
     expireDraft: () => sessionLifecycleHandler.expireDraft(),
     verifySandboxToken: (request, _url, requestLog) =>
@@ -925,6 +1058,10 @@ export function createSessionRuntime(platform: SessionPlatform, env: Env): Sessi
     parentPrompt: (request) => childSessionsHandler.parentPrompt(request),
     cancel: () => sessionLifecycleHandler.cancel(),
     childSessionUpdate: (request) => childSessionsHandler.childSessionUpdate(request),
+    userMemoryEvent: (request) => userMemoryEventsHandler.broadcast(request),
+    question: (request) => questionsHandler.ask(request),
+    questionAnswer: (request, _url, requestLog) => questionsHandler.answer(request, requestLog),
+    mediaGeneration: (request) => mediaGenerationsHandler.report(request),
     diffState: () => diffsHandler.state(),
     diffStore: (request) => diffsHandler.storeBundle(request),
     diffFailure: (request) => diffsHandler.recordFailure(request),
@@ -1088,8 +1225,15 @@ function createLifecycleManager(deps: LifecycleManagerDeps): SandboxLifecycleMan
     `https://open-inspect-control-plane.${env.CF_ACCOUNT_ID || "workers"}.workers.dev`;
 
   const mcpStore = new McpServerStore(db, repoSecretsEncryptionKey);
+  // A product's user also gets the product's MCP server (its tools), as the inline runtime does.
+  const appConfig = readAppConfig(env);
   const mcpServerLookup: McpServerLookup = {
-    getDecryptedForSession: (repositories) => mcpStore.getDecryptedForSession(repositories),
+    getDecryptedForSession: async (repositories) => {
+      const servers = await mcpStore.getDecryptedForSession(repositories);
+      if (!appConfig) return servers;
+      const owner = await sessionAppUser(db, deps.getSessionId());
+      return owner ? [...servers, await appSandboxMcpServer(appConfig, owner)] : servers;
+    },
   };
 
   // Session-scoped gate: resolved from the primary member (the scalar mirror
@@ -1143,13 +1287,16 @@ function createLifecycleManager(deps: LifecycleManagerDeps): SandboxLifecycleMan
     getSessionId,
     inactivity: {
       ...DEFAULT_LIFECYCLE_CONFIG.inactivity,
-      timeoutMs: parseInt(env.SANDBOX_INACTIVITY_TIMEOUT_MS || "600000", 10),
+      timeoutMs: resolveInactivityTimeoutMs(env.SANDBOX_INACTIVITY_TIMEOUT_MS),
     },
     bootBudget: { timeoutMs: bootBudget.timeoutMs },
     mcpServerLookup,
     slackAgentNotifyLookup,
     sandboxDashboardUrlBuilder,
     recordWarning: deps.recordWarning,
+    resolveWorkspaceCopyUrl: env.MEDIA_DIRECT
+      ? () => latestWorkspaceCopyUrl(env.MEDIA_DIRECT!, getSessionId())
+      : undefined,
   };
 
   // The image lookup exists only for providers that support prebuilt images,

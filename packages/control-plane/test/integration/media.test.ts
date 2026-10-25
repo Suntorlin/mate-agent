@@ -324,6 +324,72 @@ describe("session media routes", () => {
     expect(Array.from(new Uint8Array(await response.arrayBuffer()))).toEqual(Array.from(MP4_BYTES));
   });
 
+  it("uploads a page and serves it as an isolated document", async () => {
+    const sessionName = `media-page-${Date.now()}`;
+    const token = "sandbox-page-token";
+    const { stub } = await initNamedSession(sessionName);
+    await seedSandboxAuthHash(stub, { authToken: token, sandboxId: "sandbox-1" });
+    await seedProcessingMessage(stub, "msg-1");
+
+    const html = "<!doctype html><title>板</title><h1>Storyboard</h1><script>1</script>";
+    const formData = new FormData();
+    formData.append("file", new File([html], "storyboard.html", { type: "text/html" }));
+    formData.append("artifactType", "page");
+    formData.append("caption", "Storyboard");
+    const uploadResponse = await SELF.fetch(`https://test.local/sessions/${sessionName}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    expect(uploadResponse.status).toBe(201);
+    const body = await uploadResponse.json<{ artifactId: string; objectKey: string }>();
+    expect(body.objectKey).toBe(`sessions/${sessionName}/media/${body.artifactId}.html`);
+
+    const artifacts = await queryDO<{ type: string; metadata: string }>(
+      stub,
+      "SELECT type, metadata FROM artifacts WHERE id = ?",
+      body.artifactId
+    );
+    expect(artifacts[0].type).toBe("page");
+    expect(JSON.parse(artifacts[0].metadata)).toEqual({
+      objectKey: body.objectKey,
+      mimeType: "text/html",
+      sizeBytes: new TextEncoder().encode(html).byteLength,
+      caption: "Storyboard",
+    });
+
+    const response = await serviceFetch(
+      `https://test.local/sessions/${sessionName}/media/${body.artifactId}`
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    const csp = response.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toMatch(/^sandbox allow-scripts /);
+    expect(csp.split("; ")[0].split(" ")).toContain("allow-downloads");
+    expect(csp).not.toContain("allow-same-origin");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(await response.text()).toBe(html);
+  });
+
+  it("rejects binary page uploads", async () => {
+    const sessionName = `media-page-binary-${Date.now()}`;
+    const token = "sandbox-page-binary-token";
+    const { stub } = await initNamedSession(sessionName);
+    await seedSandboxAuthHash(stub, { authToken: token, sandboxId: "sandbox-1" });
+    await seedProcessingMessage(stub, "msg-1");
+
+    const formData = new FormData();
+    formData.append("file", new File([PNG_SIGNATURE], "page.html", { type: "text/html" }));
+    formData.append("artifactType", "page");
+    const response = await SELF.fetch(`https://test.local/sessions/${sessionName}/media`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Uploaded page must be UTF-8 HTML" });
+  });
+
   it("streams byte ranges for video artifacts", async () => {
     const sessionName = `media-video-range-${Date.now()}`;
     const token = "sandbox-video-range-token";
@@ -477,5 +543,44 @@ describe("session media routes", () => {
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "Media artifact not found" });
+  });
+  it("answers file uploads with 501 where the store cannot be reached directly", async () => {
+    const sessionName = `media-direct-${Date.now()}`;
+    const { stub } = await initNamedSession(sessionName);
+    await seedSandboxAuthHash(stub, { authToken: "sandbox-direct-token", sandboxId: "sandbox-1" });
+
+    const upload = await SELF.fetch(`https://test.local/sessions/${sessionName}/uploads`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer sandbox-direct-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ artifactType: "file", filename: "cut.fcpxml", sizeBytes: 10 }),
+    });
+    expect(upload.status).toBe(501);
+
+    const copy = await SELF.fetch(`https://test.local/sessions/${sessionName}/workspace-copies`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer sandbox-direct-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sizeBytes: 10, extension: "tar.gz" }),
+    });
+    expect(copy.status).toBe(501);
+  });
+
+  it("takes workspace copies only from the session's own sandbox", async () => {
+    const sessionName = `media-copy-auth-${Date.now()}`;
+    await initNamedSession(sessionName);
+    const response = await SELF.fetch(
+      `https://test.local/sessions/${sessionName}/workspace-copies`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sizeBytes: 10, extension: "tar.gz" }),
+      }
+    );
+    expect(response.status).toBe(401);
   });
 });

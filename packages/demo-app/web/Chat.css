@@ -1,0 +1,138 @@
+.chat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.timeline {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  mask-image: linear-gradient(to bottom, black calc(100% - 40px), transparent);
+}
+
+.timeline__inner {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+}
+
+@media (max-width: 767px) {
+  .timeline__inner {
+    padding: 16px 16px 48px;
+  }
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 12vh;
+}
+.empty h2 {
+  font-size: var(--text-heading);
+  line-height: var(--leading-heading);
+}
+.empty p {
+  color: var(--social-fg-muted);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.turn__prompt {
+  align-self: flex-end;
+  max-width: 80%;
+  padding: 10px 16px;
+  border-radius: var(--radius-card) var(--radius-card) var(--radius-tag) var(--radius-card);
+  background: var(--social-muted);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.reply {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  color: var(--social-fg-muted);
+  list-style: none;
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.step__count {
+  color: var(--social-fg-subtle);
+}
+
+.turn__thinking {
+  color: var(--social-fg-muted);
+}
+
+.turn__meta {
+  color: var(--social-fg-subtle);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+
+.deliverables {
+  width: 100%;
+  max-width: 560px;
+}
+
+.composer-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 16px 16px;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--social-border);
+  border-radius: var(--radius-card);
+  background: var(--social-bar-bg);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-card);
+}
+
+.composer__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.composer__actions {
+  display: flex;
+  gap: 8px;
+}

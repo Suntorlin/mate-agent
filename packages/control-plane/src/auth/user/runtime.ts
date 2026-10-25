@@ -69,7 +69,10 @@ interface OAuthCredentials {
   readonly clientSecret: string;
 }
 
-type ProviderCredentials = Readonly<Record<SignInProvider, OAuthCredentials | null>>;
+interface ProviderCredentials {
+  readonly github: OAuthCredentials | null;
+  readonly google: OAuthCredentials | null;
+}
 
 interface NormalizedUserAuthConfig {
   readonly publicWebOrigin: string;
@@ -80,7 +83,7 @@ interface NormalizedUserAuthConfig {
 }
 
 function normalizeProviderCredentials(
-  id: SignInProvider,
+  id: "github" | "google",
   clientIdValue: string | undefined,
   clientSecretValue: string | undefined
 ): OAuthCredentials | null {
@@ -184,11 +187,11 @@ function createGoogleAuthConfig(
   };
 }
 
-function withClaim(
+function withClaim<T extends { readonly getUserInfo: SocialProviderAuthConfig["getUserInfo"] }>(
   provider: SignInProvider,
   claim: SignInClaim,
-  config: SocialProviderAuthConfig | undefined
-): SocialProviderAuthConfig | undefined {
+  config: T | undefined
+): T | undefined {
   if (!config) return undefined;
   return {
     ...config,

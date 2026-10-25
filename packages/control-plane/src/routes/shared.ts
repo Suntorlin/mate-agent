@@ -9,7 +9,6 @@ import type { Env } from "../types";
 import type { Logger } from "../logger";
 import type { PermissionId } from "@open-inspect/shared/rbac";
 import type { ServiceName } from "@open-inspect/shared/service-auth";
-import type { TeamCapabilities } from "@open-inspect/shared/types/team-access";
 import type { SessionAction } from "@open-inspect/shared";
 import {
   createSourceControlProviderFromEnv,
@@ -19,7 +18,7 @@ import {
   type SourceControlProviderName,
 } from "../source-control";
 
-export type { AutomationRouteAdmission, RequestContext } from "../http/request-context";
+export type { RequestContext } from "../http/request-context";
 export { error, HttpError, json } from "../http/responses";
 
 /** Profile data a route can extract from an already verified service request. */
@@ -41,12 +40,6 @@ export type ServiceActorClaimsResult =
 /** One permission or resource-admission requirement for an active user. */
 export type RouteAuthorizationRequirement =
   | { kind: "permission"; permission: PermissionId }
-  | {
-      kind: "automation";
-      operation: "manage" | "trigger";
-      automationIdParam: string;
-    }
-  | { kind: "team"; teamIdParam: string; need: keyof TeamCapabilities | "read" }
   | { kind: "session"; sessionIdParam: string; action: SessionAction };
 
 type BotServiceName = Exclude<ServiceName, "web">;
@@ -69,7 +62,12 @@ type ServiceAuthorization =
 export type RouteAuthorization =
   | { kind: "none"; auditAllowed: false }
   | { kind: "authenticated"; auditAllowed: false }
-  | { kind: "active-self"; auditAllowed: boolean }
+  | {
+      kind: "active-self";
+      /** Services that may act for the user their request names; none by default. */
+      actingServices: readonly BotServiceName[];
+      auditAllowed: boolean;
+    }
   | { kind: "active-global"; service: ServiceAuthorization; auditAllowed: boolean }
   | {
       kind: "active-user";
@@ -101,13 +99,28 @@ export const AUTHENTICATED_USER = {
   auditAllowed: DEFAULT_AUDIT_ALLOWED,
 } as const satisfies RouteAuthorization;
 /** Policy requiring an active user to access their own account resource. */
-export function activeSelf(options?: { auditAllowed?: boolean }): RouteAuthorization {
+export function activeSelf(options?: {
+  auditAllowed?: boolean;
+  actingServices?: readonly BotServiceName[];
+}): RouteAuthorization {
   return {
     kind: "active-self",
+    actingServices: options?.actingServices ?? [],
     auditAllowed: options?.auditAllowed ?? DEFAULT_AUDIT_ALLOWED,
   };
 }
 export const ACTIVE_SELF = activeSelf();
+
+/**
+ * A product's backend signs in its users itself and relays each one as the request's actor, so a
+ * person's own memory, files and skills are theirs through it as well.
+ */
+const APP_USER_SERVICES = ["app"] as const satisfies readonly BotServiceName[];
+
+/** `activeSelf` for the user's own resources, also reachable through the product's backend. */
+export function appUserSelf(options?: { auditAllowed?: boolean }): RouteAuthorization {
+  return activeSelf({ ...options, actingServices: APP_USER_SERVICES });
+}
 
 const AUDITED_ALLOWED_PERMISSIONS = new Set<PermissionId>([
   "automations.create",
@@ -168,31 +181,6 @@ export function requirePermission(
       options?.service === "deny"
         ? { kind: "deny" }
         : { kind: "actor", actorlessGrants: options?.actorlessGrants },
-  };
-}
-
-/** Require admission to manage or trigger the automation identified by a path parameter. */
-export function requireAutomation(
-  operation: "manage" | "trigger",
-  automationIdParam = "id"
-): RouteAuthorization {
-  return {
-    kind: "active-user",
-    allOf: [{ kind: "automation", operation, automationIdParam }],
-    service: { kind: "deny" },
-    auditAllowed: true,
-  };
-}
-
-export function requireTeam(
-  need: keyof TeamCapabilities | "read",
-  teamIdParam = "id"
-): RouteAuthorization {
-  return {
-    kind: "active-user",
-    allOf: [{ kind: "team", teamIdParam, need }],
-    service: { kind: "deny" },
-    auditAllowed: true,
   };
 }
 
@@ -285,6 +273,19 @@ export type RouteContext<Authentication extends RouteAuthentication> = RequestCo
 };
 
 export type UserRouteContext = RouteContext<{ kind: "user" }>;
+export type UserOrServiceRouteContext = RouteContext<{ kind: "user-or-service" }>;
+
+/**
+ * The account a request acts on: the signed-in user, or the user a service
+ * acts for. Admission resolves a service's actor before any handler runs, so
+ * a request without one never reaches a route that names an account.
+ */
+export function actingUserId(ctx: UserOrServiceRouteContext): string {
+  const userId =
+    ctx.principal.kind === "user" ? ctx.principal.userId : ctx.principal.actor?.canonicalUserId;
+  if (!userId) throw new HttpError("Forbidden", 403);
+  return userId;
+}
 export type SandboxRouteContext = RouteContext<{ kind: "sandbox" } & SandboxSessionBinding>;
 
 export interface RoutePolicy {

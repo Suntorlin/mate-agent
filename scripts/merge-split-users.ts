@@ -1,7 +1,7 @@
 /**
  * Merge a split canonical user pair (issue #1290). Converges the loser user's
  * identities (which are also the Better Auth accounts post-consolidation),
- * coding and browser sessions, automations, SCM tokens, and read states onto
+ * coding and browser sessions, SCM tokens, and read states onto
  * the survivor, then deletes the emptied loser row.
  *
  * Survivor selection: normally the row that owns history and attribution;

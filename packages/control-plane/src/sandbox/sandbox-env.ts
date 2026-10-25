@@ -22,9 +22,9 @@ import { resolveSandboxPortPlan, type SandboxPortPlan } from "./providers/port-r
  * never added the key. This module is the single source of truth for the shape
  * so providers serialize it instead of reassembling ad-hoc objects.
  *
- * The runtime reads `session_id`, `branch`, `provider`, `model`, and
- * `mcp_servers` from this payload; `repo_owner` / `repo_name` are included to
- * mirror the full contract.
+ * The runtime reads `session_id`, `branch`, `provider`, `model`,
+ * `reasoning_effort` and `mcp_servers` from this payload; `repo_owner` /
+ * `repo_name` are included to mirror the full contract.
  */
 
 /** Snake_case wire twin of {@link SessionRepositoryInfo} (runtime SessionRepositoryConfig). */
@@ -44,6 +44,11 @@ export interface SessionConfigPayload {
   harness: HarnessId;
   provider: string;
   model: string;
+  /**
+   * The effort a prompt runs at unless it picks one, so the runtime can start
+   * its agent before the first prompt arrives. Omitted when unknown.
+   */
+  reasoning_effort?: string;
   /** Omitted from the serialized payload when undefined. */
   mcp_servers?: McpServerConfig[];
   /** Omitted from the serialized payload when undefined. */
@@ -67,6 +72,7 @@ export interface SessionConfigInput {
   harness: HarnessId;
   provider: string;
   model: string;
+  reasoningEffort?: string;
   mcpServers?: McpServerConfig[];
   branch?: string | null;
   repositories?: SessionRepositoryInfo[];
@@ -91,6 +97,9 @@ export function buildSessionConfig(input: SessionConfigInput): SessionConfigPayl
     mcp_servers: input.mcpServers,
     bridge_early_connect: true,
   };
+  if (input.reasoningEffort !== undefined) {
+    payload.reasoning_effort = input.reasoningEffort;
+  }
   if (input.branch !== undefined) {
     payload.branch = input.branch;
   }
@@ -134,9 +143,17 @@ export const DEFERRED_START_ENV_VAR = "OI_DEFERRED_START";
 export const IMAGE_BUILD_CONTEXT_START_ARGUMENT = "--image-build-context-stdin-v1";
 
 /**
+ * Signed URL of a workspace copy the runtime unpacks into a fresh sandbox
+ * before the agent starts. Mirrors `WORKSPACE_RESTORE_URL_ENV_VAR` in
+ * `sandbox_runtime/workspace_copy.py`.
+ */
+const WORKSPACE_RESTORE_URL_ENV_VAR = "WORKSPACE_RESTORE_URL";
+
+/**
  * Control-plane-owned boot controls: every env var `BootMode.from_env`
  * (sandbox_runtime/runtime_config.py) reads to decide how the runtime boots,
- * plus the deferred-start marker that decides whether it boots at all.
+ * plus the deferred-start marker that decides whether it boots at all and the
+ * workspace copy a fresh sandbox unpacks before its agent starts.
  * Providers set these themselves when the mode applies, so they are stripped
  * from the user layer. Keep in sync with that enum and the launcher module.
  */
@@ -146,6 +163,7 @@ export const BOOT_MODE_ENV_KEYS = [
   "FROM_REPO_IMAGE",
   "REPO_IMAGE_SHA",
   DEFERRED_START_ENV_VAR,
+  WORKSPACE_RESTORE_URL_ENV_VAR,
 ] as const;
 
 /**
@@ -374,6 +392,11 @@ export function buildSandboxEnvVars(
 
   if (config.agentSlackNotifyEnabled) {
     envVars.AGENT_SLACK_NOTIFY_ENABLED = "true";
+  }
+
+  // Only a fresh sandbox unpacks a copy; a snapshot restore already has its files.
+  if (config.workspaceCopyUrl && !("snapshotImageId" in config)) {
+    envVars[WORKSPACE_RESTORE_URL_ENV_VAR] = config.workspaceCopyUrl;
   }
 
   applyScmCloneEnv(envVars, options.scmIdentity);

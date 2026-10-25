@@ -32,6 +32,34 @@ describe("buildSessionListPredicates", () => {
     expect(result.params).toContain("user-a");
   });
 
+  describe("warm drafts", () => {
+    const user = {
+      readScope: {
+        kind: "user",
+        userId: "user-a",
+        roleKey: "member",
+        suspended: false,
+        permissions: ["sessions.read"],
+        memberships: new Map(),
+      },
+      mode: "off",
+    } as const;
+
+    it("leaves a user's never-prompted session out of what a reader lists", () => {
+      const { where } = buildSessionListPredicates({ ...user, excludeStatus: "archived" });
+      expect(collapse(where)).toContain(
+        "NOT (sessions.status = 'created' AND sessions.spawn_source IN ('user', 'app'))"
+      );
+    });
+
+    it("still finds drafts when asked for them by status, and for internal callers", () => {
+      expect(buildSessionListPredicates({ ...user, status: "created" }).where).not.toContain(
+        "spawn_source IN"
+      );
+      expect(buildSessionListPredicates(internal).where).toBe("");
+    });
+  });
+
   it("requires an explicit internal scope for an unfiltered list", () => {
     expect(buildSessionListPredicates(internal)).toEqual({ where: "", params: [] });
   });

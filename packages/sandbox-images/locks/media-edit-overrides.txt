@@ -1,0 +1,2 @@
+# scenedetect requires opencv-python; the image ships opencv-python-headless (same cv2 module).
+opencv-python; sys_platform == "never"

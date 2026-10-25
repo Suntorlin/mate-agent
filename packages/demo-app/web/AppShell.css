@@ -1,0 +1,39 @@
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.app__list {
+  display: flex;
+  flex-direction: column;
+  width: var(--list-column-width);
+  min-height: 0;
+  border-right: 1px solid var(--social-divider);
+}
+
+.app__main {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+.app__main--split {
+  grid-template-columns: minmax(0, 4fr) minmax(0, 6fr);
+}
+
+/* A desktop's "Me" page is one centred column, not a list beside a chat. */
+.app__main > .me {
+  grid-column: 1 / -1;
+}
+
+.app--phone {
+  flex-direction: column;
+}
+
+.app__screen {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}

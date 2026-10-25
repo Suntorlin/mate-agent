@@ -507,6 +507,7 @@ describe("D1 SessionIndexStore", () => {
     expect(before!.activeDurationMs).toBe(0);
     expect(before!.messageCount).toBe(0);
     expect(before!.prCount).toBe(0);
+    expect(before).toMatchObject({ cover: null, mediaCount: 0 });
     expect(before).toMatchObject({
       inputTokens: 0,
       outputTokens: 0,
@@ -521,6 +522,8 @@ describe("D1 SessionIndexStore", () => {
       activeDurationMs: 120000,
       messageCount: 5,
       prCount: 1,
+      cover: { artifactId: "artifact-first", type: "video" },
+      mediaCount: 3,
       inputTokens: 1200,
       outputTokens: 340,
       reasoningTokens: 56,
@@ -535,6 +538,16 @@ describe("D1 SessionIndexStore", () => {
     expect(after!.activeDurationMs).toBe(120000);
     expect(after!.messageCount).toBe(5);
     expect(after!.prCount).toBe(1);
+    expect(after).toMatchObject({
+      cover: { artifactId: "artifact-first", type: "video" },
+      mediaCount: 3,
+    });
+    // The list a history page reads carries the same card fields.
+    const listed = await store.list({ readScope: internal, mode: "on" });
+    expect(listed.sessions.find((session) => session.id === "session-metrics")).toMatchObject({
+      cover: { artifactId: "artifact-first", type: "video" },
+      mediaCount: 3,
+    });
     expect(after).toMatchObject({
       inputTokens: 1200,
       outputTokens: 340,
@@ -568,6 +581,8 @@ describe("D1 SessionIndexStore", () => {
       activeDurationMs: 60000,
       messageCount: 3,
       prCount: 0,
+      cover: null,
+      mediaCount: 0,
       inputTokens: 100,
       outputTokens: 20,
       reasoningTokens: 0,
@@ -580,6 +595,8 @@ describe("D1 SessionIndexStore", () => {
       activeDurationMs: 180000,
       messageCount: 8,
       prCount: 2,
+      cover: null,
+      mediaCount: 0,
       inputTokens: 300,
       outputTokens: 60,
       reasoningTokens: 10,
@@ -608,6 +625,8 @@ describe("D1 SessionIndexStore", () => {
       activeDurationMs: 1000,
       messageCount: 1,
       prCount: 0,
+      cover: null,
+      mediaCount: 0,
       inputTokens: 0,
       outputTokens: 0,
       reasoningTokens: 0,

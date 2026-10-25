@@ -8,7 +8,7 @@ import {
 } from "@open-inspect/shared/types/sandbox-shutdown";
 import type { AlarmScheduler, BackgroundTasks } from "../platform-ports";
 import type { Logger } from "../logger";
-import type { SandboxLifetime, SandboxProvider } from "../sandbox/provider";
+import type { ExtendLifetimeResult, SandboxLifetime, SandboxProvider } from "../sandbox/provider";
 import { parsePersistedSandboxSettings } from "../sandbox/settings";
 import type {
   SandboxCheckpointOutcome,
@@ -34,6 +34,34 @@ const RETIRE_MS = 30_000;
 const MARGIN_MS = 30_000;
 /** How long a sandbox whose save failed is kept for another attempt. */
 const RETRY_WINDOW_MS = 30 * 60_000;
+/** Default for SANDBOX_LIFETIME_EXTENSION_MS: how much later each extension moves the expiry. */
+export const DEFAULT_SANDBOX_LIFETIME_EXTENSION_MS = 30 * 60_000;
+/** Extensions start this long before the drain point, so a failed attempt is retried before it. */
+const LIFETIME_EXTENSION_LEAD_MS = 10 * 60_000;
+/** How soon an idle sandbox inside that window is looked at again, in case work resumes. */
+const LIFETIME_EXTENSION_RECHECK_MS = 60_000;
+
+/**
+ * Keeps a sandbox in use alive past its creation lifetime: while a prompt is
+ * processing or the sandbox saw activity within `activityWindowMs`, its
+ * expiry is pushed `stepMs` later each time it nears the drain point, up to
+ * the provider's own ceiling. Idle sandboxes are left to the inactivity and
+ * lifetime flows, which save and stop them as before.
+ */
+export interface LifetimeExtensionPolicy {
+  stepMs: number;
+  activityWindowMs: number;
+}
+
+/**
+ * SANDBOX_LIFETIME_EXTENSION_MS as a step in milliseconds: unset or malformed
+ * means DEFAULT_SANDBOX_LIFETIME_EXTENSION_MS, and 0 turns extension off.
+ */
+export function resolveLifetimeExtensionStepMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_SANDBOX_LIFETIME_EXTENSION_MS;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_SANDBOX_LIFETIME_EXTENSION_MS;
+}
 
 /** User-facing text for a prompt interrupted by a shutdown; reasons are internal codes. */
 const INTERRUPTION_MESSAGES: Record<string, string> = {
@@ -65,6 +93,8 @@ interface ShutdownDependencies {
   /** Re-derives session status after any interrupted message has been persisted. */
   reconcileStatusFromMessages(): Promise<void>;
   retireAccess(): void;
+  /** Unset keeps every sandbox to the lifetime it was created with. */
+  lifetimeExtension?: LifetimeExtensionPolicy;
   now?: () => number;
   log?: Logger;
 }
@@ -77,6 +107,9 @@ export class SandboxShutdownCoordinator {
   private retiringOperation: string | null = null;
   private discardingOperation: string | null = null;
   private activeRestoreGeneration: SandboxGeneration | null = null;
+  private lifetimeExtensionInFlight = false;
+  /** The provider session whose expiry already sits at the provider's ceiling. */
+  private lifetimeCeilingReachedFor: string | null = null;
   private readonly now: () => number;
 
   constructor(private readonly deps: ShutdownDependencies) {
@@ -229,7 +262,7 @@ export class SandboxShutdownCoordinator {
     };
     this.publish(next);
     if (next.phase === "running" && next.drainAtMs !== null)
-      await this.deps.alarm.schedule(next.drainAtMs);
+      await this.deps.alarm.schedule(this.nextLifetimeAlarmAtMs(next));
     return "registered";
   }
 
@@ -290,7 +323,7 @@ export class SandboxShutdownCoordinator {
     this.bindGeneration(next);
     if (next.drainAtMs !== null) {
       if (this.now() >= next.drainAtMs) await this.requestShutdown("sandbox_lifetime_expiring");
-      else await this.deps.alarm.schedule(next.drainAtMs);
+      else await this.deps.alarm.schedule(this.nextLifetimeAlarmAtMs(next));
     }
     this.notifyLifecycleChange();
   }
@@ -468,6 +501,36 @@ export class SandboxShutdownCoordinator {
       "unknown",
       `Saved sandbox could not be restored: ${error}. No fresh sandbox was substituted. The snapshot reference is retained; contact your operator for recovery or start a separate session.`
     );
+  }
+
+  /**
+   * Stops a warm sandbox that no prompt ever reached, without saving it: it
+   * holds nothing of the author's, so a capture would only cost time and a
+   * snapshot that is never restored. Leaves the same receipt-less record as a
+   * discard, so the next prompt starts a fresh sandbox. "unmanaged" means the
+   * coordinator does not own this sandbox's stop and the caller's ordinary path
+   * applies; "held" means it is busy, so the caller should look again later.
+   */
+  async releaseUnprompted(reason: string): Promise<"released" | "held" | "unmanaged"> {
+    const state = this.normalizeInterruptedRestore();
+    if (!state || state.lifecyclePolicy === "legacy" || !state.providerObjectId)
+      return state?.checkpointInFlight ? "held" : "unmanaged";
+    if (!this.canStopSource()) return "unmanaged";
+    if (
+      state.phase !== "running" ||
+      !this.current(state) ||
+      !this.providerMatches(state) ||
+      state.receipt ||
+      state.restoreInvoked ||
+      state.checkpointInFlight ||
+      state.discarding ||
+      this.checkpointOperationId !== null ||
+      this.deps.messages.getProcessingMessage()
+    )
+      return "held";
+    await this.discard(state, reason);
+    const after = this.deps.store.read();
+    return after && !after.discarding && after.providerObjectId === null ? "released" : "held";
   }
 
   /** Only an explicit authenticated, currently eligible user choice may leave a hold. */
@@ -655,7 +718,7 @@ export class SandboxShutdownCoordinator {
    * Explicitly abandons unsaved work: stops the source, then leaves a record
    * with no receipt and no provider handle so the next start is fresh.
    */
-  private async discard(state: ShutdownRecord): Promise<void> {
+  private async discard(state: ShutdownRecord, reason = "discard"): Promise<void> {
     // Claimed durably before any provider I/O, so no other recovery can act on
     // this source while it is being stopped, including after a restart.
     const claim: ShutdownRecord = { ...state, discarding: crypto.randomUUID(), error: undefined };
@@ -667,7 +730,7 @@ export class SandboxShutdownCoordinator {
           await this.stopSource(
             claim,
             claim.providerObjectId,
-            "discard",
+            reason,
             "destroy",
             this.now() + RETIRE_MS
           );
@@ -989,8 +1052,12 @@ export class SandboxShutdownCoordinator {
         return "hold_watchdogs";
       }
       if (state.drainAtMs !== null) {
-        if (this.now() >= state.drainAtMs) await this.requestShutdown("sandbox_lifetime_expiring");
-        else await this.deps.alarm.schedule(state.drainAtMs);
+        const current = await this.extendLifetimeIfInUse(state);
+        if (current.phase === "running" && current.drainAtMs !== null) {
+          if (this.now() >= current.drainAtMs)
+            await this.requestShutdown("sandbox_lifetime_expiring");
+          else await this.deps.alarm.schedule(this.nextLifetimeAlarmAtMs(current));
+        }
       }
       return this.isHolding() ? "hold_watchdogs" : "continue";
     }
@@ -998,6 +1065,103 @@ export class SandboxShutdownCoordinator {
       return this.continuationPaused(state) ? "hold_watchdogs" : "continue";
     await this.advance();
     return "hold_watchdogs";
+  }
+
+  private canExtendLifetime(state: ShutdownRecord): boolean {
+    const policy = this.deps.lifetimeExtension;
+    return (
+      !!policy &&
+      policy.stepMs > 0 &&
+      typeof this.deps.provider.extendSandboxLifetime === "function" &&
+      state.lifecyclePolicy !== "legacy" &&
+      state.lifetimeKind === "finite" &&
+      state.drainAtMs !== null &&
+      !!state.providerObjectId &&
+      state.providerObjectId !== this.lifetimeCeilingReachedFor
+    );
+  }
+
+  /** When the alarm must next look at a running sandbox's lifetime. */
+  private nextLifetimeAlarmAtMs(state: ShutdownRecord): number {
+    const drainAtMs = state.drainAtMs!;
+    if (!this.canExtendLifetime(state)) return drainAtMs;
+    const extendAtMs = drainAtMs - LIFETIME_EXTENSION_LEAD_MS;
+    const now = this.now();
+    return now < extendAtMs ? extendAtMs : Math.min(drainAtMs, now + LIFETIME_EXTENSION_RECHECK_MS);
+  }
+
+  /** A prompt is processing, or the sandbox saw activity recently enough to count as in use. */
+  private inUse(policy: LifetimeExtensionPolicy, now: number): boolean {
+    if (this.deps.messages.getProcessingMessage()) return true;
+    const lastActivity = this.deps.sandbox.getSandbox()?.last_activity;
+    return lastActivity != null && now - lastActivity < policy.activityWindowMs;
+  }
+
+  /**
+   * Near the drain point, push a sandbox in use further from its provider
+   * expiry. Returns the record to act on: the extended one, or the latest
+   * when nothing changed. A failure leaves the lifetime as it was, so the
+   * drain still happens on time if no later attempt succeeds.
+   */
+  private async extendLifetimeIfInUse(state: ShutdownRecord): Promise<ShutdownRecord> {
+    const policy = this.deps.lifetimeExtension;
+    if (!policy || !this.canExtendLifetime(state) || state.checkpointInFlight) return state;
+    if (this.lifetimeExtensionInFlight) return state;
+    const now = this.now();
+    if (now < state.drainAtMs! - LIFETIME_EXTENSION_LEAD_MS) return state;
+    if (!this.inUse(policy, now)) return state;
+
+    const providerObjectId = state.providerObjectId!;
+    let result: ExtendLifetimeResult;
+    this.lifetimeExtensionInFlight = true;
+    try {
+      result = await this.deps.provider.extendSandboxLifetime!({
+        providerObjectId,
+        extensionMs: policy.stepMs,
+      });
+    } catch (error) {
+      this.deps.log?.warn("Sandbox lifetime extension failed", {
+        event: "sandbox.lifetime_extension_failed",
+        provider: this.deps.provider.name,
+        sandbox_id: state.generation.sandboxId,
+        drain_at_ms: state.drainAtMs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return state;
+    } finally {
+      this.lifetimeExtensionInFlight = false;
+    }
+    if (result.atCeiling) this.lifetimeCeilingReachedFor = providerObjectId;
+
+    // The provider call yielded: act only on the same running generation and handle.
+    const latest = this.deps.store.read();
+    if (
+      !latest ||
+      !this.current(latest) ||
+      latest.phase !== "running" ||
+      latest.providerObjectId !== providerObjectId ||
+      latest.expiresAtMs === null ||
+      latest.drainAtMs === null ||
+      result.lifetime.expiresAtMs <= latest.expiresAtMs
+    )
+      return latest ?? state;
+    const bufferMs = latest.expiresAtMs - latest.drainAtMs;
+    const next: ShutdownRecord = {
+      ...latest,
+      lifetimeSource: result.lifetime.source,
+      expiresAtMs: result.lifetime.expiresAtMs,
+      drainAtMs: result.lifetime.expiresAtMs - bufferMs,
+    };
+    this.publish(next);
+    this.deps.log?.info("sandbox.lifetime_extended", {
+      event: "sandbox.lifetime_extended",
+      provider: this.deps.provider.name,
+      sandbox_id: next.generation.sandboxId,
+      previous_expires_at_ms: latest.expiresAtMs,
+      expires_at_ms: next.expiresAtMs,
+      at_ceiling: result.atCeiling,
+    });
+    return next;
   }
 
   private async advance(): Promise<void> {

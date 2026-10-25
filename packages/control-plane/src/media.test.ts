@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  attachmentContentDisposition,
+  buildFileObjectKey,
   buildMediaObjectKey,
+  fileExtension,
+  normalizeFileContentType,
+  sanitizeFilename,
+  VIDEO_MAX_DURATION_MS,
   buildSessionAttachmentObjectKey,
   detectSessionAttachmentFileType,
   detectScreenshotFileType,
@@ -10,6 +16,8 @@ import {
   sessionAttachmentRequestExceedsLimit,
   isSupportedScreenshotMimeType,
   isSupportedVideoMimeType,
+  isPageFile,
+  PAGE_RESPONSE_HEADERS,
   parseDimensions,
   parseOptionalBoolean,
   parseVideoUploadMetadata,
@@ -22,6 +30,60 @@ const MP4_SIGNATURE = Uint8Array.from([
 
 const VIEWPORT_OPTS = { name: "viewport", required: false, mode: "round" } as const;
 const DIMENSIONS_OPTS = { name: "dimensions", required: true, mode: "integer" } as const;
+
+describe("file artifact helpers", () => {
+  it("keeps a file's own name, minus paths and characters filesystems refuse", () => {
+    expect(sanitizeFilename("renders/成片 v2.mov")).toBe("成片 v2.mov");
+    expect(sanitizeFilename("..\\..\\cut:1?.fcpxml")).toBe("cut1.fcpxml");
+    expect(sanitizeFilename("\u0000\u0007")).toBeNull();
+    expect(sanitizeFilename("...")).toBeNull();
+    const long = sanitizeFilename(`${"a".repeat(300)}.fcpxml`);
+    expect(long).toHaveLength(180);
+    expect(long?.endsWith(".fcpxml")).toBe(true);
+  });
+
+  it("keys files by artifact and extension, never by the user's name", () => {
+    expect(buildFileObjectKey("s1", "a1", "成片 v2.MOV")).toBe("sessions/s1/files/a1.mov");
+    expect(buildFileObjectKey("s1", "a1", "README")).toBe("sessions/s1/files/a1");
+    expect(fileExtension("x.tar.zst")).toBe("zst");
+  });
+
+  it("always downloads, with an ASCII fallback and the exact UTF-8 name", () => {
+    expect(attachmentContentDisposition('北汉山 "final".fcpxml')).toBe(
+      `attachment; filename="___ _final_.fcpxml"; ` +
+        `filename*=UTF-8''%E5%8C%97%E6%B1%89%E5%B1%B1%20%22final%22.fcpxml`
+    );
+    expect(attachmentContentDisposition("it's (v2).zip")).toContain(
+      "filename*=UTF-8''it%27s%20%28v2%29.zip"
+    );
+  });
+
+  it("keeps only plain content types", () => {
+    expect(normalizeFileContentType("application/pdf; charset=binary")).toBe("application/pdf");
+    expect(normalizeFileContentType("text/html\r\nX-Evil: 1")).toBe("application/octet-stream");
+    expect(normalizeFileContentType(undefined)).toBe("application/octet-stream");
+  });
+});
+
+describe("video preview limits", () => {
+  function fields(durationMs: number) {
+    const formData = new FormData();
+    formData.set("caption", "3-minute cut");
+    formData.set("durationMs", String(durationMs));
+    formData.set("recordingStartedAt", "1000");
+    formData.set("recordingEndedAt", String(1000 + durationMs));
+    formData.set("dimensions", '{"width":2160,"height":3840}');
+    formData.set("truncated", "false");
+    return formData;
+  }
+
+  it("takes previews up to ten minutes", () => {
+    expect(VIDEO_MAX_DURATION_MS).toBe(600_000);
+    expect(parseVideoUploadMetadata(fields(180_000)).durationMs).toBe(180_000);
+    expect(parseVideoUploadMetadata(fields(600_000)).durationMs).toBe(600_000);
+    expect(() => parseVideoUploadMetadata(fields(600_001))).toThrow("600000 or less");
+  });
+});
 
 describe("media helpers", () => {
   it("builds session-scoped media object keys", () => {
@@ -116,6 +178,35 @@ describe("media helpers", () => {
     expect(detectSessionAttachmentFileType(new Uint8Array(0))).toBeNull();
   });
 
+  it("accepts UTF-8 text as a page and refuses binary bytes", () => {
+    expect(isPageFile(new TextEncoder().encode("<!doctype html><p>안녕 · 你好</p>"))).toBe(true);
+    expect(isPageFile(Uint8Array.from([0x3c, 0x70, 0x00, 0x3e]))).toBe(false);
+    expect(isPageFile(Uint8Array.from([0x3c, 0xff, 0xfe, 0x3e]))).toBe(false);
+  });
+
+  it("serves pages sandboxed into their own origin", () => {
+    const csp = PAGE_RESPONSE_HEADERS["Content-Security-Policy"];
+    expect(csp.split("; ")[0]).toBe(
+      "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads"
+    );
+    expect(csp).not.toContain("allow-same-origin");
+    expect(csp).toContain("form-action 'none'");
+    expect(PAGE_RESPONSE_HEADERS["X-Content-Type-Options"]).toBe("nosniff");
+  });
+
+  it("keeps the audio flag of a rendered video", () => {
+    const formData = new FormData();
+    formData.set("caption", "Finished cut");
+    formData.set("durationMs", "15000");
+    formData.set("recordingStartedAt", "1000");
+    formData.set("recordingEndedAt", "16000");
+    formData.set("dimensions", '{"width":720,"height":1280}');
+    formData.set("truncated", "false");
+    formData.set("hasAudio", "true");
+
+    expect(parseVideoUploadMetadata(formData, 17000)).toMatchObject({ hasAudio: true });
+  });
+
   it("parses required video metadata", () => {
     const formData = new FormData();
     formData.set("caption", "Menu opens after clicking settings");
@@ -159,7 +250,7 @@ describe("media helpers", () => {
       { recordingStartedAt: "1".padEnd(310, "0") },
       "recordingStartedAt must be a safe integer",
     ],
-    ["duration above maximum", { durationMs: "90001" }, "durationMs must be 90000 or less"],
+    ["duration above maximum", { durationMs: "600001" }, "durationMs must be 600000 or less"],
     [
       "invalid dimensions",
       { dimensions: '{"width":0,"height":720}' },
@@ -171,11 +262,10 @@ describe("media helpers", () => {
       "dimensions must include positive integer width and height",
     ],
     ["invalid source URL", { sourceUrl: "not-a-url" }, "sourceUrl must be a valid URL"],
-    ["audio present", { hasAudio: "true" }, "hasAudio must be false"],
     [
       "timestamp span above maximum",
-      { recordingEndedAt: "93001" },
-      "recording timestamps must span 90000ms or less",
+      { recordingEndedAt: "603001" },
+      "recording timestamps must span 600000ms or less",
     ],
     [
       "duration exceeds timestamp span",

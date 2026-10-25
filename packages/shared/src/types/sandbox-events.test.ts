@@ -28,6 +28,25 @@ describe("token sandbox event", () => {
   });
 });
 
+describe("a turn the model gateway refused", () => {
+  const base = { messageId: "msg-1", sandboxId: "sb-1", timestamp: 1 };
+  const words =
+    "API Error: Request rejected (429) · You've used this month's AI budget ($20.13 of $20.00). [llm_budget=user resets_at=2026-11-01T00:00:00.000Z]";
+  const reason = { errorCode: "model_budget_user", resetsAt: "2026-11-01T00:00:00.000Z" };
+
+  it("keeps the reason on the turn's end and its error", () => {
+    const end = { ...base, type: "execution_complete", success: false, error: words, ...reason };
+    expect(sandboxEventSchema.parse(end)).toEqual(end);
+    const error = { ...base, type: "error", error: words, ...reason };
+    expect(sandboxEventSchema.parse(error)).toEqual(error);
+  });
+
+  it("takes a code it does not know yet rather than drop the turn's end", () => {
+    const end = { ...base, type: "execution_complete", success: false, errorCode: "later_code" };
+    expect(sandboxEventSchema.parse(end)).toEqual(end);
+  });
+});
+
 describe("boot_progress sandbox event", () => {
   it("parses a phase report with its repository and sequence", () => {
     const parsed = sandboxEventSchema.parse({

@@ -34,7 +34,7 @@ class HarnessId(StrEnum):
     CLAUDE = "claude"
 
 
-DEFAULT_HARNESS_ID = HarnessId.OPENCODE
+DEFAULT_HARNESS_ID = HarnessId.CLAUDE
 
 
 def parse_harness_id(value: object) -> HarnessId:
@@ -63,6 +63,15 @@ class PromptLimits:
     prompt_cleanup_timeout_seconds: float
 
 
+# The control plane's ``SessionPermissionMode`` values.
+PERMISSION_MODES = frozenset({"auto_within_budget", "confirm_edits", "full_auto"})
+
+
+def parse_permission_mode(value: object) -> str | None:
+    """The permission mode a prompt command carries, or ``None`` if it is not one."""
+    return value if isinstance(value, str) and value in PERMISSION_MODES else None
+
+
 @dataclass(frozen=True)
 class HarnessPrompt:
     """One prompt turn, in the control plane's vocabulary."""
@@ -71,6 +80,11 @@ class HarnessPrompt:
     text: str
     model: str | None = None
     reasoning_effort: str | None = None
+    # When the agent should stop to ask its owner before acting, as the
+    # session stood when this prompt was dispatched (one of
+    # ``PERMISSION_MODES``). ``None`` when the control plane sent none or one
+    # this runtime does not know.
+    permission_mode: str | None = None
     attachments: Sequence[HydratedSessionAttachment] = ()
     author: Mapping[str, Any] = field(default_factory=dict)
     # What is left of this prompt's budget, when the caller spent part of it

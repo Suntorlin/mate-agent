@@ -15,7 +15,7 @@ import {
 /**
  * Split-merge coverage over the consolidated registry: converging a loser
  * canonical user's whole graph — identities (which are also the Better Auth
- * accounts), coding and browser sessions, automations, SCM tokens, read
+ * accounts), coding and browser sessions, SCM tokens, read
  * states — onto a survivor, with the documented dedup rules and
  * dry-run/idempotency guarantees.
  */
@@ -29,16 +29,6 @@ async function insertSession(id: string, userId: string): Promise<void> {
      VALUES (?, 'acme', 'app', 'completed', ?, ?, ?)`
   )
     .bind(id, SEED_NOW_MS, SEED_NOW_MS, userId)
-    .run();
-}
-
-async function insertAutomation(id: string, userId: string, createdBy: string): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO automations (
-       id, name, instructions, model, created_by, user_id, created_at, updated_at
-     ) VALUES (?, ?, 'instructions', 'anthropic/claude-sonnet-5', ?, ?, ?, ?)`
-  )
-    .bind(id, `automation-${id}`, createdBy, userId, SEED_NOW_MS, SEED_NOW_MS)
     .run();
 }
 
@@ -87,7 +77,6 @@ describe("mergeUsers", () => {
       issuer: "https://github.com",
     });
     await insertSession("session-loser", LOSER);
-    await insertAutomation("auto-1", LOSER, LOSER);
     await insertScmToken("583231", LOSER);
     await insertSkillProfile("profile-loser", LOSER, "Personal profile");
     await insertAuthSession({ id: "authsess-loser", userId: LOSER });
@@ -112,8 +101,6 @@ describe("mergeUsers", () => {
       identitiesRepointed: 1,
       sessionsRepointed: 1,
       authSessionsDeleted: 1,
-      automationsOwnedRepointed: 1,
-      automationsCreatedRepointed: 1,
       scmTokensRepointed: 1,
       skillProfilesRepointed: 1,
       skillCatalogGenerationsAdvanced: 1,
@@ -138,14 +125,6 @@ describe("mergeUsers", () => {
         userId: string;
       }>()
     ).toBeNull();
-    expect(
-      await env.DB.prepare(
-        `SELECT user_id, created_by FROM automations WHERE id = 'auto-1'`
-      ).first<{
-        user_id: string;
-        created_by: string;
-      }>()
-    ).toEqual({ user_id: SURVIVOR, created_by: SURVIVOR });
     expect(
       await env.DB.prepare(`SELECT user_id FROM skill_profiles WHERE id = 'profile-loser'`).first()
     ).toEqual({ user_id: SURVIVOR });
@@ -277,21 +256,6 @@ describe("mergeUsers", () => {
     ).toEqual({ user_id: SURVIVOR });
   });
 
-  it("leaves non-canonical created_by values (legacy GitHub numeric ids) untouched", async () => {
-    await insertCanonicalUser({ id: SURVIVOR, email: "person@example.com" });
-    await insertCanonicalUser({ id: LOSER, email: null });
-    await insertAutomation("auto-legacy", LOSER, "583231");
-
-    const result = await mergeUsers(env.DB, { survivorId: SURVIVOR, loserId: LOSER });
-
-    expect(result.counts.automationsCreatedRepointed).toBe(0);
-    expect(
-      await env.DB.prepare(
-        `SELECT created_by, user_id FROM automations WHERE id = 'auto-legacy'`
-      ).first<{ created_by: string; user_id: string }>()
-    ).toEqual({ created_by: "583231", user_id: SURVIVOR });
-  });
-
   it("keeps preview and execution counts aligned for newer user-owned records", async () => {
     await insertCanonicalUser({ id: SURVIVOR, email: "person@example.com" });
     await insertCanonicalUser({ id: LOSER, email: null });
@@ -309,9 +273,11 @@ describe("mergeUsers", () => {
              (id, user_id, attempted_at) VALUES (?, ?, ?)`
       ).bind(attemptId, LOSER, SEED_NOW_MS),
       env.DB.prepare(
-        `INSERT INTO keyboard_shortcut_preferences (user_id, shortcuts, updated_at)
-           VALUES (?, '{}', ?)`
-      ).bind(LOSER, SEED_NOW_MS),
+        `INSERT INTO user_files (id, owner_user_id, scope, name, kind, size_bytes, object_key,
+             status, part_size_bytes, created_at, updated_at)
+           VALUES ('user-file-1', ?, 'library', 'logo.png', 'logo', 10, 'users/x/files/1',
+             'ready', 16, ?, ?)`
+      ).bind(LOSER, SEED_NOW_MS, SEED_NOW_MS),
     ]);
 
     const preview = await mergeUsers(env.DB, {
@@ -323,8 +289,7 @@ describe("mergeUsers", () => {
     expect(preview.counts).toMatchObject({
       providerAccountAuthorizationsRepointed: 1,
       providerAccountAuthorizationAttemptsRepointed: 1,
-      keyboardShortcutPreferencesDeduped: 0,
-      keyboardShortcutPreferencesRepointed: 1,
+      userFilesRepointed: 1,
     });
     expect(
       await env.DB.prepare(`SELECT user_id FROM model_provider_account_authorizations WHERE id = ?`)
@@ -348,10 +313,95 @@ describe("mergeUsers", () => {
         .first()
     ).toEqual({ user_id: SURVIVOR });
     expect(
-      await env.DB.prepare(`SELECT shortcuts FROM keyboard_shortcut_preferences WHERE user_id = ?`)
-        .bind(SURVIVOR)
-        .first()
-    ).toEqual({ shortcuts: "{}" });
+      await env.DB.prepare(`SELECT owner_user_id FROM user_files WHERE id = 'user-file-1'`).first()
+    ).toEqual({ owner_user_id: SURVIVOR });
+  });
+
+  it("moves user memory onto the survivor, keeping the survivor's version of a shared key", async () => {
+    await insertCanonicalUser({ id: SURVIVOR, email: "person@example.com" });
+    await insertCanonicalUser({ id: LOSER, email: null });
+    const entry = (
+      id: string,
+      owner: string,
+      key: string,
+      content: string,
+      version: number,
+      latest: boolean,
+      parentId: string | null = null
+    ) =>
+      env.DB.prepare(
+        `INSERT INTO user_memory_entries (id, owner_user_id, container, key, layer, content,
+             source, status, version, is_latest, parent_id, created_at, updated_at)
+           VALUES (?, ?, 'owner', ?, ?, ?, 'user_edit', 'active', ?, ?, ?, ?, ?)`
+      ).bind(
+        id,
+        owner,
+        key,
+        key.startsWith("pref.") ? "preference" : "lesson",
+        content,
+        version,
+        latest ? 1 : 0,
+        parentId,
+        SEED_NOW_MS,
+        SEED_NOW_MS
+      );
+    const op = (id: string, owner: string, entryId: string, key: string) =>
+      env.DB.prepare(
+        `INSERT INTO user_memory_ops (id, owner_user_id, container, batch_id, entry_id, key, op,
+             source, outcome, created_at)
+           VALUES (?, ?, 'owner', 'edit:1', ?, ?, 'set', 'user_edit', 'applied', ?)`
+      ).bind(id, owner, entryId, key, SEED_NOW_MS);
+    await env.DB.batch([
+      entry("mem-s-voice", SURVIVOR, "pref.voice", "Male voice", 1, true),
+      entry("mem-l-voice", LOSER, "pref.voice", "Female voice", 1, true),
+      entry("mem-l-hook-1", LOSER, "lesson.hooks", "Questions open best", 1, false),
+      entry(
+        "mem-l-hook-2",
+        LOSER,
+        "lesson.hooks",
+        "Questions open best → in Chinese",
+        2,
+        true,
+        "mem-l-hook-1"
+      ),
+      op("op-l-voice", LOSER, "mem-l-voice", "pref.voice"),
+      op("op-l-hook", LOSER, "mem-l-hook-2", "lesson.hooks"),
+      env.DB.prepare(
+        `INSERT INTO user_memory_settings (user_id, paused, updated_at) VALUES (?, 0, ?), (?, 1, ?)`
+      ).bind(SURVIVOR, SEED_NOW_MS, LOSER, SEED_NOW_MS),
+    ]);
+
+    const preview = await mergeUsers(env.DB, {
+      survivorId: SURVIVOR,
+      loserId: LOSER,
+      dryRun: true,
+    });
+    expect(preview.counts).toMatchObject({
+      userMemoryEntriesSuperseded: 1,
+      userMemoryEntriesRepointed: 3,
+      userMemoryOpsRepointed: 2,
+      userMemorySettingsDeduped: 1,
+      userMemorySettingsRepointed: 0,
+    });
+
+    const result = await mergeUsers(env.DB, { survivorId: SURVIVOR, loserId: LOSER });
+
+    expect(result.counts).toEqual(preview.counts);
+    const entries = await env.DB.prepare(
+      `SELECT id, owner_user_id, is_latest FROM user_memory_entries ORDER BY id`
+    ).all();
+    expect(entries.results).toEqual([
+      { id: "mem-l-hook-1", owner_user_id: SURVIVOR, is_latest: 0 },
+      { id: "mem-l-hook-2", owner_user_id: SURVIVOR, is_latest: 1 },
+      { id: "mem-l-voice", owner_user_id: SURVIVOR, is_latest: 0 },
+      { id: "mem-s-voice", owner_user_id: SURVIVOR, is_latest: 1 },
+    ]);
+    expect(
+      (await env.DB.prepare(`SELECT DISTINCT owner_user_id FROM user_memory_ops`).all()).results
+    ).toEqual([{ owner_user_id: SURVIVOR }]);
+    expect(
+      (await env.DB.prepare(`SELECT user_id, paused FROM user_memory_settings`).all()).results
+    ).toEqual([{ user_id: SURVIVOR, paused: 0 }]);
   });
 
   it("preserves canonical attribution across provider accounts and managed skills", async () => {
@@ -434,37 +484,6 @@ describe("mergeUsers", () => {
       revision_created_by: SURVIVOR,
       assignment_created_by: SURVIVOR,
     });
-  });
-
-  it("keeps keyboard preference collision preview and execution counts aligned", async () => {
-    await insertCanonicalUser({ id: SURVIVOR, email: "person@example.com" });
-    await insertCanonicalUser({ id: LOSER, email: null });
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO keyboard_shortcut_preferences (user_id, shortcuts, updated_at)
-           VALUES (?, '{"survivor":true}', ?)`
-      ).bind(SURVIVOR, SEED_NOW_MS),
-      env.DB.prepare(
-        `INSERT INTO keyboard_shortcut_preferences (user_id, shortcuts, updated_at)
-           VALUES (?, '{"loser":true}', ?)`
-      ).bind(LOSER, SEED_NOW_MS),
-    ]);
-
-    const preview = await mergeUsers(env.DB, {
-      survivorId: SURVIVOR,
-      loserId: LOSER,
-      dryRun: true,
-    });
-    const result = await mergeUsers(env.DB, { survivorId: SURVIVOR, loserId: LOSER });
-
-    expect(preview.counts.keyboardShortcutPreferencesDeduped).toBe(1);
-    expect(preview.counts.keyboardShortcutPreferencesRepointed).toBe(0);
-    expect(result.counts).toEqual(preview.counts);
-    expect(
-      await env.DB.prepare(`SELECT shortcuts FROM keyboard_shortcut_preferences WHERE user_id = ?`)
-        .bind(SURVIVOR)
-        .first()
-    ).toEqual({ shortcuts: '{"survivor":true}' });
   });
 
   it("is idempotent: re-running after a completed merge is a zero-count no-op", async () => {

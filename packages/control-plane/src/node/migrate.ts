@@ -2,7 +2,7 @@
  * Apply the global store's migrations to a Node host's SQLite file, the way
  * `scripts/d1-migrate.sh` applies them to D1.
  *
- * The migration files are the same `terraform/d1/migrations/*.sql`; the
+ * The migration files are the same `deploy/d1/migrations/*.sql`; the
  * ledger is the same `_schema_migrations` table with the same columns, so a
  * D1 export of a production database imports here with its history intact
  * and a file exported back is one D1 recognizes. The rules mirror the

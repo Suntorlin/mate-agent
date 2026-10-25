@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createExecutionContext, env } from "cloudflare:test";
 import worker from "../../src/index";
 import { SessionIndexStore } from "../../src/db/session-index";
-import { SCHEDULER_TICK_CRON } from "../../src/scheduled-jobs";
 import { ABANDONED_DRAFT_SWEEP_CRON } from "../../src/session/abandoned-draft-sweep";
 import type { WorkerBindings } from "../../src/cloudflare/platform";
 import { cleanD1Tables } from "./cleanup";
@@ -54,23 +53,5 @@ describe("abandoned draft sweep cron routing", () => {
     // Proves the sweep actually ran rather than falling through to the
     // unknown-trigger branch, which would leave the session untouched.
     expect(sessionNamespace.idFromName).toHaveBeenCalledWith("stale-draft");
-  });
-
-  it("leaves the draft sweep alone on the automation tick", async () => {
-    await seedStaleDraft("stale-draft");
-    const sessionNamespace = createSessionNamespace(() =>
-      Response.json({ outcome: "archived", status: "archived" })
-    );
-
-    await worker.scheduled(
-      { cron: SCHEDULER_TICK_CRON } as ScheduledEvent,
-      {
-        DB: env.DB,
-        SESSION: sessionNamespace,
-      } as unknown as WorkerBindings,
-      createExecutionContext()
-    );
-
-    expect(sessionNamespace.idFromName).not.toHaveBeenCalled();
   });
 });

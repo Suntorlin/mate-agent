@@ -1,0 +1,6 @@
+#!/bin/sh
+# Claude Code's apiKeyHelper in sessions behind the LLM gateway: prints the current gateway token.
+# The runtime's own interpreter, and the file itself rather than the package (see mem).
+python=/opt/openinspect/python/bin/python3
+[ -x "$python" ] || python=python3
+exec env PYTHONSAFEPATH=1 "$python" "$(dirname "$0")/../gateway_key.py" "$@"

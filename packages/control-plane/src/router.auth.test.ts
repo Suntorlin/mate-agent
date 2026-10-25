@@ -79,7 +79,7 @@ describe("router sandbox-token fallback", () => {
     const { env, doFetch } = createEnv(401);
 
     const response = await handleRequest(
-      new Request("https://test.local/analytics/summary", {
+      new Request("https://test.local/sessions", {
         headers: { Authorization: "Bearer invalid-token" },
       }),
       env as never,
@@ -156,9 +156,12 @@ describe("route-owned principal restrictions", () => {
   it("rejects a service principal on human-user routes", async () => {
     const { env } = createEnv(401);
     const info = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const request = await signedServiceRequest("https://test.local/sessions/session-1", {
-      service: "linear-bot",
-    });
+    const request = await signedServiceRequest(
+      "https://test.local/sessions/session-1/sandbox-access",
+      {
+        service: "linear-bot",
+      }
+    );
 
     const response = await handleRequest(request, env as never, TEST_BACKGROUND_TASK_CONTEXT);
 

@@ -43,6 +43,15 @@ const SERVICE_PERMISSION_CEILINGS: Record<ServiceName, readonly PermissionId[]> 
     "sessions.lifecycle",
     "skills.read",
   ],
+  // A product's backend relays its interactive users.
+  app: [
+    "sessions.create",
+    "sessions.read",
+    "sessions.collaborate",
+    "sessions.lifecycle",
+    "sessions.sandbox_access",
+    "skills.read",
+  ],
 };
 
 /** Checks the hard permission ceiling for a trusted service, independent of user grants. */

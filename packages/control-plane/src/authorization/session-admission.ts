@@ -7,7 +7,9 @@ import { TeamMembershipStore } from "../db/team-memberships";
 import type { RequestContext } from "../http/request-context";
 import type { Env } from "../types";
 import { auditPrivateSessionBreakGlass } from "./request-audit";
+import { isAppUser } from "./app-user";
 import {
+  enforcesSessionAccess,
   legacyPermissionForAction,
   parseTeamsEnforcementMode,
   type TeamsEnforcementMode,
@@ -34,6 +36,7 @@ export function viewerFromContext(
     permissions: authorization.permissions,
     suspended: authorization.suspendedAt !== null,
     memberships,
+    ...(isAppUser(ctx.principal) ? { ownSessionsOnly: true } : {}),
   };
 }
 
@@ -54,7 +57,7 @@ export async function evaluateSessionAdmission(
   const row = await new SessionIndexStore(ctx.db).get(sessionId);
   if (!row) return { kind: "not_found" };
 
-  if (mode === "off" && row.visibility !== "private") {
+  if (mode === "off" && row.visibility !== "private" && !isAppUser(ctx.principal)) {
     return { kind: "allowed", legacyPermission: legacyPermissionForAction(action) };
   }
 
@@ -73,11 +76,9 @@ export async function evaluateSessionAdmission(
   if (slot === "session") ctx.sessionAdmission = { row: accessRow, viewer };
   if (slot === "child") ctx.childSessionAdmission = { row: accessRow, viewer };
 
+  const enforced = enforcesSessionAccess(mode, row.visibility, viewer);
   const read = checkSessionAccess(viewer, accessRow, "read");
-  if (
-    !read.allowed &&
-    (mode === "on" || (row.visibility === "private" && read.reason === "private"))
-  ) {
+  if (!read.allowed && (mode === "on" || (enforced && read.reason === "private"))) {
     return { kind: "not_found" };
   }
   if (read.allowed && read.audit === "session.private_break_glass") {
@@ -86,7 +87,7 @@ export async function evaluateSessionAdmission(
 
   // The signed route grant authorizes actorless actions; the service resolver only checks visibility.
   const decision = viewer.kind === "service" ? null : checkSessionAccess(viewer, accessRow, action);
-  if ((mode === "on" || row.visibility === "private") && decision && !decision.allowed) {
+  if (enforced && decision && !decision.allowed) {
     return { kind: "action_denied", reason: decision.reason };
   }
   if (mode === "shadow") {
@@ -102,7 +103,6 @@ export async function evaluateSessionAdmission(
   }
   return {
     kind: "allowed",
-    legacyPermission:
-      mode === "on" || row.visibility === "private" ? null : legacyPermissionForAction(action),
+    legacyPermission: enforced ? null : legacyPermissionForAction(action),
   };
 }

@@ -24,12 +24,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .claude_settings import write_session_user_settings
 from .constants import CLAUDE_HARNESS_FILE_PATH
 from .mcp_packages import McpPackageInstaller
 from .sandbox_bin import install_bin_scripts
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+    from collections.abc import Set as AbstractSet
 
     from .repo_config import RepoEntry
     from .runtime_config import ClaudeStagerConfig
@@ -117,6 +119,7 @@ class ClaudeStager:
         bundled_skills_path: Path = BUNDLED_SKILLS_PATH,
         handoff_path: Path = Path(CLAUDE_HARNESS_FILE_PATH),
         mcp_packages: McpPackageInstaller | None = None,
+        disabled_bundled_skills: Callable[[], AbstractSet[str]] | None = None,
     ) -> None:
         self.config = config
         self.log = log
@@ -124,6 +127,8 @@ class ClaudeStager:
         self.bundled_skills_path = bundled_skills_path
         self.handoff_path = handoff_path
         self._mcp_packages = mcp_packages or McpPackageInstaller(log)
+        # Read at start(), after managed skills have learned the session's switches.
+        self._disabled_bundled_skills = disabled_bundled_skills or frozenset
         self.started = False
 
     @property
@@ -136,6 +141,7 @@ class ClaudeStager:
         # Nothing the harness writes here is a credential; the directory is
         # only for Claude's own state (transcripts under projects/, settings).
         self._install_bundled_skills()
+        write_session_user_settings(self.config_dir, os.environ, self.log)
         install_bin_scripts(self.log)
         # Best effort, as at OpenCode boot: a local npx server resolved now
         # does not download during the first prompt.
@@ -155,8 +161,16 @@ class ClaudeStager:
         if not self.bundled_skills_path.is_dir():
             return
         installed = 0
+        disabled = self._disabled_bundled_skills()
+        skipped: list[str] = []
         for skill_dir in self.bundled_skills_path.iterdir():
             if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").exists():
+                continue
+            if skill_dir.name in disabled:
+                # The session owner switched it off. A copy left by an earlier
+                # start goes too; a managed skill never holds a bundled name.
+                shutil.rmtree(self.skills_dir / skill_dir.name, ignore_errors=True)
+                skipped.append(skill_dir.name)
                 continue
             shutil.copytree(
                 skill_dir,
@@ -166,9 +180,12 @@ class ClaudeStager:
                 symlinks=True,
             )
             installed += 1
-        if installed:
+        if installed or skipped:
             self.log.info(
-                "claude.skills_installed", skills_path=str(self.skills_dir), count=installed
+                "claude.skills_installed",
+                skills_path=str(self.skills_dir),
+                count=installed,
+                skipped=sorted(skipped),
             )
 
     async def stop(self) -> None:

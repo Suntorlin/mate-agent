@@ -6,7 +6,7 @@ Modal-based sandbox infrastructure for the Open-Inspect coding agent system.
 
 This package provides the data plane for Open-Inspect:
 
-- **Sandboxes**: Isolated development environments running OpenCode
+- **Sandboxes**: Isolated development environments running the agent (Claude or OpenCode)
 - **Images**: Pre-built container images with all development tools
 - **Snapshots**: Filesystem snapshots for fast startup and session persistence
 - **Image builds**: Short-lived provider sessions that the control plane creates, starts, snapshots,
@@ -18,8 +18,8 @@ This package provides the data plane for Open-Inspect:
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Session Sandbox                              │
 │  ┌──────────────────┐  ┌─────────────────┐  ┌───────────────┐  │
-│  │  Supervisor      │  │  OpenCode       │  │  Bridge       │  │
-│  │  (entrypoint.py) │──│  Server         │──│  (bridge.py)  │  │
+│  │  Supervisor      │  │  Agent harness  │  │  Bridge       │  │
+│  │  (entrypoint.py) │──│  (Claude/OC)    │──│  (bridge.py)  │  │
 │  └──────────────────┘  └─────────────────┘  └───────────────┘  │
 │           │                    │                    │           │
 │           └────────────────────┼────────────────────┘           │

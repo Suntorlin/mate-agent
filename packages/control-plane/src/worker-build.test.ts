@@ -28,6 +28,11 @@ describe("control-plane worker build", () => {
       expect(bundle.includes("@opentelemetry/semantic-conventions/build/esm/")).toBe(true);
       expect(bundle.includes("@opentelemetry/semantic-conventions/build/src/")).toBe(false);
 
+      // The AWS SDK reads S3's XML answers with a DOMParser in its browser build, and workerd has
+      // none: the build points it at the SDK's own pure-JS parser (see build:worker).
+      expect(bundle.includes("DOMParser")).toBe(false);
+      expect(bundle.includes("AwsXmlParser")).toBe(true);
+
       // The Node host's adapters (src/node/**) never reach the worker bundle.
       const metafile = JSON.parse(
         readFileSync(resolve(packageDirectory, "dist/meta.json"), "utf8")

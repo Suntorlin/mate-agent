@@ -3,7 +3,11 @@ import {
   getValidHarnessOrDefault,
   harnessIdSchema,
 } from "@open-inspect/shared/harnesses";
-import { sessionStatusSchema, spawnSourceSchema } from "@open-inspect/shared/types/sessions";
+import {
+  sessionCoverTypeSchema,
+  sessionStatusSchema,
+  spawnSourceSchema,
+} from "@open-inspect/shared/types/sessions";
 import { sessionVisibilitySchema } from "@open-inspect/shared/types/teams";
 import { z } from "zod";
 
@@ -33,6 +37,9 @@ export const sessionRowSchema = z.object({
   active_duration_ms: z.number(),
   message_count: z.number(),
   pr_count: z.number(),
+  cover_artifact_id: z.string().nullable(),
+  cover_artifact_type: sessionCoverTypeSchema.nullable().catch(null),
+  media_count: z.number(),
   input_tokens: z.number(),
   output_tokens: z.number(),
   reasoning_tokens: z.number(),
@@ -76,6 +83,11 @@ export function toSessionFields(row: SessionRow) {
     activeDurationMs: row.active_duration_ms,
     messageCount: row.message_count,
     prCount: row.pr_count,
+    cover:
+      row.cover_artifact_id && row.cover_artifact_type
+        ? { artifactId: row.cover_artifact_id, type: row.cover_artifact_type }
+        : null,
+    mediaCount: row.media_count,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     reasoningTokens: row.reasoning_tokens,

@@ -19,6 +19,8 @@ export function visibleSessionsPredicate(
         };
   }
 
+  if (viewer.ownSessionsOnly) return { sql: `${alias}.user_id = ?`, params: [viewer.userId] };
+
   const teamsEnforced = options.mode === "on";
   const teamSql = teamsEnforced
     ? `(${alias}.visibility = 'team' AND (? = 1 OR EXISTS (

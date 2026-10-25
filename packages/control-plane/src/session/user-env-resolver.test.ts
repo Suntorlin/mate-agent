@@ -211,6 +211,7 @@ function sessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
     vnc_enabled: 0,
     total_cost: 0,
     max_cost_usd: null,
+    permission_mode: "full_auto",
     budget_exhausted: 0,
     sandbox_settings: null,
     environment_id: null,
@@ -247,6 +248,7 @@ function makeHarness(
     /** Omit to model an unset SECRETS_CAP_ENFORCEMENT (fail-closed enforce). */
     capEnforcement?: string;
     resolveRepoId?: (session: SessionRow) => Promise<number>;
+    resolveGatewayEnv?: (sessionId: string) => Promise<Record<string, string> | null>;
   } = {}
 ) {
   const session = options.session === undefined ? sessionRow() : options.session;
@@ -277,6 +279,7 @@ function makeHarness(
     repoSecretsEncryptionKey: options.encryptionKey ?? ENCRYPTION_KEY,
     secretsCapEnforcement: options.capEnforcement,
     log,
+    resolveGatewayEnv: options.resolveGatewayEnv,
   });
 
   return {
@@ -508,6 +511,63 @@ describe("UserEnvResolver", () => {
       expect(h.logs).toContainEqual(
         expect.objectContaining({ level: "warn", msg: "secrets.cap_exceeded" })
       );
+    });
+  });
+
+  describe("gateway layer", () => {
+    const GATEWAY_ENV = {
+      GATEWAY_URL: "https://gateway.example",
+      GATEWAY_TOKEN: "gateway-jwt",
+      ANTHROPIC_BASE_URL: "https://gateway.example/llm",
+      ANTHROPIC_API_KEY: "gateway-jwt",
+    };
+
+    it("overlays the gateway layer over global Anthropic secrets, stripping only Anthropic's", async () => {
+      const sessionIds: string[] = [];
+      const h = makeHarness({
+        resolveGatewayEnv: async (sessionId) => {
+          sessionIds.push(sessionId);
+          return GATEWAY_ENV;
+        },
+      });
+      h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);
+      h.db.globalSecretRows = await secretRows({
+        ANTHROPIC_API_KEY: "sk-ant-real",
+        ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+        ANTHROPIC_AUTH_TOKEN: "real-bearer",
+        OPENAI_API_KEY: "sk-openai-real",
+        UNRELATED: "kept",
+      });
+
+      const env = await h.resolver.getUserEnvVars();
+
+      // The gateway serves Anthropic only: OpenAI and xAI sessions keep their own credentials.
+      expect(env).toEqual({ ...GATEWAY_ENV, OPENAI_API_KEY: "sk-openai-real", UNRELATED: "kept" });
+      expect(sessionIds).toEqual(["sess-public-1"]);
+    });
+
+    it("leaves the environment untouched without a gateway", async () => {
+      const h = makeHarness({ resolveGatewayEnv: async () => null });
+      h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);
+      h.db.globalSecretRows = await secretRows({ ANTHROPIC_API_KEY: "sk-ant-real" });
+
+      await expect(h.resolver.getUserEnvVars()).resolves.toEqual({
+        ANTHROPIC_API_KEY: "sk-ant-real",
+      });
+    });
+
+    it("asks for the gateway layer on every assembly, so each bridge start gets a fresh token", async () => {
+      let issued = 0;
+      const h = makeHarness({
+        resolveGatewayEnv: async () => ({ ...GATEWAY_ENV, GATEWAY_TOKEN: `token-${++issued}` }),
+      });
+      h.db.providerAuthRows = providerAuthRows(API_KEY_MODES);
+
+      const spawnEnv = await h.resolver.getUserEnvVars();
+      const restoreEnv = await h.resolver.getUserEnvVars();
+
+      expect(spawnEnv?.GATEWAY_TOKEN).toBe("token-1");
+      expect(restoreEnv?.GATEWAY_TOKEN).toBe("token-2");
     });
   });
 

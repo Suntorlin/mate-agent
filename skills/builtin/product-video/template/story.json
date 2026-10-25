@@ -1,0 +1,40 @@
+{
+  "title": "Replace: product name",
+  "language": "en",
+  "cast": { "vo": { "voice_id": "", "voice_title": "", "own_voice": false, "color": "#FFD54A" } },
+  "facts": ["Replace: only claims the user gave or their page states, one per line"],
+  "hook": { "text": "Replace: the problem in five words", "duration": 2.0 },
+  "shots": [
+    {
+      "id": "s01",
+      "role": "hook",
+      "visual": "Replace: the product in the most striking situation",
+      "src": "assets/s01.mp4",
+      "lines": [{ "id": "l01", "who": "vo", "text": "Replace: the problem, in the buyer's words." }]
+    },
+    {
+      "id": "s02",
+      "role": "demo",
+      "visual": "Replace: a hand using the product, close",
+      "src": "assets/s02.mp4",
+      "lines": [{ "id": "l02", "who": "vo", "text": "Replace: what it does, shown as it is said." }]
+    },
+    {
+      "id": "s03",
+      "role": "proof",
+      "visual": "Replace: the result",
+      "src": "assets/s03.mp4",
+      "texts": [{ "text": "Replace: one number or fact", "style": "label", "position": "upper" }],
+      "lines": [{ "id": "l03", "who": "vo", "text": "Replace: the proof." }]
+    },
+    {
+      "id": "s04",
+      "role": "cta",
+      "visual": "The real product photo, clean",
+      "src": "assets/product.png",
+      "lines": [{ "id": "l04", "who": "vo", "text": "Replace: what to do now." }]
+    }
+  ],
+  "end": { "text": "Replace: brand + CTA", "duration": 2.0, "src": "assets/product.png" },
+  "music": { "src": "assets/audio/music.mp3", "volume": 0.18 }
+}

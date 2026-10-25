@@ -91,6 +91,51 @@ describe("session ws-token route", () => {
     });
   });
 
+  it("mints a token for a app actor asserted by the product", async () => {
+    const forwarded: Request[] = [];
+    const fetch = vi.fn(async (request: Request) => {
+      forwarded.push(request);
+      return Response.json({ token: "token-app" });
+    });
+    const { handler, params } = routeFor("/sessions/session-1/ws-token");
+
+    const ctx = createContext();
+    ctx.principal = {
+      kind: "service",
+      service: "app",
+      actor: {
+        provider: "app",
+        providerUserId: "uid-42",
+        canonicalUserId: "user-app-1",
+        participantUserId: "app:uid-42",
+      },
+    };
+    ctx.authorization = {
+      userId: "user-app-1",
+      suspendedAt: null,
+      role: { id: "role-1", key: "member", name: "Member" },
+      permissions: ["sessions.read"],
+    } as never;
+
+    const response = await handler(
+      new Request("https://test.local/sessions/session-1/ws-token", {
+        method: "POST",
+        body: JSON.stringify({}),
+      }),
+      createEnv(fetch),
+      params,
+      withSessionRuntime(createEnv(fetch), ctx)
+    );
+
+    expect(response.status).toBe(200);
+    // The DO participant keeps the namespaced id while presence/read-state
+    // attribution resolves through the canonical user.
+    await expect(forwarded[0].json()).resolves.toMatchObject({
+      userId: "app:uid-42",
+      canonicalUserId: "user-app-1",
+    });
+  });
+
   it("forwards a runtime rejection without writing D1", async () => {
     const access = accessDatabase();
     const fetch = vi.fn(async () => Response.json({ error: "rejected" }, { status: 409 }));

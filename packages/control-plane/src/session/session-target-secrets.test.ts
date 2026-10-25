@@ -43,6 +43,7 @@ function session(overrides: Partial<SessionRow> = {}): SessionRow {
     vnc_enabled: 0,
     total_cost: 0,
     max_cost_usd: null,
+    permission_mode: "full_auto",
     budget_exhausted: 0,
     sandbox_settings: null,
     environment_id: null,

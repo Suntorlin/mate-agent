@@ -15,7 +15,9 @@ import {
   type SlackAgentNotifyLookup,
 } from "./manager";
 import type { ImageBuildSpawnRow } from "./image-selection";
+import type { SqlDatabase } from "../../db/sql-database";
 import { computeRepositoriesFingerprint } from "../../image-builds/fingerprint";
+import { createImageBuildLookup } from "../../image-builds/lookup";
 import { COMPATIBLE_RUNTIME_VERSION } from "../../image-builds/test-helpers";
 import { MIN_SHUTDOWN_PROTOCOL_RUNTIME_GENERATION } from "../runtime-manifest";
 import {
@@ -1220,6 +1222,40 @@ describe("SandboxLifecycleManager", () => {
       }
     });
 
+    it.each([
+      ["the model's default", null, "anthropic/claude-opus-5-5", "high"],
+      ["the session's own", "low", "anthropic/claude-opus-5-5", "low"],
+      ["that model's default", null, "anthropic/claude-sonnet-4-5", "max"],
+      ["no", null, "opencode/kimi-k2.5", undefined],
+    ])(
+      "hands the sandbox %s reasoning effort so it can start the agent early",
+      async (_label, sessionEffort, model, expected) => {
+        const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
+        const storage = createMockStorage(
+          createMockSession({ reasoning_effort: sessionEffort, model }),
+          sandbox
+        );
+        const provider = createMockProvider();
+        const manager = new SandboxLifecycleManager(
+          provider,
+          storage,
+          storage,
+          createMockBroadcaster(),
+          createMockWebSocketManager(false),
+          createMockAlarmScheduler(),
+          createMockIdGenerator(),
+          createUnmanagedShutdown(),
+          createTestConfig()
+        );
+
+        await manager.spawnSandbox();
+
+        expect(provider.createSandbox).toHaveBeenCalledWith(
+          expect.objectContaining({ reasoningEffort: expected })
+        );
+      }
+    );
+
     it("stores VNC access without publishing it before the sandbox is ready", async () => {
       const sandbox = createMockSandbox({ status: "pending", created_at: Date.now() - 60000 });
       const storage = createMockStorage(createMockSession({ vnc_enabled: 1 }), sandbox);
@@ -2329,6 +2365,91 @@ describe("SandboxLifecycleManager", () => {
 
       expect(provider.restoreFromSnapshot).toHaveBeenCalled();
       expect(storage.calls).toContain(`updateSandboxRuntimeVersion:${COMPATIBLE_RUNTIME_VERSION}`);
+      expect(sandbox.runtime_version).toBe(COMPATIBLE_RUNTIME_VERSION);
+    });
+
+    it("offers the newest workspace copy to the restore, so a lost snapshot is not an empty sandbox", async () => {
+      const sandbox = createMockSandbox({
+        status: "stopped",
+        snapshot_image_id: "img-gone",
+        snapshot_runtime_version: COMPATIBLE_RUNTIME_VERSION,
+      });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const broadcaster = createMockBroadcaster();
+      const provider = createMockProvider({
+        restoreFromSnapshot: vi.fn(
+          async (config): Promise<RestoreResult> => ({
+            success: true,
+            restoredFrom: "workspace_copy",
+            sandboxId: config.sandboxId,
+            providerObjectId: "fresh-object",
+            lifetime: { kind: "unknown", observedAtMs: 1, reason: "test" },
+          })
+        ),
+      });
+      const resolveWorkspaceCopyUrl = vi.fn(async () => "https://store.test/copy.tar.zst?sig");
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        storage,
+        broadcaster,
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createUnmanagedShutdown(),
+        { ...createTestConfig(), resolveWorkspaceCopyUrl }
+      );
+
+      await manager.spawnSandbox();
+
+      expect(resolveWorkspaceCopyUrl).toHaveBeenCalledOnce();
+      expect(provider.restoreFromSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          snapshotImageId: "img-gone",
+          workspaceCopyUrl: "https://store.test/copy.tar.zst?sig",
+        })
+      );
+      // The rebuilt sandbox runs today's runtime and reports its own version.
+      expect(storage.calls).toContain("updateSandboxRuntimeVersion:null");
+      expect(sandbox.runtime_version).toBeNull();
+      expect(broadcaster.messages).toContainEqual({
+        type: "sandbox_restored",
+        message: "Session restored from its saved project files",
+      });
+    });
+
+    it("restores without a workspace copy when looking one up fails", async () => {
+      const sandbox = createMockSandbox({
+        status: "stopped",
+        snapshot_image_id: "img-abc123",
+        snapshot_runtime_version: COMPATIBLE_RUNTIME_VERSION,
+      });
+      const storage = createMockStorage(createMockSession(), sandbox);
+      const provider = createMockProvider();
+      const manager = new SandboxLifecycleManager(
+        provider,
+        storage,
+        storage,
+        createMockBroadcaster(),
+        createMockWebSocketManager(false),
+        createMockAlarmScheduler(),
+        createMockIdGenerator(),
+        createUnmanagedShutdown(),
+        {
+          ...createTestConfig(),
+          resolveWorkspaceCopyUrl: vi.fn(async () => {
+            throw new Error("store unreachable");
+          }),
+        }
+      );
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      await manager.spawnSandbox();
+      warnSpy.mockRestore();
+
+      expect(provider.restoreFromSnapshot).toHaveBeenCalledWith(
+        expect.not.objectContaining({ workspaceCopyUrl: expect.anything() })
+      );
       expect(sandbox.runtime_version).toBe(COMPATIBLE_RUNTIME_VERSION);
     });
 
@@ -3867,6 +3988,45 @@ describe("SandboxLifecycleManager", () => {
       await manager.spawnSandbox();
 
       // Should still spawn, just without a prebuilt image
+      expect(provider.createSandbox).toHaveBeenCalledWith(
+        expect.objectContaining({ prebuiltImageId: null, prebuiltImageSha: null })
+      );
+    });
+
+    it("boots from the base image when the image build tables cannot be read", async () => {
+      // The real lookup over a database that has lost the tables it reads.
+      const db = {
+        prepare: vi.fn(() => {
+          throw new Error("no such table: image_builds");
+        }),
+      } as unknown as SqlDatabase;
+      const { manager, provider } = createRepoSessionManager({
+        imageBuildLookup: createImageBuildLookup(db, "modal"),
+      });
+
+      await manager.spawnSandbox();
+
+      expect(db.prepare).toHaveBeenCalled();
+      expect(provider.createSandbox).toHaveBeenCalledTimes(1);
+      expect(provider.createSandbox).toHaveBeenCalledWith(
+        expect.objectContaining({ prebuiltImageId: null, prebuiltImageSha: null })
+      );
+    });
+
+    it("boots a session without a repository from the base image without asking for one", async () => {
+      const imageBuildLookup: ImageBuildLookup = {
+        getLatestReady: vi.fn(async () => null),
+        markRestoreFailed: vi.fn(async () => true),
+      };
+      const { manager, provider } = createRepoSessionManager({
+        imageBuildLookup,
+        sessionRepositories: [],
+      });
+
+      await manager.spawnSandbox();
+
+      expect(imageBuildLookup.getLatestReady).not.toHaveBeenCalled();
+      expect(imageBuildLookup.markRestoreFailed).not.toHaveBeenCalled();
       expect(provider.createSandbox).toHaveBeenCalledWith(
         expect.objectContaining({ prebuiltImageId: null, prebuiltImageSha: null })
       );
@@ -5661,5 +5821,70 @@ describe("spawn admission race (#1589)", () => {
       expect.stringContaining("superseded"),
       expect.anything()
     );
+  });
+});
+
+describe("SandboxLifecycleManager replacing a sandbox without its state", () => {
+  function replacingHarness(resolveWorkspaceCopyUrl: () => Promise<string | null>) {
+    // Stopped with no snapshot after having run: the next spawn is fresh.
+    const sandbox = createMockSandbox({ status: "stopped" });
+    const storage = createMockStorage(createMockSession(), sandbox);
+    const provider = createMockProvider();
+    const recordWarning = vi.fn();
+    const manager = new SandboxLifecycleManager(
+      provider,
+      storage,
+      storage,
+      createMockBroadcaster(),
+      createMockWebSocketManager(false),
+      createMockAlarmScheduler(),
+      createMockIdGenerator(),
+      createUnmanagedShutdown(),
+      { ...createTestConfig(), resolveWorkspaceCopyUrl, recordWarning }
+    );
+    return { manager, provider, recordWarning, sandbox };
+  }
+
+  it("unpacks the newest workspace copy and says the session carried on", async () => {
+    const { manager, provider, recordWarning, sandbox } = replacingHarness(
+      async () => "https://store.test/copy.tar.zst?sig"
+    );
+    const replacedId = sandbox.modal_sandbox_id;
+    const replacedAt = sandbox.created_at;
+
+    await manager.spawnSandbox();
+
+    expect(provider.createSandbox).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceCopyUrl: "https://store.test/copy.tar.zst?sig" })
+    );
+    expect(recordWarning).toHaveBeenCalledExactlyOnceWith(
+      "Reconnected. Your files and conversation are back, so just keep going.",
+      `sandbox-state-discarded:${replacedId}:${replacedAt}`
+    );
+  });
+
+  it("asks for the request again when there is no workspace copy", async () => {
+    const { manager, provider, recordWarning } = replacingHarness(async () => null);
+
+    await manager.spawnSandbox();
+
+    expect(provider.createSandbox).toHaveBeenCalledWith(
+      expect.not.objectContaining({ workspaceCopyUrl: expect.anything() })
+    );
+    expect(recordWarning).toHaveBeenCalledExactlyOnceWith(
+      "Reconnected, but the earlier work could not be recovered. Send your request again to continue.",
+      expect.stringMatching(/^sandbox-state-discarded:/)
+    );
+  });
+
+  it("records nothing when the replacement fails to start", async () => {
+    const { manager, provider, recordWarning } = replacingHarness(async () => null);
+    vi.mocked(provider.createSandbox).mockRejectedValueOnce(new Error("provider down"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await manager.spawnSandbox();
+    errorSpy.mockRestore();
+
+    expect(recordWarning).not.toHaveBeenCalled();
   });
 });

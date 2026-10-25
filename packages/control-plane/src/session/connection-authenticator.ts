@@ -38,9 +38,11 @@ import type { SessionWebSocketManager } from "./websocket-manager";
 import { WS_AUTHORIZATION_LEASE_MS } from "./authorization-lease";
 import { canManageSessionBudget } from "./budget-authorization";
 import {
+  enforcesSessionAccess,
   legacyPermissionForAction,
   type TeamsEnforcementMode,
 } from "../authorization/teams-enforcement";
+import { isAppUserParticipant } from "../authorization/app-user";
 import type { ClientCommandAuthorization } from "./message-router";
 
 /**
@@ -65,7 +67,10 @@ export interface SessionConnectionAuthenticatorDeps {
   schedulePullRequestRefresh: (trigger: "open" | "manual") => void;
   scmProviderName: SourceControlProviderName;
   /** Resolve the current D1 session scope and user's authorization on every gated action. */
-  resolveSessionViewer: (userId: string) => Promise<SessionViewerResolution>;
+  resolveSessionViewer: (
+    userId: string,
+    ownSessionsOnly: boolean
+  ) => Promise<SessionViewerResolution>;
   auditPrivateBreakGlass: (userId: string, row: SessionAccessRow) => Promise<void>;
   /** The session-scoped logger; upgrade/subscribe paths also receive request-scoped children. */
   log: Logger;
@@ -380,7 +385,11 @@ export class SessionConnectionAuthenticator implements SessionUpgradeAdmission {
       // Authorization is intentionally sampled once at the start of this
       // subscription request. A concurrent role change takes effect when this
       // bounded lease expires, not midway through an in-flight request.
-      const resolution = await this.deps.resolveSessionViewer(participant.canonical_user_id);
+      const ownSessionsOnly = isAppUserParticipant(participant.user_id);
+      const resolution = await this.deps.resolveSessionViewer(
+        participant.canonical_user_id,
+        ownSessionsOnly
+      );
       const read = resolution.kind === "valid" ? this.decide(resolution, "read") : null;
       if (resolution.kind !== "valid" || !read?.allowed) {
         log.warn("ws.connect", {
@@ -443,6 +452,7 @@ export class SessionConnectionAuthenticator implements SessionUpgradeAdmission {
         lastSeen: Date.now(),
         clientId: data.clientId,
         authorizationExpiresAt,
+        ...(ownSessionsOnly ? { ownSessionsOnly } : {}),
       };
 
       try {
@@ -526,10 +536,13 @@ export class SessionConnectionAuthenticator implements SessionUpgradeAdmission {
   /** Samples the current D1 scope and access before dispatching a WebSocket command. */
   async authorizeClientCommand(
     ws: SessionWebSocket,
-    userId: string,
+    client: Pick<ClientInfo, "userId" | "ownSessionsOnly">,
     action: SessionAction
   ): Promise<ClientCommandAuthorization> {
-    const resolution = await this.deps.resolveSessionViewer(userId);
+    const resolution = await this.deps.resolveSessionViewer(
+      client.userId,
+      client.ownSessionsOnly === true
+    );
     if (resolution.kind === "unavailable") return { kind: "unavailable" };
     if (resolution.kind !== "valid" || !this.decide(resolution, "read").allowed) {
       this.deps.wsManager.removeClient(ws);
@@ -548,7 +561,7 @@ export class SessionConnectionAuthenticator implements SessionUpgradeAdmission {
     resolution: Extract<SessionViewerResolution, { kind: "valid" }>,
     action: SessionAction
   ): AccessDecision {
-    if (resolution.mode === "on" || resolution.row.visibility === "private") {
+    if (enforcesSessionAccess(resolution.mode, resolution.row.visibility, resolution.viewer)) {
       return checkSessionAccess(resolution.viewer, resolution.row, action);
     }
     return resolution.authorization.permissions.includes(legacyPermissionForAction(action))
@@ -578,6 +591,7 @@ export class SessionConnectionAuthenticator implements SessionUpgradeAdmission {
       lastSeen: Date.now(),
       clientId: mapping.client_id || `client-${Date.now()}`,
       authorizationExpiresAt: mapping.authorization_expires_at,
+      ...(isAppUserParticipant(mapping.user_id) ? { ownSessionsOnly: true } : {}),
     };
 
     wsManager.setClient(ws, clientInfo);

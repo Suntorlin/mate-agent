@@ -7,7 +7,8 @@
 import { createLogger, parseLogLevel } from "../logger";
 import { readEnvConfig, readNodeHostSettings } from "./config";
 import { startNodeHost } from "./host";
-import { readS3ObjectStorageConfig } from "./s3-object-storage";
+import { readS3TransferConfig } from "../storage/s3/s3-large-object-transfers";
+import { readS3ObjectStorageConfig } from "../storage/s3/s3-object-storage";
 
 /** Past the drain budget, how much longer the process gets before it is forced down. */
 const FORCE_EXIT_GRACE_MS = 5_000;
@@ -18,7 +19,8 @@ async function main(): Promise<void> {
   const settings = readNodeHostSettings(process.env);
   const config = readEnvConfig(process.env);
   const objectStorage = readS3ObjectStorageConfig(process.env);
-  const host = await startNodeHost({ config, settings, objectStorage });
+  const objectTransfers = readS3TransferConfig(process.env, objectStorage);
+  const host = await startNodeHost({ config, settings, objectStorage, objectTransfers });
 
   const stop = (signal: NodeJS.Signals): void => {
     log.info("node_host.signal", { event: "node_host.signal", signal });

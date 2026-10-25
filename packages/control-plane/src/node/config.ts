@@ -18,9 +18,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EnvConfig } from "../types";
 import { parseTeamsEnforcementMode } from "../authorization/teams-enforcement";
+import { parseDefaultSessionVisibility } from "../session/default-visibility";
 
-/** A source of configuration values, `process.env` in production. */
-export type ConfigSource = Record<string, string | undefined>;
+import { pickVariables, type ConfigSource } from "../config-source";
+
+export { pickVariables, type ConfigSource };
 
 /** Every `EnvConfig` field. `satisfies` fails if the table and the type ever disagree. */
 const ENV_CONFIG_KEYS = {
@@ -44,6 +46,7 @@ const ENV_CONFIG_KEYS = {
   SERVICE_AUTH_SECRET_SLACK_BOT: true,
   SERVICE_AUTH_SECRET_GITHUB_BOT: true,
   SERVICE_AUTH_SECRET_LINEAR_BOT: true,
+  SERVICE_AUTH_SECRET_APP: true,
   SLACK_BOT_TOKEN: true,
   GITHUB_APP_ID: true,
   GITHUB_APP_PRIVATE_KEY: true,
@@ -80,20 +83,38 @@ const ENV_CONFIG_KEYS = {
   VERCEL_TEAM_ID: true,
   VERCEL_BASE_SNAPSHOT_ID: true,
   VERCEL_BASE_SNAPSHOT_NAME: true,
+  VERCEL_IMAGE: true,
+  VERCEL_DEFAULT_VCPUS: true,
   VERCEL_RUNTIME: true,
   VERCEL_SANDBOX_API_BASE_URL: true,
   VERCEL_SNAPSHOT_EXPIRATION_MS: true,
+  VERCEL_MAX_SESSION_TIMEOUT_MS: true,
   E2B_API_KEY: true,
   E2B_API_URL: true,
   E2B_TEMPLATE_ID: true,
   E2B_SANDBOX_TIMEOUT_SECONDS: true,
   E2B_AUTO_PAUSE: true,
   SANDBOX_INACTIVITY_TIMEOUT_MS: true,
+  SANDBOX_LIFETIME_EXTENSION_MS: true,
   SANDBOX_BOOT_TIMEOUT_MS: true,
   EXECUTION_TIMEOUT_MS: true,
   SECRETS_CAP_ENFORCEMENT: true,
   TEAMS_ENFORCEMENT: true,
+  DEFAULT_SESSION_VISIBILITY: true,
+  DEFAULT_SESSION_HARNESS: true,
   LOG_LEVEL: true,
+  GATEWAY_URL: true,
+  GATEWAY_SECRET: true,
+  JEV_API_KEY: true,
+  INLINE_LLM_BASE_URL: true,
+  INLINE_LLM_API_KEY: true,
+  INLINE_MODEL: true,
+  MEMORY_MODEL: true,
+  APP_MCP_URL: true,
+  APP_TOKEN_URL: true,
+  APP_ENGINE_TOKEN: true,
+  APP_MCP_NAME: true,
+  USER_FILES_QUOTA_GB: true,
 } as const satisfies Record<keyof EnvConfig, true>;
 
 /** The `EnvConfig` field names, for checking documentation against the type. */
@@ -127,20 +148,6 @@ export const REQUIRED_ENV_CONFIG_KEY_NAMES: readonly (keyof EnvConfig)[] = Objec
 ) as (keyof EnvConfig)[];
 
 /**
- * The variables in `source` named by `names`, and no other: a reader that
- * takes its input through here cannot read a variable its table omits, so
- * the table stays the one list of what the reader depends on.
- */
-export function pickVariables<Name extends string>(
-  source: ConfigSource,
-  names: readonly Name[]
-): Record<Name, string | undefined> {
-  const picked = {} as Record<Name, string | undefined>;
-  for (const name of names) picked[name] = source[name];
-  return picked;
-}
-
-/**
  * The deployment's configuration from `source`. Fails naming every required
  * variable that is missing, so one boot reports the whole gap. Encryption
  * keys are validated by `env-validation` once the environment is built.
@@ -158,6 +165,7 @@ export function readEnvConfig(source: ConfigSource): EnvConfig {
     throw new Error(`Missing required configuration: ${missing.join(", ")}`);
   }
   parseTeamsEnforcementMode(config.TEAMS_ENFORCEMENT);
+  parseDefaultSessionVisibility(config);
   return config as EnvConfig;
 }
 
@@ -195,7 +203,7 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
  */
 export const DEFAULT_MIGRATIONS_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../terraform/d1/migrations"
+  "../../../../deploy/d1/migrations"
 );
 
 /** The host's settings from `source`; `DATA_DIR` is the one with no default. */

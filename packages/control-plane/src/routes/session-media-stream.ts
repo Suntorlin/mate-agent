@@ -2,7 +2,17 @@ import { Hono } from "hono";
 import { admit } from "../routing/admit";
 import type { ControlPlaneHonoEnv } from "../routing/hono-env";
 import { createLogger } from "../logger";
-import { isSupportedScreenshotMimeType, isSupportedVideoMimeType } from "../media";
+import { isMediaArtifactType } from "@open-inspect/shared/types/artifacts";
+import {
+  attachmentContentDisposition,
+  DIRECT_DOWNLOAD_URL_TTL_SECONDS,
+  FILE_FALLBACK_CONTENT_TYPE,
+  isSupportedScreenshotMimeType,
+  isSupportedVideoMimeType,
+  PAGE_CONTENT_TYPE,
+  PAGE_RESPONSE_HEADERS,
+  sanitizeFilename,
+} from "../media";
 import type { NormalizedArtifactResponse } from "../session/artifacts";
 import type { ObjectStorageMetadata } from "../storage/object-storage";
 import type { Env } from "../types";
@@ -67,9 +77,24 @@ export async function handleMediaGet(
 
   const artifact = await getSessionArtifactFromRuntime(sessionId, artifactId, ctx);
   if (artifact instanceof Response) return artifact;
-  if (!artifact || (artifact.type !== "screenshot" && artifact.type !== "video") || !artifact.url) {
+  if (!artifact || !isMediaArtifactType(artifact.type) || !artifact.url) {
     return error("Media artifact not found", 404);
   }
+  const disposition =
+    artifact.type === "file" ? attachmentContentDisposition(fileArtifactName(artifact)) : null;
+  // A file goes straight from the store to the browser, under its own name.
+  if (disposition && env.MEDIA_DIRECT) {
+    const location = await env.MEDIA_DIRECT.signGet(artifact.url, {
+      expiresInSeconds: DIRECT_DOWNLOAD_URL_TTL_SECONDS,
+      contentDisposition: disposition,
+      contentType: FILE_FALLBACK_CONTENT_TYPE,
+    });
+    return new Response(null, {
+      status: 302,
+      headers: { Location: location, "Cache-Control": "private, no-store" },
+    });
+  }
+
   const rangeHeader = request.headers.get("Range");
   let body: ReadableStream;
   let metadata: ObjectStorageMetadata;
@@ -121,7 +146,12 @@ export async function handleMediaGet(
     metadata = object;
   }
 
-  const contentType = resolveMediaContentType(artifact, metadata);
+  const contentType =
+    artifact.type === "page"
+      ? PAGE_CONTENT_TYPE
+      : artifact.type === "file"
+        ? FILE_FALLBACK_CONTENT_TYPE
+        : resolveMediaContentType(artifact, metadata);
   if (!contentType) {
     logger.error("media.stream.invalid_metadata", {
       session_id: sessionId,
@@ -133,9 +163,25 @@ export async function handleMediaGet(
     return error("Media artifact is invalid", 500);
   }
 
-  return range
+  const response = range
     ? createPartialStoredObjectResponse(body, metadata, contentType, range)
     : createStoredObjectResponse(body, metadata, contentType);
+  if (artifact.type === "page") {
+    for (const [name, value] of Object.entries(PAGE_RESPONSE_HEADERS)) {
+      response.headers.set(name, value);
+    }
+  }
+  if (disposition) {
+    response.headers.set("Content-Disposition", disposition);
+    response.headers.set("X-Content-Type-Options", "nosniff");
+  }
+  return response;
+}
+
+/** The name a file artifact downloads under. */
+function fileArtifactName(artifact: NormalizedArtifactResponse): string {
+  const filename = artifact.metadata?.filename;
+  return (typeof filename === "string" && sanitizeFilename(filename)) || "download";
 }
 
 export const sessionMediaStreamRoutes = new Hono<ControlPlaneHonoEnv>();

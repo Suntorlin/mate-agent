@@ -19,6 +19,10 @@ venv/
 
 # Reference code (vendored)
 opencode-reference/
+# HyperFrames skills, kept as HeyGen ships them (skills/builtin/hyperframes/NOTICE.md)
+skills/builtin/hyperframes*/
+skills/builtin/media-use/
+skills/builtin/faceless-explainer/
 
 # Lock files
 package-lock.json
@@ -26,7 +30,15 @@ pnpm-lock.yaml
 yarn.lock
 
 # Generated files
-packages/docs/.source/
 *.d.ts
 *.min.js
 *.min.css
+
+# Generated from skills/builtin by scripts/gen-builtin-skills.mjs
+packages/control-plane/src/skills/builtin-skills.generated.ts
+
+# The local stack's data, bundles and logs (scripts/local)
+.local/
+
+# Diagram sources rendered to PNG (docs/images/architecture.html)
+docs/images/*.html

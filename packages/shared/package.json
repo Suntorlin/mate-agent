@@ -1,6 +1,6 @@
 {
   "name": "@open-inspect/shared",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -73,6 +73,22 @@
     "./types/environments": {
       "import": "./dist/types/environments.js",
       "types": "./dist/types/environments.d.ts"
+    },
+    "./types/user-files": {
+      "import": "./dist/types/user-files.js",
+      "types": "./dist/types/user-files.d.ts"
+    },
+    "./types/user-memory": {
+      "import": "./dist/types/user-memory.js",
+      "types": "./dist/types/user-memory.d.ts"
+    },
+    "./types/questions": {
+      "import": "./dist/types/questions.js",
+      "types": "./dist/types/questions.d.ts"
+    },
+    "./types/media-generation": {
+      "import": "./dist/types/media-generation.js",
+      "types": "./dist/types/media-generation.d.ts"
     },
     "./types/teams": {
       "import": "./dist/types/teams.js",
@@ -186,6 +202,10 @@
       "import": "./dist/types/session-api.js",
       "types": "./dist/types/session-api.d.ts"
     },
+    "./types/session-cards": {
+      "import": "./dist/types/session-cards.js",
+      "types": "./dist/types/session-cards.d.ts"
+    },
     "./types/session-attachments": {
       "import": "./dist/types/session-attachments.js",
       "types": "./dist/types/session-attachments.d.ts"
@@ -198,17 +218,13 @@
       "import": "./dist/types/skills.js",
       "types": "./dist/types/skills.d.ts"
     },
-    "./types/keyboard-shortcuts": {
-      "import": "./dist/types/keyboard-shortcuts.js",
-      "types": "./dist/types/keyboard-shortcuts.d.ts"
+    "./types/workflows": {
+      "import": "./dist/types/workflows.js",
+      "types": "./dist/types/workflows.d.ts"
     },
     "./types/prompts": {
       "import": "./dist/types/prompts.js",
       "types": "./dist/types/prompts.d.ts"
-    },
-    "./types/analytics": {
-      "import": "./dist/types/analytics.js",
-      "types": "./dist/types/analytics.d.ts"
     },
     "./types/audit-events": {
       "import": "./dist/types/audit-events.js",

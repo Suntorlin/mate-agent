@@ -74,6 +74,7 @@ class ManagedSkill:
 class ManagedSkillInstallation:
     manifest_sha256: str
     skills: tuple[ManagedSkill, ...]
+    disabled_bundled_skills: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,8 @@ class ManagedSkillInstallationPage:
     manifest_sha256: str
     skills: tuple[ManagedSkill, ...]
     next_cursor: str | None
+    # Image-bundled skills the session owner switched off; absent means none.
+    disabled_bundled_skills: frozenset[str] = frozenset()
 
 
 class ManagedSkillsClient:
@@ -223,7 +226,7 @@ def validate_installation(raw: bytes) -> ManagedSkillInstallation:
             "managed skills installation is paged but was read whole",
             code="installation_invalid",
         )
-    return ManagedSkillInstallation(page.manifest_sha256, page.skills)
+    return ManagedSkillInstallation(page.manifest_sha256, page.skills, page.disabled_bundled_skills)
 
 
 def validate_installation_page(
@@ -369,8 +372,30 @@ def validate_installation_page(
             "managed skills page is empty but claims more", code="installation_invalid"
         )
 
-    page = ManagedSkillInstallationPage(manifest_sha256, tuple(skills), next_cursor)
+    page = ManagedSkillInstallationPage(
+        manifest_sha256,
+        tuple(skills),
+        next_cursor,
+        _disabled_bundled_skills(installation.get("disabledBundledSkills")),
+    )
     return page, installation_content_bytes
+
+
+def _disabled_bundled_skills(value: Any) -> frozenset[str]:
+    """Validate the optional list of bundled skill names to leave out."""
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list):
+        raise ManagedSkillsError("invalid disabled bundled skills", code="installation_invalid")
+    names: set[str] = set()
+    for item in value:
+        name = _require_string(item, "disabled bundled skill name")
+        if len(name) > MAX_SKILL_NAME_LENGTH or not _SKILL_NAME_RE.fullmatch(name):
+            raise ManagedSkillsError(
+                f"invalid disabled bundled skill name: {name!r}", code="installation_invalid"
+            )
+        names.add(name)
+    return frozenset(names)
 
 
 def _canonical_frontmatter_name(markdown: str) -> str | None:
@@ -400,6 +425,8 @@ class ManagedSkillsMaterializer:
         self.destination = destination
         self.log = log
         self.bundled_skills_path = bundled_skills_path
+        # Set by materialize(); the Claude stager leaves these bundled skills out.
+        self.disabled_bundled_skills: frozenset[str] = frozenset()
 
     @staticmethod
     def _remove_path(path: Path) -> None:
@@ -584,7 +611,7 @@ class ManagedSkillsMaterializer:
             self._abort_staging(staging, backup, journal)
             raise
 
-    async def _fetch_into_staging(self, staging: Path) -> tuple[str, set[str]]:
+    async def _fetch_into_staging(self, staging: Path) -> tuple[str, set[str], frozenset[str]]:
         """Stream every page into staging, returning the digest and installed names.
 
         Nothing outside the staging tree is touched until the caller commits, so
@@ -600,6 +627,7 @@ class ManagedSkillsMaterializer:
         names: set[str] = set()
         content_bytes = 0
         manifest_sha256: str | None = None
+        disabled_bundled: frozenset[str] | None = None
         cursor: str | None = None
         while True:
             raw = await self.client.fetch_installation(
@@ -612,9 +640,13 @@ class ManagedSkillsMaterializer:
                 expected_manifest_sha256=manifest_sha256,
             )
             manifest_sha256 = page.manifest_sha256
+            # The switches are a property of the session, carried by every
+            # page; the first page's copy is authoritative.
+            if disabled_bundled is None:
+                disabled_bundled = page.disabled_bundled_skills
             self._stage_skills(staging, page.skills)
             if page.next_cursor is None:
-                return manifest_sha256, names
+                return manifest_sha256, names, disabled_bundled
             cursor = page.next_cursor
 
     async def materialize(self, repositories: Sequence[RepoEntry], workdir: Path) -> None:
@@ -622,7 +654,7 @@ class ManagedSkillsMaterializer:
         try:
             staging, backup, journal = self._begin_staging()
             try:
-                manifest_sha256, names = await self._fetch_into_staging(staging)
+                manifest_sha256, names, disabled_bundled = await self._fetch_into_staging(staging)
                 collisions = self._find_collisions(names, repositories, workdir)
                 if collisions:
                     for name in collisions:
@@ -649,8 +681,10 @@ class ManagedSkillsMaterializer:
                 f"failed to install managed skills: {error}", code="install_failed"
             ) from error
 
+        self.disabled_bundled_skills = disabled_bundled
         self.log.info(
             "managed_skills.materialized",
             manifest_sha256=manifest_sha256,
             skill_count=len(names),
+            disabled_bundled_skills=sorted(disabled_bundled),
         )

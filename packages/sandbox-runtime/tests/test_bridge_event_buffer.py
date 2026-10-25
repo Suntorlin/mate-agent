@@ -17,6 +17,7 @@ import pytest
 from websockets import State
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 from tests.conftest import MockResponse, wire_opencode_transport
 
 
@@ -82,6 +83,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     bridge.harness.session_id = "oc-session-123"
     wire_opencode_transport(bridge, MockHttpClient())

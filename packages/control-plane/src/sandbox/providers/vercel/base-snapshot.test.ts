@@ -44,6 +44,7 @@ function createMockClient(
   return {
     createSandbox: vi.fn(async () => createSessionResponse()),
     runCommandAndWait: vi.fn(async () => ({ commandId: "cmd-1", exitCode: 0 })),
+    startCommand: vi.fn(async () => ({ commandId: "bootstrap" })),
     writeFileArchive: vi.fn(async () => {}),
     snapshotSession: vi.fn(
       async (): Promise<VercelSnapshotResponse> => ({
@@ -72,6 +73,7 @@ describe("buildVercelBaseSnapshot", () => {
     await expect(
       buildVercelBaseSnapshot(client, {
         runtimeArchive: new Uint8Array([1]),
+        bootstrapPollIntervalMs: 0,
       })
     ).rejects.toThrow("verification failed");
     expect(client.createSandbox).toHaveBeenLastCalledWith(
@@ -87,8 +89,9 @@ describe("buildVercelBaseSnapshot", () => {
     const client = createMockClient();
 
     const result = await buildVercelBaseSnapshot(client, {
-      runtime: "node24",
+      image: "vercel/sandbox/node:24",
       runtimeArchive: new Uint8Array([1, 2, 3]),
+      bootstrapPollIntervalMs: 0,
       sourceVersion: "abcdef1234567890",
       sandboxName: "openinspect-base-managed",
       now: 1780000000000,
@@ -97,7 +100,7 @@ describe("buildVercelBaseSnapshot", () => {
     expect(vi.mocked(client.createSandbox)).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "openinspect-base-managed",
-        runtime: "node24",
+        image: "vercel/sandbox/node:24",
         timeoutMs: 30 * 60 * 1000,
         ports: [],
         tags: expect.objectContaining({
@@ -130,7 +133,8 @@ describe("buildVercelBaseSnapshot", () => {
       }),
       undefined
     );
-    expect(vi.mocked(client.runCommandAndWait)).toHaveBeenCalledWith(
+    // The bootstrap outlives Vercel's ~5 min request limit, so it runs detached and is polled.
+    expect(vi.mocked(client.startCommand)).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-1",
         command: "bash",
@@ -163,6 +167,7 @@ describe("buildVercelBaseSnapshot", () => {
     await expect(
       buildVercelBaseSnapshot(client, {
         runtimeArchive: new Uint8Array([1]),
+        bootstrapPollIntervalMs: 0,
       })
     ).rejects.toThrow("Vercel base runtime bootstrap failed");
     expect(vi.mocked(client.stopSession)).toHaveBeenCalledWith("session-1", undefined);

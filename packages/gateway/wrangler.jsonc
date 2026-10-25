@@ -1,0 +1,52 @@
+// The gateway as a Cloudflare Worker: an example configuration to copy for a deployment (the
+// names are placeholders), which the tests also run against. Nothing in the repo deploys it.
+// Before a deploy: create the optional bucket, and set the secrets below.
+//
+// Secrets (`wrangler secret put`), never vars:
+//   GATEWAY_SECRET           required; signs the sandbox, usage and admin tokens (HS256)
+//   OPENROUTER_API_KEY       required; the one upstream key
+//   LLM_USAGE_REPORT_TOKEN   optional; the gateway's bearer at LLM_USAGE_REPORT_URL (both or neither)
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "gateway",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-06-01",
+  // Sandboxes reach the gateway at <route>/llm (ANTHROPIC_BASE_URL); set the route per deployment:
+  // "routes": [{ "pattern": "gateway.example.com", "custom_domain": true }],
+
+  // The ledger: one SQLite-backed Durable Object instance ("global"). Its alarm runs the backfill
+  // of cut-off calls (every 5 s while one is pending) and the cache keep-alive pings, so the
+  // Worker needs no cron trigger.
+  "durable_objects": {
+    "bindings": [{ "name": "LEDGER", "class_name": "LedgerDO" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LedgerDO"] }],
+
+  // Optional: keep-alive ping bodies too large for a SQLite row (about 2 MB). Without the binding
+  // those sessions are not kept alive. A lifecycle rule expiring `keepalive/` after a day cleans
+  // up after sessions whose rows went away first.
+  "r2_buckets": [{ "binding": "KEEPALIVE_BUCKET", "bucket_name": "gateway-keepalive" }],
+
+  "observability": { "enabled": true },
+
+  // The variables, with their defaults (the Node host reads the same names from its environment).
+  "vars": {
+    "LLM_BUDGET_USD": "25",
+    "LLM_USER_BUDGET_USD": "20",
+    "LLM_USER_BUDGET_PERIOD": "month",
+    "LLM_MONTHLY_BUDGET_USD": "",
+    "LLM_ALERT_WEBHOOK_URL": "",
+    // Each settled call of a product's user is POSTed here, for the product to bill; empty is off.
+    "LLM_USAGE_REPORT_URL": "",
+    "LLM_MODEL_MAP": "",
+    "LLM_FORCE_DEFAULT_MODEL": "false",
+    "CACHE_KEEPALIVE": "false",
+    "CACHE_KEEPALIVE_TOOL_PINGS": "",
+    "CACHE_KEEPALIVE_IDLE_PINGS": "",
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api",
+    // "false" stops serving /llm/admin/* and /admin/usage over HTTP (the GatewayAdmin RPC
+    // entrypoint stays), and the largest request body read and parsed.
+    "ADMIN_HTTP_ENABLED": "true",
+    "MAX_PARSED_BODY_BYTES": "8388608",
+  },
+}

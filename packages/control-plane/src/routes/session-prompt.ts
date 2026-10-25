@@ -31,6 +31,7 @@ import type { Env } from "../types";
 import { error, json, GITHUB_USER_OR_SERVICE_ROUTE, requireSession } from "./shared";
 import { parseJsonBody } from "./body";
 import { type SessionRouteContext, dispatchSession } from "./session-route";
+import type { RequestContext } from "../http/request-context";
 
 const logger = createLogger("router:session-prompt");
 
@@ -47,6 +48,88 @@ function validateAttachments(raw: unknown): SessionAttachmentReference[] | Respo
     return error("Invalid attachments", 400);
   }
   return result.data;
+}
+
+/** Who a prompt is from, as `/internal/prompt` records it. */
+export interface PromptAuthor {
+  authorId: string;
+  canonicalUserId: string | undefined;
+  scmEnrichment: EnqueuePromptRequest["scmEnrichment"];
+}
+
+/**
+ * The author of a prompt from the verified principal (user → canonical id,
+ * bot → asserted actor); an actorless bot prompt is system-initiated and
+ * stays anonymous. Any route that queues a prompt for a person resolves them
+ * here, so every prompt is attributed the same way.
+ */
+export async function resolvePromptAuthor(
+  request: Request,
+  ctx: RequestContext,
+  enforced: { participantUserId: string | null; canonicalUserId: string | null }
+): Promise<PromptAuthor> {
+  const authorId = enforced.participantUserId ?? "anonymous";
+  let canonicalUserId = enforced.canonicalUserId ?? undefined;
+  let enrichment: GitHubEnrichment | undefined;
+  const parsed = parseAuthorId(authorId);
+  if (authorId !== "anonymous") {
+    const userStore = new UserStore(ctx.db);
+    let userId: string | undefined;
+    try {
+      if (parsed) {
+        const identity = await userStore.getIdentity(parsed.provider, parsed.providerUserId);
+        userId = identity?.userId;
+      } else {
+        userId = (await userStore.getUserById(authorId))?.id;
+      }
+    } catch (e) {
+      logger.warn("Failed to resolve prompt author identity", {
+        error: e instanceof Error ? e : String(e),
+        authorId,
+      });
+    }
+    if (userId) {
+      canonicalUserId = userId;
+      enrichment =
+        (await resolveGitHubEnrichmentForRequest(
+          userStore,
+          userId,
+          await resolveGitHubCredentialAuthority(ctx, request.headers)
+        )) ?? undefined;
+    }
+  }
+  return {
+    authorId,
+    canonicalUserId,
+    scmEnrichment: enrichment
+      ? {
+          userId: enrichment.scmUserId,
+          login: enrichment.scmLogin ?? null,
+          name: enrichment.displayName ?? null,
+          email: enrichment.email ?? null,
+        }
+      : undefined,
+  };
+}
+
+/** Bump the session's place in the index after a prompt, without holding the response. */
+export function touchSessionAfterPrompt(ctx: RequestContext, sessionId: string): void {
+  const store = new SessionIndexStore(ctx.db);
+  ctx.executionCtx.submit(
+    () =>
+      store.touchUpdatedAt(sessionId).catch((error) => {
+        logger.error("session_index.touch_updated_at.background_error", {
+          session_id: sessionId,
+          trace_id: ctx.trace_id,
+          request_id: ctx.request_id,
+          error,
+        });
+      }),
+    {
+      name: "session_index.touch_updated_at",
+      context: { session_id: sessionId, trace_id: ctx.trace_id, request_id: ctx.request_id },
+    }
+  );
 }
 
 export async function handleSessionPrompt(
@@ -81,12 +164,6 @@ export async function handleSessionPrompt(
     callbackContext = callbackContextResult.data;
   }
 
-  // The author comes from the verified principal (user → canonical id, bot →
-  // asserted actor); an actorless bot prompt is system-initiated and stays
-  // anonymous. callbackContext is a completion notification channel — only
-  // the bots that own callbacks may attach one.
-  const authorId = enforcement.enforced.participantUserId ?? "anonymous";
-  let canonicalUserId = enforcement.enforced.canonicalUserId ?? undefined;
   if (callbackContext === undefined && body.callbackContext !== undefined) {
     logger.warn("Dropped callbackContext from unauthorized principal", {
       event: "identity.callback_context_dropped",
@@ -95,34 +172,11 @@ export async function handleSessionPrompt(
     });
   }
 
-  let enrichment: GitHubEnrichment | undefined;
-  const parsed = parseAuthorId(authorId);
-  if (authorId !== "anonymous") {
-    const userStore = new UserStore(ctx.db);
-    let userId: string | undefined;
-    try {
-      if (parsed) {
-        const identity = await userStore.getIdentity(parsed.provider, parsed.providerUserId);
-        userId = identity?.userId;
-      } else {
-        userId = (await userStore.getUserById(authorId))?.id;
-      }
-    } catch (e) {
-      logger.warn("Failed to resolve prompt author identity", {
-        error: e instanceof Error ? e : String(e),
-        authorId,
-      });
-    }
-    if (userId) {
-      canonicalUserId = userId;
-      enrichment =
-        (await resolveGitHubEnrichmentForRequest(
-          userStore,
-          userId,
-          await resolveGitHubCredentialAuthority(ctx, request.headers)
-        )) ?? undefined;
-    }
-  }
+  const { authorId, canonicalUserId, scmEnrichment } = await resolvePromptAuthor(
+    request,
+    ctx,
+    enforcement.enforced
+  );
 
   const promptRequest = {
     content: body.content,
@@ -133,14 +187,7 @@ export async function handleSessionPrompt(
     reasoningEffort: body.reasoningEffort,
     attachments,
     callbackContext,
-    scmEnrichment: enrichment
-      ? {
-          userId: enrichment.scmUserId,
-          login: enrichment.scmLogin ?? null,
-          name: enrichment.displayName ?? null,
-          email: enrichment.email ?? null,
-        }
-      : undefined,
+    scmEnrichment,
   } satisfies EnqueuePromptRequest;
 
   const response = await ctx.sessionRuntime.fetch(sessionId, SessionInternalPaths.prompt, {
@@ -149,22 +196,7 @@ export async function handleSessionPrompt(
     body: JSON.stringify(promptRequest),
   });
 
-  const store = new SessionIndexStore(ctx.db);
-  ctx.executionCtx.submit(
-    () =>
-      store.touchUpdatedAt(sessionId).catch((error) => {
-        logger.error("session_index.touch_updated_at.background_error", {
-          session_id: sessionId,
-          trace_id: ctx.trace_id,
-          request_id: ctx.request_id,
-          error,
-        });
-      }),
-    {
-      name: "session_index.touch_updated_at",
-      context: { session_id: sessionId, trace_id: ctx.trace_id, request_id: ctx.request_id },
-    }
-  );
+  touchSessionAfterPrompt(ctx, sessionId);
 
   return response;
 }

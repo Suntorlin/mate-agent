@@ -6,6 +6,7 @@ import {
 } from "@open-inspect/shared/types/session-inbox";
 import type { SessionStatus, SpawnSource } from "@open-inspect/shared/types/sessions";
 import { visibleSessionsPredicate, type SessionReadScope } from "./session-visibility";
+import { notAWarmDraftSql } from "./session-list-predicates";
 import type { TeamsEnforcementMode } from "../authorization/teams-enforcement";
 import { attachSessionListMetadata } from "./session-list-metadata";
 import type { SessionInboxCursor } from "./session-inbox-cursor";
@@ -269,7 +270,11 @@ export class SessionInboxStore {
       "createdByUserIds" | "excludeAutomatedSessions" | "teamIds" | "readScope" | "mode"
     >
   ): { conditions: string[]; params: unknown[] } {
-    const conditions = ["sessions.status != 'archived'", "sessions.root_session_id IS NOT NULL"];
+    const conditions = [
+      "sessions.status != 'archived'",
+      notAWarmDraftSql("sessions"),
+      "sessions.root_session_id IS NOT NULL",
+    ];
     const params: unknown[] = [];
     if (options.excludeAutomatedSessions) {
       conditions.push("sessions.spawn_source NOT IN ('automation', 'github-bot')");

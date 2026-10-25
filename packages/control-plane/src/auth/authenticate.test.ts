@@ -18,6 +18,7 @@ const SECRETS = {
   SERVICE_AUTH_SECRET_SLACK_BOT: "slack-secret",
   SERVICE_AUTH_SECRET_GITHUB_BOT: "github-secret",
   SERVICE_AUTH_SECRET_LINEAR_BOT: "linear-secret",
+  SERVICE_AUTH_SECRET_APP: "app-secret",
 };
 
 const SERVICE_SECRET: Record<ServiceName, string> = {
@@ -25,6 +26,7 @@ const SERVICE_SECRET: Record<ServiceName, string> = {
   "slack-bot": SECRETS.SERVICE_AUTH_SECRET_SLACK_BOT,
   "github-bot": SECRETS.SERVICE_AUTH_SECRET_GITHUB_BOT,
   "linear-bot": SECRETS.SERVICE_AUTH_SECRET_LINEAR_BOT,
+  app: SECRETS.SERVICE_AUTH_SECRET_APP,
 };
 
 function createCtx(identityRow: Record<string, unknown> | null = null): RequestContext {
@@ -139,6 +141,69 @@ describe("authenticate — service credentials", () => {
         participantUserId: "slack:U0123456",
       },
     });
+  });
+
+  it("authenticates the product asserting one of its users", async () => {
+    const ctx = createCtx({
+      id: "ident-app",
+      user_id: "user-7",
+      provider: "app",
+      provider_user_id: "uid-42",
+      provider_login: null,
+      provider_email: null,
+      created_at: 1,
+    });
+    const request = await signedRequest({
+      service: "app",
+      body: "{}",
+      actor: "app:uid-42",
+    });
+    const result = await authenticate(request, createEnv(), ctx);
+
+    expect(isAuthError(result)).toBe(false);
+    if (isAuthError(result)) return;
+    expect(result.principal).toEqual({
+      kind: "service",
+      service: "app",
+      actor: {
+        provider: "app",
+        providerUserId: "uid-42",
+        canonicalUserId: "user-7",
+        participantUserId: "app:uid-42",
+      },
+    });
+  });
+
+  it("rejects the product asserting a namespace outside its assertion right", async () => {
+    const request = await signedRequest({
+      service: "app",
+      body: "{}",
+      actor: "slack:U0123456",
+    });
+    const result = await authenticate(request, createEnv(), createCtx());
+    expect(result).toEqual({ reason: "Unauthorized", status: 401, failedScheme: "per-service" });
+  });
+
+  it("rejects an app actor asserted by a service with no assertion right", async () => {
+    for (const service of ["web", "slack-bot"] as const) {
+      const request = await signedRequest({ service, body: "{}", actor: "app:uid-42" });
+      const result = await authenticate(request, createEnv(), createCtx());
+      expect(result, service).toEqual({
+        reason: "Unauthorized",
+        status: 401,
+        failedScheme: "per-service",
+      });
+    }
+  });
+
+  it("rejects a product actor in an unknown namespace", async () => {
+    const request = await signedRequest({
+      service: "app",
+      body: "{}",
+      actor: "whale:uid-42",
+    });
+    const result = await authenticate(request, createEnv(), createCtx());
+    expect(result).toEqual({ reason: "Unauthorized", status: 401, failedScheme: "per-service" });
   });
 
   it("keeps canonicalUserId null for actors the CP has never seen", async () => {

@@ -2,9 +2,8 @@
  * The jobs seam over Cloudflare Queues: one Queue per job kind. A message
  * carries the kind's payload alone, and the kind is recovered from the
  * queue it arrived on. That wire shape predates the seam and stays: a queue
- * holds messages across a deploy, and the autofix producer is a different
- * Worker on its own release cycle, so an envelope with the kind inside
- * would open a skew window for nothing.
+ * holds messages across a deploy, so an envelope with the kind inside would
+ * open a skew window for nothing.
  *
  * Terraform names each queue `<prefix>-<deployment name>`, the deployment
  * name being the `DEPLOYMENT_NAME` the Worker is configured with, so a
@@ -19,20 +18,20 @@ import { deliverJob, type JobDeps, type JobKind, type Jobs } from "../jobs";
 
 /** The queue name prefix Terraform gives each kind's queue; the deployment name follows. */
 export const JOB_QUEUE_PREFIXES: Record<JobKind, string> = {
-  "image_build.finalize": "open-inspect-image-build-finalization",
-  "github.autofix": "open-inspect-github-autofix",
+  "user_memory.extract": "agent-engine-memory-extract",
+  "user_memory.consolidate": "agent-engine-memory-consolidate",
 };
 
 /** The Worker's producer bindings, one per job kind; a kind whose queue the deployment omits is absent. */
 export interface JobQueueBindings {
-  IMAGE_BUILD_FINALIZATION_QUEUE: Queue<unknown>;
-  AUTOFIX_QUEUE?: Queue<unknown>;
+  USER_MEMORY_EXTRACT_QUEUE?: Queue<unknown>;
+  USER_MEMORY_CONSOLIDATE_QUEUE?: Queue<unknown>;
 }
 
 /** The producer binding Terraform gives the control-plane Worker for each kind's queue. */
 export const JOB_QUEUE_BINDINGS: Record<JobKind, keyof JobQueueBindings> = {
-  "image_build.finalize": "IMAGE_BUILD_FINALIZATION_QUEUE",
-  "github.autofix": "AUTOFIX_QUEUE",
+  "user_memory.extract": "USER_MEMORY_EXTRACT_QUEUE",
+  "user_memory.consolidate": "USER_MEMORY_CONSOLIDATE_QUEUE",
 };
 
 /** The queue Terraform names for `kind` on the deployment called `deploymentName`. */

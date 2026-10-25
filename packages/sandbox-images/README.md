@@ -97,8 +97,8 @@ docker build --platform linux/amd64 -f packages/sandbox-images/Dockerfile -t ope
 docker run --rm --platform linux/amd64 openinspect-image-contract
 ```
 
-For Amazon Linux, use a Vercel bundle and `--build-arg BASE_IMAGE=amazonlinux:2023`. Native-amd64 CI
-tests both OS families. Chromium may trap under amd64 emulation on ARM Macs. Reference-container
-success does not replace provider-native verification.
+For Vercel, use a Vercel bundle and `--build-arg BASE_IMAGE=ubuntu:26.04` (Vercel's managed image is
+Ubuntu 26.04). Native-amd64 CI builds that reference image. Chromium may trap under amd64 emulation
+on ARM Macs. Reference-container success does not replace provider-native verification.
 
 See [design scope](../../docs/plans/sandbox-image-dependency-consolidation.md).

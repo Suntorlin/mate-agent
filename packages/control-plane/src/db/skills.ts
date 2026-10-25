@@ -1,17 +1,24 @@
 import {
+  layerSkillLocales,
+  skillArtSchema,
+  skillDisplayName,
   skillImportProvenanceSchema,
   skillImportSourceSchema,
+  skillLocalesFromMetadata,
+  skillLocalesSchema,
   skillMetadataSchema,
   type CreateSkillInput,
   type ReplaceSkillContentAndAssignmentsInput,
   type SetSkillEnabledInput,
   type Skill,
+  type SkillArt,
   type SkillAssignment,
   type SkillAssignmentInput,
   type SkillContentInput,
   type SkillFile,
   type SkillImportProvenance,
   type SkillImportSource,
+  type SkillLocales,
   type SkillSummary,
 } from "@open-inspect/shared/types/skills";
 import { generateId } from "../auth/crypto";
@@ -28,7 +35,7 @@ const RESERVED_SKILL_NAMES = new Set([
   "customize-opencode",
 ]);
 
-interface SkillRow {
+export interface SkillRow {
   id: string;
   name: string;
   current_revision_id: string;
@@ -38,6 +45,8 @@ interface SkillRow {
   updated_by: string;
   created_at: number;
   updated_at: number;
+  art_json: string | null;
+  locales_json: string | null;
   revision_number: number;
   revision_sha256: string;
   description: string;
@@ -91,6 +100,75 @@ interface CurrentSkillRevisionRow {
   revision_sha256: string;
 }
 
+/**
+ * Whether a shared name is taken: by any shared skill, deleted ones included,
+ * or by a live personal skill, which would collide in its owner's sessions.
+ */
+const TAKEN_NAME_QUERY = `SELECT id FROM skills WHERE lower(name) = lower(?)
+  AND (owner_user_id IS NULL OR deleted_at IS NULL)`;
+
+/** A revision's stored metadata; anything unreadable counts as none. */
+function parseSkillMetadata(metadataJson: string | null): Record<string, string> {
+  if (!metadataJson) return {};
+  try {
+    const parsed = skillMetadataSchema.safeParse(JSON.parse(metadataJson));
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The display name in a revision's stored metadata. */
+export function parseSkillDisplayName(metadataJson: string | null): string | null {
+  return skillDisplayName(parseSkillMetadata(metadataJson));
+}
+
+/**
+ * A skill's names and one-liners by language: what its stored metadata
+ * carries, with the languages stored on the skill itself (`locales_json`, a
+ * mirrored official skill's admin-typed ones) laid over it.
+ */
+export function parseSkillLocales(
+  metadataJson: string | null,
+  localesJson: string | null = null
+): SkillLocales {
+  return layerSkillLocales(
+    skillLocalesFromMetadata(parseSkillMetadata(metadataJson)),
+    parseStoredSkillLocales(localesJson)
+  );
+}
+
+function parseStoredSkillLocales(value: string | null): SkillLocales {
+  if (!value) return {};
+  try {
+    const parsed = skillLocalesSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The stored form of the languages typed for a skill; null when no language has a string. */
+export function skillLocalesJson(locales: SkillLocales): string | null {
+  const stored = layerSkillLocales({}, skillLocalesSchema.parse(locales));
+  return Object.keys(stored).length > 0 ? JSON.stringify(stored) : null;
+}
+
+/** A stored cover choice; anything unreadable counts as none. */
+export function parseSkillArt(value: string | null): SkillArt | null {
+  if (!value) return null;
+  try {
+    const parsed = skillArtSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+export function skillArtJson(art: SkillArt | null): string | null {
+  return art ? JSON.stringify(skillArtSchema.parse(art)) : null;
+}
+
 export class SkillConflictError extends Error {}
 export class SkillValidationError extends Error {}
 interface ApplicableSkill {
@@ -118,7 +196,7 @@ export class SkillStore {
     const result = await this.db
       .prepare(
         `${this.currentSkillSelect()}
-         WHERE s.deleted_at IS NULL
+         WHERE s.deleted_at IS NULL AND s.owner_user_id IS NULL
            ${options.cursor ? "AND s.name > ?" : ""}
          ORDER BY s.name
          LIMIT ?`
@@ -143,15 +221,20 @@ export class SkillStore {
     };
   }
 
+  /** A shared skill; personal skills are only reachable through PersonalSkillStore. */
   async get(id: string): Promise<Skill | null> {
     const row = await this.db
       .prepare(
         `${this.currentSkillSelect()}
-         WHERE s.id = ? AND s.deleted_at IS NULL`
+         WHERE s.id = ? AND s.deleted_at IS NULL AND s.owner_user_id IS NULL`
       )
       .bind(id)
       .first<SkillRow>();
-    if (!row) return null;
+    return row ? this.toSkill(row) : null;
+  }
+
+  /** Assemble a full skill from its current row. */
+  async toSkill(row: SkillRow): Promise<Skill> {
     const [assignments, source, files] = await Promise.all([
       this.assignmentsForSkill(row.id),
       this.latestImportSource(row.id),
@@ -180,7 +263,7 @@ export class SkillStore {
       throw new SkillConflictError("Skill name is reserved by the sandbox runtime");
     }
     const existing = await this.db
-      .prepare("SELECT id FROM skills WHERE lower(name) = lower(?)")
+      .prepare(TAKEN_NAME_QUERY)
       .bind(input.name)
       .first<{ id: string }>();
     if (existing) throw new SkillConflictError("A skill with this name already exists");
@@ -211,7 +294,7 @@ export class SkillStore {
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         const conflicting = await this.db
-          .prepare("SELECT id FROM skills WHERE lower(name) = lower(?)")
+          .prepare(TAKEN_NAME_QUERY)
           .bind(input.name)
           .first<{ id: string }>();
         if (conflicting) throw new SkillConflictError("A skill with this name already exists");
@@ -232,12 +315,39 @@ export class SkillStore {
     await this.db.batch([
       this.db
         .prepare(
-          "UPDATE skills SET enabled = ?, updated_by = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL"
+          "UPDATE skills SET enabled = ?, updated_by = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL AND owner_user_id IS NULL"
         )
         .bind(input.enabled ? 1 : 0, actorUserId, now, id),
       this.bumpGeneration(),
     ]);
     return this.get(id);
+  }
+
+  /**
+   * Set or clear a shared skill's cover choice. It belongs to the skill, not to
+   * a revision, and changes nothing a session installs.
+   */
+  async setArt(id: string, art: SkillArt | null): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE skills SET art_json = ? WHERE id = ? AND deleted_at IS NULL AND owner_user_id IS NULL"
+      )
+      .bind(skillArtJson(art), id)
+      .run();
+  }
+
+  /**
+   * Set or clear the languages typed for a shared skill, apart from the ones
+   * its SKILL.md carries. Like the cover choice they belong to the skill, not
+   * to a revision.
+   */
+  async setLocales(id: string, locales: SkillLocales): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE skills SET locales_json = ? WHERE id = ? AND deleted_at IS NULL AND owner_user_id IS NULL"
+      )
+      .bind(skillLocalesJson(locales), id)
+      .run();
   }
 
   /**
@@ -402,7 +512,7 @@ export class SkillStore {
       this.db
         .prepare(
           `UPDATE skills SET deleted_at = ?, enabled = 0, updated_by = ?, updated_at = ?
-           WHERE id = ? AND deleted_at IS NULL`
+           WHERE id = ? AND deleted_at IS NULL AND owner_user_id IS NULL`
         )
         .bind(now, actorUserId, now, id),
       this.bumpGeneration(),
@@ -416,10 +526,7 @@ export class SkillStore {
    */
   async nameAvailable(name: string): Promise<boolean> {
     if (RESERVED_SKILL_NAMES.has(name)) return false;
-    const existing = await this.db
-      .prepare("SELECT id FROM skills WHERE lower(name) = lower(?)")
-      .bind(name)
-      .first<{ id: string }>();
+    const existing = await this.db.prepare(TAKEN_NAME_QUERY).bind(name).first<{ id: string }>();
     return existing === null;
   }
 
@@ -435,11 +542,26 @@ export class SkillStore {
     return row.generation;
   }
 
-  /** Return enabled skills with only the assignments matching this session target. */
-  async listApplicable(input: {
-    repositories: readonly { repoOwner: string; repoName: string }[];
-    environmentId: string | null;
-  }): Promise<ApplicableSkill[]> {
+  /**
+   * Return enabled skills with only the assignments matching this session target.
+   *
+   * With an owner, also the owner's own enabled personal skills (which need no
+   * assignment), minus the shared skills the owner switched off. A personal
+   * skill never shadows a shared one of the same name.
+   *
+   * `picked` names the skills a creator ticked for one session: only those are
+   * returned, and the owner's switches and own-skill `enabled` flags do not
+   * apply. Shared skills still need to be enabled and assigned to the target,
+   * and personal ones still need to belong to the owner.
+   */
+  async listApplicable(
+    input: {
+      repositories: readonly { repoOwner: string; repoName: string }[];
+      environmentId: string | null;
+    },
+    ownerUserId: string | null = null,
+    picked: ReadonlySet<string> | null = null
+  ): Promise<ApplicableSkill[]> {
     const repositoryConditions = input.repositories.map(
       () =>
         "(a.scope_type = 'repository' AND lower(a.repo_owner) = lower(?) AND lower(a.repo_name) = lower(?))"
@@ -455,28 +577,38 @@ export class SkillStore {
       ...(input.environmentId === null ? [] : [input.environmentId]),
       ...input.repositories.flatMap(({ repoOwner, repoName }) => [repoOwner, repoName]),
     ];
+    const switchedOffFilter =
+      picked === null
+        ? `AND NOT EXISTS (
+             SELECT 1 FROM user_skill_preferences p
+             WHERE p.user_id = ? AND p.skill_key = s.id AND p.enabled = 0
+           )`
+        : "";
     const rows = await this.db
       .prepare(
         `${this.currentSkillSelect()}
-         WHERE s.enabled = 1 AND s.deleted_at IS NULL
+         WHERE s.enabled = 1 AND s.deleted_at IS NULL AND s.owner_user_id IS NULL
            AND EXISTS (
              SELECT 1 FROM skill_assignments a
              WHERE a.skill_id = s.id AND (${assignmentConditions.join(" OR ")})
            )
+           ${switchedOffFilter}
          ORDER BY s.name`
       )
-      .bind(...assignmentParams)
+      .bind(...assignmentParams, ...(picked === null ? [ownerUserId] : []))
       .all<SkillRow>();
+    // Picked ids are filtered here, not bound: 200 of them exceed D1's bound-parameter limit.
+    const sharedRows = (rows.results ?? []).filter((row) => picked === null || picked.has(row.id));
     const repositoryKeys = new Set(
       input.repositories.map(
         (repository) =>
           `${repository.repoOwner.toLowerCase()}\0${repository.repoName.toLowerCase()}`
       )
     );
-    const applicableIds = (rows.results ?? []).map((row) => row.id);
+    const applicableIds = sharedRows.map((row) => row.id);
     const assignmentsBySkill = await this.assignmentsForSkills(applicableIds);
     const applicable: ApplicableSkill[] = [];
-    for (const row of rows.results ?? []) {
+    for (const row of sharedRows) {
       const assignments = assignmentsBySkill.get(row.id) ?? [];
       const matching = assignments.filter((assignment) => {
         if (assignment.type === "global") return true;
@@ -499,7 +631,66 @@ export class SkillStore {
         totalBytes: row.total_bytes,
       });
     }
-    return applicable;
+    if (ownerUserId === null) return applicable;
+
+    const sharedNames = new Set(applicable.map((skill) => skill.name.toLowerCase()));
+    const personal = await this.db
+      .prepare(
+        `${this.currentSkillSelect()}
+         WHERE s.owner_user_id = ? ${picked === null ? "AND s.enabled = 1" : ""}
+           AND s.deleted_at IS NULL
+         ORDER BY s.name`
+      )
+      .bind(ownerUserId)
+      .all<SkillRow>();
+    for (const row of personal.results ?? []) {
+      if (picked !== null && !picked.has(row.id)) continue;
+      if (sharedNames.has(row.name.toLowerCase())) continue;
+      applicable.push({
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        currentRevisionId: row.current_revision_id,
+        revisionNumber: row.revision_number,
+        revisionSha256: row.revision_sha256,
+        assignments: [],
+        totalBytes: row.total_bytes,
+      });
+    }
+    return applicable.sort((left, right) => (left.name < right.name ? -1 : 1));
+  }
+
+  /** Enabled shared skills assigned to every session (a global assignment). */
+  async listForEveryone(): Promise<
+    {
+      id: string;
+      name: string;
+      displayName: string | null;
+      description: string;
+      locales: SkillLocales;
+      art: SkillArt | null;
+      updatedAt: number;
+    }[]
+  > {
+    const result = await this.db
+      .prepare(
+        `${this.currentSkillSelect()}
+         WHERE s.enabled = 1 AND s.deleted_at IS NULL AND s.owner_user_id IS NULL
+           AND EXISTS (
+             SELECT 1 FROM skill_assignments a WHERE a.skill_id = s.id AND a.scope_type = 'global'
+           )
+         ORDER BY s.name`
+      )
+      .all<SkillRow>();
+    return (result.results ?? []).map((row) => ({
+      id: row.id,
+      name: row.name,
+      displayName: parseSkillDisplayName(row.metadata_json),
+      description: row.description,
+      locales: parseSkillLocales(row.metadata_json, row.locales_json),
+      art: parseSkillArt(row.art_json),
+      updatedAt: row.updated_at,
+    }));
   }
 
   async filesForRevision(revisionId: string): Promise<SkillFile[]> {
@@ -561,7 +752,8 @@ export class SkillStore {
     };
   }
 
-  private currentSkillSelect(): string {
+  /** @internal Shared with PersonalSkillStore. */
+  currentSkillSelect(): string {
     return `SELECT s.*, r.revision_number, r.revision_sha256, r.description, r.body,
        r.license, r.compatibility, r.metadata_json, r.total_bytes,
        r.created_by AS revision_created_by,
@@ -575,7 +767,8 @@ export class SkillStore {
             LEFT JOIN users revision_author ON revision_author.id = r.created_by`;
   }
 
-  private toSummary(
+  /** @internal Shared with PersonalSkillStore. */
+  toSummary(
     row: SkillRow,
     assignments: SkillAssignment[],
     source: SkillImportProvenance | null
@@ -666,7 +859,7 @@ export class SkillStore {
         `SELECT s.name, s.current_revision_id, r.revision_number, r.revision_sha256
          FROM skills s
          JOIN skill_revisions r ON r.id = s.current_revision_id AND r.skill_id = s.id
-         WHERE s.id = ? AND s.deleted_at IS NULL`
+         WHERE s.id = ? AND s.deleted_at IS NULL AND s.owner_user_id IS NULL`
       )
       .bind(id)
       .first<CurrentSkillRevisionRow>();
@@ -790,7 +983,8 @@ export class SkillStore {
     }
   }
 
-  private revisionInsert(
+  /** @internal Shared with PersonalSkillStore. */
+  revisionInsert(
     revisionId: string,
     skillId: string,
     revisionNumber: number,
@@ -830,7 +1024,8 @@ export class SkillStore {
       );
   }
 
-  private fileInserts(revisionId: string, files: SkillFile[]): SqlStatement[] {
+  /** @internal Shared with PersonalSkillStore. */
+  fileInserts(revisionId: string, files: SkillFile[]): SqlStatement[] {
     return files.map((file) =>
       this.db
         .prepare(
@@ -885,7 +1080,8 @@ export class SkillStore {
     });
   }
 
-  private bumpGeneration(skillId?: string, requiredCurrentRevisionId?: string): SqlStatement {
+  /** @internal Shared with PersonalSkillStore. */
+  bumpGeneration(skillId?: string, requiredCurrentRevisionId?: string): SqlStatement {
     return this.db
       .prepare(
         `UPDATE skills_catalog_state SET generation = generation + 1 WHERE singleton = 1

@@ -235,7 +235,9 @@ key to the session's secret scope. OpenAI uses `OPENAI_API_KEY`; xAI uses `XAI_A
 OpenCode Zen and OpenCode Go both use `OPENCODE_API_KEY`, and an `opencode-go/*` model additionally
 needs an active Go subscription on that key. For subscription authentication, follow the
 provider-account setup guidance in [OpenAI models](OPENAI_MODELS.md) or
-[Grok models](GROK_MODELS.md).
+[Grok models](GROK_MODELS.md). With an LLM gateway (`GATEWAY_URL`), sandboxes get a per-session
+gateway token in place of any Anthropic credential; the gateway serves Anthropic only, so OpenAI,
+xAI and the other providers keep using their own keys or subscriptions.
 
 ### Secret not appearing in sandbox
 

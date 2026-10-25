@@ -12,6 +12,8 @@ with ``resume=`` when the transport drops. It never emits
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import os
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -53,14 +55,22 @@ from .base import (
     TurnOutcome,
 )
 from .claude_env import (
-    CLAUDE_POLICY_SETTINGS,
+    ClaudeAuthMode,
     ClaudeCredential,
     bundled_claude_binary,
+    claude_policy_settings,
+    gateway_key_helper,
     harness_env,
     resolve_api_key_credential,
     write_clean_env_wrapper,
 )
-from .claude_tools import OI_TOOL_SERVER_NAME, ControlPlaneToolClient, ToolServerConfig
+from .claude_tools import (
+    NAME_PROJECT_TOOL_NAME,
+    OI_TOOL_SERVER_NAME,
+    ControlPlaneToolClient,
+    ToolServerConfig,
+    project_name,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -74,6 +84,11 @@ THINKING_BUDGET_MODELS: Final = frozenset(
 )
 THINKING_BUDGETS: Final = {"high": 16_000, "max": 31_999}
 EFFORT_LEVELS: Final = frozenset({"low", "medium", "high", "xhigh", "max"})
+# The efforts Claude Code's ``effortLevel`` setting takes. Between two of them a running agent is
+# switched in place (an ``apply_flag_settings`` control request, milliseconds, same conversation);
+# any other change of effort starts the agent again, which takes seconds.
+IN_PLACE_EFFORTS: Final = frozenset({"low", "medium", "high", "xhigh"})
+EFFORT_SWITCH_TIMEOUT_SECONDS: Final = 5.0
 
 # Everything the child may call; `dontAsk` approves what is listed and denies the rest.
 ALLOWED_TOOLS: Final = (
@@ -106,7 +121,15 @@ TASK_TOOL_NAME: Final = "task"
 # tools drop the qualification so the wire carries the same ids OpenCode
 # emits; external servers keep theirs so the timeline can name the server.
 OI_TOOL_PREFIX: Final = f"mcp__{OI_TOOL_SERVER_NAME}__"
-MAX_RECONNECTS_PER_SESSION: Final = 3
+# Naming the project is not a step of the work: the call becomes the session's title
+# (``session_title``) and leaves no row on the timeline.
+NAME_PROJECT_TOOL: Final = f"{OI_TOOL_PREFIX}{NAME_PROJECT_TOOL_NAME}"
+# Restarts of the agent in a row, with no turn finished between them, before the
+# session gives up. A stop asked for by the user or the bridge is not counted.
+MAX_RECONNECTS_IN_A_ROW: Final = 3
+# Starting the agent ahead of the first prompt normally takes a few seconds
+# (the CLI, then its MCP servers); past this it is abandoned for the prompt's own start.
+PREWARM_CONNECT_TIMEOUT_SECONDS: Final = 60.0
 # The CLI writes one NDJSON message per stdout line, and the SDK transport
 # fails the turn when a single line outgrows its buffer, so the ceiling has to
 # cover the largest line the runtime can produce. ``_user_messages`` inlines
@@ -147,6 +170,14 @@ class SdkClient(Protocol):
 SdkClientFactory = Callable[[Any], SdkClient]
 
 
+class LocalMcpProxy(Protocol):
+    """A loopback endpoint that stands in for a remote MCP server (see ``mcp_proxy``)."""
+
+    async def start(self) -> str: ...
+
+    async def aclose(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class ClaudeHarnessConfig:
     workdir: Path
@@ -157,6 +188,9 @@ class ClaudeHarnessConfig:
     # Appended to the claude_code preset system prompt (repo guidance notes).
     system_prompt_append: str | None = None
     tools: ToolServerConfig | None = None
+    # The effort a prompt runs at unless it picks one. With it the agent starts
+    # before the first prompt (``prewarm``); unknown, it starts with that prompt.
+    default_reasoning_effort: str | None = None
 
 
 @dataclass
@@ -182,6 +216,8 @@ class _TurnState:
     last_token_content: str = ""
     tool_names: dict[str, str] = field(default_factory=dict)
     tool_args: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Calls that leave no ``tool_call`` event (naming the project).
+    unlisted_calls: set[str] = field(default_factory=set)
     emitted_error: bool = False
     step_id: str | None = None
     # Inside a turn the session injected (background task, channel, peer):
@@ -203,6 +239,15 @@ class _TurnState:
         return entry
 
 
+def decodable(text: str) -> str:
+    """The agent's text without U+FFFD, which never stands for anything it meant to say.
+
+    Opus 5.5 behind the gateway now and then opens a reply with a text part that is that one
+    character; shown as is, the reply starts with a black diamond.
+    """
+    return text.replace("\ufffd", "")
+
+
 def bare_model_id(model: str | None, default: str) -> str:
     """``anthropic/claude-x`` → ``claude-x``; a bare id passes through."""
     value = model or default
@@ -222,6 +267,20 @@ def reasoning_options(model: str, reasoning_effort: str | None) -> dict[str, Any
         budget = THINKING_BUDGETS.get(reasoning_effort)
         return {"thinking": {"type": "enabled", "budget_tokens": budget}} if budget else {}
     return {"effort": reasoning_effort} if reasoning_effort in EFFORT_LEVELS else {}
+
+
+async def apply_effort(client: Any, reasoning_effort: str) -> bool:
+    """Set a connected agent's effort through Claude Code's ``apply_flag_settings`` request.
+
+    The SDK has no public call for it, so this sends the control request the SDK sends for its
+    own settings. False when the client has no way to send one (another SDK version).
+    """
+    query = getattr(client, "_query", None)
+    send = getattr(query, "_send_control_request", None)
+    if send is None:
+        return False
+    await send({"subtype": "apply_flag_settings", "settings": {"effortLevel": reasoning_effort}})
+    return True
 
 
 def mcp_server_options(servers: tuple[Mapping[str, Any], ...]) -> dict[str, Any]:
@@ -299,7 +358,9 @@ class ClaudeHarness:
         options_factory: Callable[..., Any] | None = None,
         tool_server_factory: Callable[[ControlPlaneToolClient], Any] | None = None,
         transcript_exists: Callable[[str, Path, Path], bool] | None = None,
+        restored_cost: Callable[[str, Path], float | None] | None = None,
         binary: Path | None = None,
+        mcp_proxies: Mapping[str, LocalMcpProxy] | None = None,
     ) -> None:
         self.config = config
         self.log = log
@@ -310,7 +371,12 @@ class ClaudeHarness:
         self._options_factory = options_factory
         self._tool_server_factory = tool_server_factory
         self._transcript_exists = transcript_exists or _default_transcript_exists
+        self._restored_cost = restored_cost or _default_restored_cost
         self._binary = binary
+        # Remote MCP servers served through a local proxy, by server name, and the
+        # loopback URL each one answers on once started.
+        self._mcp_proxies = dict(mcp_proxies or {})
+        self._mcp_proxy_urls: dict[str, str] = {}
 
         self.session_id: str | None = None
         self.credential: ClaudeCredential | None = None
@@ -321,6 +387,8 @@ class ClaudeHarness:
         self._connected_effort: str | None = None
         self._resume_on_connect = False
         self._needs_reconnect = False
+        # Set by a stop the user or the bridge asked for: that restart is not a failure.
+        self._reconnect_is_requested = False
         self._reconnects = 0
         self._cost_baseline: float | None = 0.0
         # Set by a conversation reset: the next result carries the new id.
@@ -346,6 +414,7 @@ class ClaudeHarness:
         )
         if self.config.tools is not None and self._tool_client is None:
             self._tool_client = ControlPlaneToolClient(self.config.tools, self.log)
+        await self._start_mcp_proxies()
         self.log.info(
             "claude.open",
             auth_mode=self.credential.mode.value,
@@ -375,11 +444,27 @@ class ClaudeHarness:
             )
         return credential
 
+    async def _start_mcp_proxies(self) -> None:
+        """Start each proxy; a server whose proxy fails keeps its configured entry."""
+        for name, proxy in self._mcp_proxies.items():
+            if name in self._mcp_proxy_urls:
+                continue
+            try:
+                self._mcp_proxy_urls[name] = await proxy.start()
+            except Exception as error:
+                self.log.warn("claude.mcp_proxy_start_failed", server=name, exc=error)
+
     async def close(self) -> None:
         await self._disconnect()
         if self._tool_client is not None:
             await self._tool_client.aclose()
             self._tool_client = None
+        for name in list(self._mcp_proxy_urls):
+            del self._mcp_proxy_urls[name]
+            try:
+                await self._mcp_proxies[name].aclose()
+            except Exception as error:
+                self.log.warn("claude.mcp_proxy_close_failed", server=name, exc=error)
 
     async def resume_session(self, persisted_id: str) -> bool:
         if not self._transcript_exists(persisted_id, self.config.workdir, self.config.config_dir):
@@ -402,6 +487,9 @@ class ClaudeHarness:
         if self.credential is None or self.wrapper_path is None or self.session_id is None:
             raise RuntimeError("Claude harness is not open")
         mcp_servers: dict[str, Any] = mcp_server_options(self.config.mcp_servers)
+        for name, url in self._mcp_proxy_urls.items():
+            # The proxy authenticates upstream, so the entry carries no credential.
+            mcp_servers[name] = {"type": "http", "url": url}
         allowed_tools = [*ALLOWED_TOOLS]
         allowed_tools.extend(f"mcp__{name}__*" for name in mcp_servers)
         if self._tool_client is not None:
@@ -413,17 +501,26 @@ class ClaudeHarness:
         system_prompt: dict[str, Any] = {"type": "preset", "preset": "claude_code"}
         if self.config.system_prompt_append:
             system_prompt["append"] = self.config.system_prompt_append
+        key_helper = (
+            gateway_key_helper(self.environ)
+            if self.credential.mode is ClaudeAuthMode.API_KEY
+            else None
+        )
         kwargs: dict[str, Any] = {
             "cwd": str(self.config.workdir),
             "cli_path": str(self.wrapper_path),
-            "env": harness_env(self.config.config_dir, self.credential),
+            "env": harness_env(self.config.config_dir, self.credential, key_helper, self.environ),
             "model": model,
             "mcp_servers": mcp_servers,
+            # Only these built-in tools are defined for the model. Without it the CLI sends every
+            # built-in definition on each call, including ones `dontAsk` would deny anyway
+            # (scheduling, worktrees, messaging): about 12k tokens per call for nothing.
+            "tools": [*ALLOWED_TOOLS],
             "allowed_tools": allowed_tools,
             "disallowed_tools": [*DISALLOWED_TOOLS],
             "permission_mode": "dontAsk",
             "system_prompt": system_prompt,
-            "settings": CLAUDE_POLICY_SETTINGS,
+            "settings": claude_policy_settings(key_helper),
             "setting_sources": ["user", "project"],
             "include_partial_messages": True,
             "forward_subagent_text": False,
@@ -436,6 +533,47 @@ class ClaudeHarness:
             kwargs["session_id"] = self.session_id
         build_options = self._options_factory or _default_options_factory
         return build_options(**kwargs)
+
+    async def prewarm(self) -> None:
+        """Start the agent for the session's default model and effort before any prompt.
+
+        The CLI and its MCP servers take seconds to start; done while the
+        sandbox waits for its first prompt, that prompt finds them running. A
+        prompt that arrives meanwhile waits for this start and reuses it.
+        Best effort: on failure or timeout the harness is left as if this never
+        ran, and the prompt starts the agent itself.
+        """
+        effort = self.config.default_reasoning_effort
+        if effort is None:
+            return
+        try:
+            model = bare_model_id(self.config.default_model, self.config.default_model)
+        except ValueError:
+            return
+        async with self._client_lifecycle_lock:
+            if self._client is not None or self._needs_reconnect or self.session_id is None:
+                return
+            try:
+                async with asyncio.timeout(PREWARM_CONNECT_TIMEOUT_SECONDS):
+                    await self._ensure_client_locked(model, effort)
+            except Exception as error:
+                self.log.warn("claude.prewarm_failed", exc=error, model=model)
+                await self._abandon_client_locked()
+                return
+        self.log.info("claude.prewarmed", model=model, reasoning_effort=effort)
+
+    async def _abandon_client_locked(self) -> None:
+        """Drop a client that never finished connecting, without spending a reconnect."""
+        client, self._client = self._client, None
+        self._connected_model = None
+        self._connected_effort = None
+        if client is None:
+            return
+        try:
+            async with asyncio.timeout(self.limits.prompt_cleanup_timeout_seconds):
+                await client.disconnect()
+        except Exception as error:
+            self.log.warn("claude.disconnect_error", exc=error)
 
     async def _ensure_client(self, model: str, reasoning_effort: str | None) -> SdkClient:
         async with self._client_lifecycle_lock:
@@ -450,17 +588,36 @@ class ClaudeHarness:
         )
         if same_shape and self._client is not None:
             return self._client
+        if (
+            self._client is not None
+            and not self._needs_reconnect
+            and self._connected_model == model
+            and await self._switch_effort_locked(self._client, model, reasoning_effort)
+        ):
+            return self._client
         if self._needs_reconnect:
             # Spent whether or not the previous attempt produced a client: a
-            # connect that fails or hangs still counts against the budget.
-            self._reconnects += 1
-            if self._reconnects > MAX_RECONNECTS_PER_SESSION:
+            # connect that fails or hangs still counts against the budget. A
+            # requested stop is free once; a connect that then fails is not.
+            requested = self._reconnect_is_requested
+            self._reconnect_is_requested = False
+            if not requested:
+                self._reconnects += 1
+            if self._reconnects > MAX_RECONNECTS_IN_A_ROW:
                 raise RuntimeError(
                     "The Claude agent process failed repeatedly for this session; "
                     "start a new session."
                 )
         if not await self._disconnect_locked():
             raise RuntimeError("The previous Claude agent process could not be disconnected.")
+        # §5.3 baseline rule: a fresh child starts its running total at zero, but a
+        # resumed one starts at the total its transcript recorded (after a snapshot
+        # restore that is the whole session so far). Read it before the child runs.
+        cost_baseline: float | None = 0.0
+        if self._resume_on_connect and self.session_id is not None:
+            cost_baseline = await asyncio.to_thread(
+                self._restored_cost, self.session_id, self.config.config_dir
+            )
         options = self.build_options(model, reasoning_effort)
         factory = self._client_factory or _default_client_factory
         client = factory(options)
@@ -471,17 +628,39 @@ class ClaudeHarness:
         self._connected_model = model
         self._connected_effort = reasoning_effort
         self._needs_reconnect = False
-        # A fresh child starts its running total at zero (§5.3 baseline rule).
-        self._cost_baseline = 0.0
+        self._cost_baseline = cost_baseline
         self.log.info(
             "claude.connected",
             model=model,
             reasoning_effort=reasoning_effort,
             resume=self._resume_on_connect,
         )
-        # Every later (re)connect resumes the transcript this child writes.
-        self._resume_on_connect = True
         return client
+
+    async def _switch_effort_locked(
+        self, client: SdkClient, model: str, reasoning_effort: str | None
+    ) -> bool:
+        """Change a running agent's effort without starting it again; False when it cannot."""
+        previous = self._connected_effort
+        if (
+            model in THINKING_BUDGET_MODELS
+            or previous not in IN_PLACE_EFFORTS
+            or reasoning_effort not in IN_PLACE_EFFORTS
+        ):
+            return False
+        try:
+            async with asyncio.timeout(EFFORT_SWITCH_TIMEOUT_SECONDS):
+                switched = await apply_effort(client, reasoning_effort)
+        except Exception as error:
+            self.log.warn("claude.effort_switch_failed", exc=error)
+            return False
+        if not switched:
+            return False
+        self._connected_effort = reasoning_effort
+        self.log.info(
+            "claude.effort_switched", previous=previous, reasoning_effort=reasoning_effort
+        )
+        return True
 
     async def _disconnect(self) -> None:
         async with self._client_lifecycle_lock:
@@ -539,6 +718,11 @@ class ClaudeHarness:
         try:
             async with asyncio.timeout_at(deadline):
                 await client.query(self._user_messages(prompt))
+                # The child has a conversation from here on, so a later (re)connect resumes it.
+                # Before the first prompt there is none: an agent started ahead of the prompt
+                # and replaced for another model or effort starts fresh, or the child exits
+                # with "No conversation found".
+                self._resume_on_connect = True
                 stream = aiter(client.receive_messages())
                 while True:
                     try:
@@ -554,6 +738,8 @@ class ClaudeHarness:
                     for event in events:
                         await emit(event)
                     if outcome is not None:
+                        # The agent finished a turn, so the failures before it are behind us.
+                        self._reconnects = 0
                         return outcome
             self._needs_reconnect = True
             return TurnOutcome.failed(
@@ -646,6 +832,7 @@ class ClaudeHarness:
         # The bridge cancels the prompt task too; the next prompt reconnects so
         # the interrupted turn's trailing messages never leak into it.
         self._needs_reconnect = True
+        self._reconnect_is_requested = True
         # The bridge awaits this inline on its command loop, so a hung
         # interrupt would stall every later command; bound it like cleanup.
         return await self._interrupt_within_budget()
@@ -659,6 +846,7 @@ class ClaudeHarness:
         """
         self._interrupted = True
         self._needs_reconnect = True
+        self._reconnect_is_requested = True
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(timeout_seconds, 0.0)
         interrupt_deadline = min(
@@ -752,7 +940,7 @@ class ClaudeHarness:
                 delta = raw.get("delta") or {}
                 if delta.get("type") == "text_delta" and delta.get("text"):
                     entry = state.texts[-1] if state.texts else state.entry_for(None)
-                    entry.text += str(delta["text"])
+                    entry.text += decodable(str(delta["text"]))
                     events.extend(self._token_event(state))
             return events, None
 
@@ -768,8 +956,8 @@ class ClaudeHarness:
                             "stepId": state.step_id,
                         }
                     )
-                final_text = "".join(
-                    block.text for block in message.content if isinstance(block, TextBlock)
+                final_text = decodable(
+                    "".join(block.text for block in message.content if isinstance(block, TextBlock))
                 )
                 if final_text:
                     entry = state.entry_for(message.message_id)
@@ -777,6 +965,12 @@ class ClaudeHarness:
                         entry.text = final_text
                         events.extend(self._token_event(state))
             for block in message.content:
+                if isinstance(block, ToolUseBlock) and block.name == NAME_PROJECT_TOOL:
+                    state.unlisted_calls.add(block.id)
+                    title = project_name(block.input)
+                    if title:
+                        events.append({"type": "session_title", "title": title})
+                    continue
                 if isinstance(block, ToolUseBlock):
                     state.tool_names[block.id] = _canonical_tool_name(block.name)
                     state.tool_args[block.id] = dict(block.input)
@@ -797,13 +991,16 @@ class ClaudeHarness:
             if isinstance(message.content, str):
                 return events, None
             for block in message.content:
+                if isinstance(block, ToolResultBlock) and block.tool_use_id in state.unlisted_calls:
+                    continue
                 if isinstance(block, ToolResultBlock):
+                    output = _tool_result_text(block.content)
                     events.append(
                         self._tool_event(
                             state,
                             call_id=block.tool_use_id,
                             status="error" if block.is_error else "completed",
-                            output=_tool_result_text(block.content),
+                            output=output,
                             parent_tool_use_id=message.parent_tool_use_id,
                         )
                     )
@@ -976,6 +1173,47 @@ def _default_transcript_exists(session_id: str, workdir: Path, config_dir: Path)
         return False
     del workdir  # informational; the transcript is keyed by session id
     return any(path.is_file() for path in projects.glob(f"*/{session_id}.jsonl"))
+
+
+def _default_restored_cost(session_id: str, config_dir: Path) -> float | None:
+    """The running total the CLI restores when it resumes ``session_id``.
+
+    On exit the CLI appends a ``cost-state`` record to the session transcript, and
+    ``--resume`` restarts its running total from the last one, so every
+    ``total_cost_usd`` after a resume includes the spend before it. Zero when the
+    transcript holds no such record (nothing is restored); ``None`` when the total
+    cannot be read, so the first resumed turn is not charged with an unknown share.
+    """
+    projects = config_dir / "projects"
+    if not projects.is_dir():
+        return 0.0
+    restored: float | None = 0.0
+    for path in projects.glob(f"*/{session_id}.jsonl"):
+        try:
+            with path.open(encoding="utf-8", errors="replace") as transcript:
+                for line in transcript:
+                    if '"cost-state"' not in line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        # A torn line (the child was killed mid-write) is skipped
+                        # on load as well.
+                        continue
+                    if not isinstance(record, dict) or record.get("type") != "cost-state":
+                        continue
+                    if record.get("sessionId") not in (None, session_id):
+                        continue
+                    restored = _finite_cost(record.get("totalCostUSD"))
+        except OSError:
+            return None
+    return restored
+
+
+def _finite_cost(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) else None
 
 
 def _default_options_factory(**kwargs: Any) -> Any:

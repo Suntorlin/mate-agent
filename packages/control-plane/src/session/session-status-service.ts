@@ -16,8 +16,9 @@ import type { SessionStatusProjectionStore } from "../db/session-status-projecti
 import type { SessionStatus } from "@open-inspect/shared/types/sessions";
 import type { SessionRow } from "./types";
 import type { SessionCoreRepository } from "./session-core-repository";
-import type { MessageRepository } from "./message-repository";
+import type { MessageRepository, TerminalMessageStatus } from "./message-repository";
 import type { ArtifactRepository } from "./artifact-repository";
+import { summarizeSessionMedia } from "./artifacts";
 import type { UsageRepository } from "./usage-repository";
 import type { SessionMessenger } from "./messenger";
 import type { BackgroundTasks } from "../platform-ports";
@@ -221,14 +222,15 @@ export class SessionStatusService {
 
   /**
    * After an execution finishes, settle the session status: back to active
-   * when more prompts are queued, otherwise completed/failed by outcome.
-   * Leaves a session that was cancelled or archived meanwhile as it is.
+   * when more prompts are queued, otherwise failed when the turn failed and
+   * completed when it finished or someone stopped it. Leaves a session that
+   * was cancelled or archived meanwhile as it is.
    */
-  async reconcileAfterExecution(success: boolean): Promise<void> {
+  async reconcileAfterExecution(outcome: TerminalMessageStatus): Promise<void> {
     if (this.isSessionClosed()) return;
     const pendingOrProcessing = this.messageRepository.getPendingOrProcessingCount();
     const nextStatus: SessionStatus =
-      pendingOrProcessing > 0 ? "active" : success ? "completed" : "failed";
+      pendingOrProcessing > 0 ? "active" : outcome === "failed" ? "failed" : "completed";
     await this.transition(nextStatus);
   }
 
@@ -405,6 +407,7 @@ export class SessionStatusService {
     const activeDurationMs = this.messageRepository.getActiveDurationMs();
     const artifacts = this.artifactRepository.listArtifacts();
     const prCount = artifacts.filter((a) => a.type === "pr").length;
+    const media = summarizeSessionMedia(artifacts);
     // The index keeps aggregate-friendly zeros; "unknown" lives in the usage rows.
     const tokens = this.usageRepository.getSessionTotals();
     await this.sessionIndex.updateMetrics(sessionId, {
@@ -412,6 +415,8 @@ export class SessionStatusService {
       activeDurationMs,
       messageCount,
       prCount,
+      cover: media.cover,
+      mediaCount: media.count,
       inputTokens: tokens.inputTokens ?? 0,
       outputTokens: tokens.outputTokens ?? 0,
       reasoningTokens: tokens.reasoningTokens ?? 0,

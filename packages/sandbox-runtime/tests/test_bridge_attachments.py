@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 from tests.conftest import wire_opencode_transport
 
 
@@ -15,6 +16,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     wire_opencode_transport(bridge, MagicMock())
     return bridge

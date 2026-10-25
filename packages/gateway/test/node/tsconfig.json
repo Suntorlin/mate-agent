@@ -1,0 +1,10 @@
+{
+  // The Node host's tests run in Node (vitest.node.config.ts), with Node types only.
+  "extends": "../../tsconfig.node.json",
+  "include": [
+    "**/*.ts",
+    "../../src/core/**/*.ts",
+    "../../src/node/**/*.ts",
+    "../../types/node-web.d.ts"
+  ]
+}

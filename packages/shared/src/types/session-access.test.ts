@@ -240,6 +240,40 @@ describe("checkSessionAccess", () => {
     });
   });
 
+  it("gives a lone creator the sessions they started and no others, whatever the row says", () => {
+    for (const visibility of visibilities) {
+      const target = { ...row, visibility };
+      for (const relation of relations) {
+        for (const roleKey of roles) {
+          const creator = { ...viewer(relation, roleKey), ownSessionsOnly: true };
+          for (const action of SESSION_ACTIONS) {
+            const decision = checkSessionAccess(creator, target, action);
+            if (relation === "owner") {
+              expect(decision).toEqual(
+                checkSessionAccess(viewer(relation, roleKey), target, action)
+              );
+            } else {
+              // No collaborator entry, team role or workspace Owner break-glass opens it.
+              expect(decision).toEqual({ allowed: false, reason: "private" });
+            }
+          }
+        }
+      }
+    }
+    expect(
+      sessionCapabilities({ ...viewer("collaborator", "owner"), ownSessionsOnly: true }, row)
+    ).toEqual({
+      canRead: false,
+      canCollaborate: false,
+      canManageLifecycle: false,
+      canDelete: false,
+      canMove: false,
+      canSandbox: false,
+      canManageCollaborators: false,
+      canChangeVisibility: false,
+    });
+  });
+
   it.each([null, "team_one", "team_other"])(
     "limits service reads for team binding %s",
     (teamId) => {

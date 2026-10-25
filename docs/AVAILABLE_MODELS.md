@@ -10,18 +10,23 @@ OpenCode Go require `OPENCODE_API_KEY`; Z.AI Coding Plan requires `ZHIPU_API_KEY
 OpenAI, xAI and Anthropic session selectors offer provider policy, any active connected account, and
 API-key mode. Automation editors can resolve defaults on each run or pin an account/API-key choice.
 Unattended Slack, GitHub, Linear, and unpinned automation launches follow the provider's configured
-unattended mode. For Anthropic that policy reaches only Claude Agent automations: Slack, GitHub and
-Linear launches run on OpenCode, which uses the API key.
+unattended mode. For Anthropic that policy reaches only sessions on the Claude Agent harness;
+OpenCode sessions use the API key.
 
 ## Harnesses
 
-A session runs on one agent harness, fixed at create. Which models and which Anthropic
+A session runs on one agent harness, fixed at create: the one its create request names, else the
+deployment's `DEFAULT_SESSION_HARNESS`, else the Claude Agent. Which models and which Anthropic
 authentication a session can use depends on it:
 
 | Harness      | Models            | Anthropic authentication                   |
 | ------------ | ----------------- | ------------------------------------------ |
 | OpenCode     | every model below | `ANTHROPIC_API_KEY`                        |
 | Claude Agent | Anthropic models  | `ANTHROPIC_API_KEY` or a connected account |
+
+So every model outside the Anthropic group (OpenAI, xAI, OpenCode Zen and Go, Z.AI, DeepSeek) needs
+a session on OpenCode. With an LLM gateway (`GATEWAY_URL`) a sandbox's Anthropic traffic goes
+through the gateway on either harness; the other providers keep their own keys or subscriptions.
 
 See [Using the Claude Agent Harness](CLAUDE_AGENT.md).
 

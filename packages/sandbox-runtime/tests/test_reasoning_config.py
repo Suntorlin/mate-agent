@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sandbox_runtime.opencode_server import _gateway_anthropic_base_url
 from tests.runtime_helpers import make_opencode_server
 
 
@@ -38,3 +39,22 @@ async def test_manual_variants_available_when_switching_from_adaptive_model(reas
                 "max": {"thinking": {"type": "enabled", "budgetTokens": 31_999}},
             }
         }
+
+
+async def test_anthropic_provider_keeps_its_default_endpoint_without_a_gateway(reasoning_config):
+    assert "options" not in reasoning_config["provider"]["anthropic"]
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        (
+            {"GATEWAY_URL": "https://gw.example", "ANTHROPIC_BASE_URL": "https://gw.example/llm/"},
+            "https://gw.example/llm/v1",
+        ),
+        ({"ANTHROPIC_BASE_URL": "https://proxy.example/v1"}, None),
+        ({"GATEWAY_URL": "https://gw.example"}, None),
+    ],
+)
+def test_gateway_sandboxes_point_the_anthropic_provider_at_the_gateway(environ, expected):
+    assert _gateway_anthropic_base_url(environ) == expected

@@ -10,7 +10,6 @@ import {
   GITHUB_SANDBOX_FALLBACK_ROUTE,
   permissionRequirement,
   requireAll,
-  requireAutomation,
   requirePermission,
   serviceAuthorized,
 } from "./routes/shared";
@@ -45,14 +44,6 @@ TEST_ROUTES.post(
   admit({
     ...{ authentication: { kind: "user" }, supportedScmProviders: "all" },
     authorization: requirePermission("workspace.members.manage"),
-  }),
-  () => json({ handled: true })
-);
-TEST_ROUTES.post(
-  "/audit-test/automations/:id/pause",
-  admit({
-    ...{ authentication: { kind: "user-or-service" }, supportedScmProviders: "all" },
-    authorization: requireAutomation("manage"),
   }),
   () => json({ handled: true })
 );
@@ -159,7 +150,6 @@ function createEnv(options?: {
   suspendedAt?: number | null;
   auditError?: Error;
   authorizationError?: Error;
-  automationOwnerId?: string;
 }) {
   const auditWrites: AuditWrite[] = [];
   const db: SqlDatabase = {
@@ -175,32 +165,25 @@ function createEnv(options?: {
             throw options.authorizationError;
           }
           return (
-            sql.includes("SELECT * FROM automations")
+            sql.includes("FROM users u")
               ? {
-                  id: "automation-1",
-                  owner_team_id: null,
-                  user_id: options?.automationOwnerId ?? "user-1",
-                  created_by: "owner",
+                  user_id: "user-1",
+                  suspended_at: options?.suspendedAt ?? null,
+                  role_id:
+                    options?.roleKey === "viewer"
+                      ? BUILT_IN_ROLE_REGISTRY.viewer.id
+                      : options?.roleKey === "administrator"
+                        ? BUILT_IN_ROLE_REGISTRY.administrator.id
+                        : BUILT_IN_ROLE_REGISTRY.owner.id,
+                  role_key: options?.roleKey ?? "owner",
+                  role_name:
+                    options?.roleKey === "viewer"
+                      ? "Viewer"
+                      : options?.roleKey === "administrator"
+                        ? "Administrator"
+                        : "Owner",
                 }
-              : sql.includes("FROM users u")
-                ? {
-                    user_id: "user-1",
-                    suspended_at: options?.suspendedAt ?? null,
-                    role_id:
-                      options?.roleKey === "viewer"
-                        ? BUILT_IN_ROLE_REGISTRY.viewer.id
-                        : options?.roleKey === "administrator"
-                          ? BUILT_IN_ROLE_REGISTRY.administrator.id
-                          : BUILT_IN_ROLE_REGISTRY.owner.id,
-                    role_key: options?.roleKey ?? "owner",
-                    role_name:
-                      options?.roleKey === "viewer"
-                        ? "Viewer"
-                        : options?.roleKey === "administrator"
-                          ? "Administrator"
-                          : "Owner",
-                  }
-                : null
+              : null
           ) as T | null;
         },
         all: async <T>() => ({ results: [] as T[], meta: { changes: 0 } }),
@@ -457,27 +440,6 @@ describe("router authorization decision auditing", () => {
       TEST_BACKGROUND_TASK_CONTEXT
     );
     expect(ordinary.auditWrites).toHaveLength(0);
-  });
-
-  it("audits the any grant selected for a non-owned automation", async () => {
-    authenticateAs({ kind: "user", userId: "user-1" });
-    const access = createEnv({ roleKey: "administrator", automationOwnerId: "user-2" });
-    const response = await handleRequest(
-      new Request("https://test.local/audit-test/automations/automation-1/pause", {
-        method: "POST",
-      }),
-      access.env,
-      TEST_BACKGROUND_TASK_CONTEXT
-    );
-
-    expect(response.status).toBe(200);
-    expect(auditRecord(access.auditWrites[0])).toMatchObject({
-      action: "authorization.request_allowed",
-      metadata: {
-        requiredPermission: "automations.manage.any",
-        effectivePermissions: ["automations.manage.any"],
-      },
-    });
   });
 
   it("preserves every evaluated permission when a later requirement is denied", async () => {

@@ -2,7 +2,10 @@ import type { SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
 import type { EventRepository } from "./event-repository";
 import type { SessionMessenger } from "./messenger";
 
-/** Persist in the existing timeline format so disconnected clients see the warning too. */
+/**
+ * Persist a session-continuity notice in the existing timeline format so
+ * disconnected clients see it too. The web shows it as a quiet status line.
+ */
 export function recordSessionWarning(
   events: EventRepository,
   messenger: Pick<SessionMessenger, "broadcast">,
@@ -12,7 +15,7 @@ export function recordSessionWarning(
   const now = Date.now();
   const event: Extract<SandboxEvent, { type: "warning" }> = {
     type: "warning",
-    scope: "provider",
+    scope: "continuity",
     message,
     timestamp: now / 1000,
   };

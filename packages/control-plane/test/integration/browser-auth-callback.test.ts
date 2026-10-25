@@ -434,7 +434,7 @@ describe("browser auth callback", () => {
     });
 
     const resourceResponse = await handleRequest(
-      await signedWebRequest("/model-preferences", {
+      await signedWebRequest("/sessions", {
         method: "GET",
         cookie: sessionCookie,
       }),
@@ -443,7 +443,7 @@ describe("browser auth callback", () => {
     expect(resourceResponse.status).toBe(200);
 
     const channelOnlyResponse = await handleRequest(
-      await signedWebRequest("/model-preferences", {
+      await signedWebRequest("/sessions", {
         method: "GET",
       }),
       env
@@ -558,7 +558,7 @@ describe("browser auth callback", () => {
     ).toEqual({ email_verified: 1 });
 
     const resourceResponse = await handleRequest(
-      await signedWebRequest("/model-preferences", {
+      await signedWebRequest("/sessions", {
         method: "GET",
         cookie: sessionCookie,
       }),

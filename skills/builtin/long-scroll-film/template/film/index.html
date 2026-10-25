@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        background: #000;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="1920" height="1080"></canvas>
+    <script src="sprites.js"></script>
+    <script src="lines.js"></script>
+    <script src="engine.js"></script>
+    <script src="worlds.js"></script>
+    <script>
+      const c = document.getElementById("c").getContext("2d");
+      // Optional project fonts (film/fonts/*.ttf|woff). Missing files are skipped; the engine falls back to Noto CJK.
+      const FONTS = [
+        ["DotGothic16", "fonts/DotGothic16-Regular.ttf"],
+        ["PressStart2P", "fonts/PressStart2P-Regular.ttf"],
+      ];
+      window.ready = Promise.all(
+        FONTS.map(([n, u]) =>
+          new FontFace(n, `url(${u})`)
+            .load()
+            .then((f) => document.fonts.add(f))
+            .catch(() => null)
+        )
+      )
+        .then(() => document.fonts.ready)
+        .then(() => {
+          FILM.layout();
+          return {
+            total: FILM.total,
+            cues: FILM.cues,
+            segs: FILM.segs.map((s) => ({
+              id: s.id,
+              tIn: s.tIn,
+              tOut: s.tOut,
+              actT: s.actT ?? null,
+            })),
+          };
+        });
+      window.grab = (t) => {
+        FILM.draw(c, t);
+        return document.getElementById("c").toDataURL("image/png").split(",")[1];
+      };
+    </script>
+  </body>
+</html>

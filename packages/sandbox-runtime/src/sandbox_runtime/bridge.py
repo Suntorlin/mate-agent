@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import inspect
 import json
 import math
 import os
@@ -62,13 +63,18 @@ from .harness import (
     TurnOutcome,
     build_agent_harness,
     parse_harness_id,
+    parse_permission_mode,
 )
+from .library import Client as FilesClient
+from .library import inputs_note, sync_inputs
 from .log_config import configure_logging, get_logger
+from .model_refusal import refusal_fields
 from .prompt_budgets import resolve_prompt_limits
 from .push_operation import PushOperation, PushRejected, PushRequest
 from .repo_config import load_repo_manifest
 from .shutdown_preparation import ShutdownPreparationCoordinator
 from .types import GitUser
+from .workspace_copy import WorkspaceCopier, default_roots
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -78,6 +84,9 @@ if TYPE_CHECKING:
 configure_logging()
 
 MAX_SAFE_GENERATION_CREATED_AT = 9_007_199_254_740_991
+# The answer to a ``reconcile_prompt`` for a message this bridge process never
+# received: it was dispatched to a bridge process that has since exited.
+LOST_PROMPT_ERROR = "The sandbox's agent process restarted and lost this turn. Send it again."
 
 
 def parse_prompt_git_author(author_data: object) -> GitUser | None:
@@ -178,6 +187,19 @@ class AgentBridge:
         self.session_id_file = temp_dir / "agent-session-id"
         self.legacy_session_id_file = temp_dir / "opencode-session-id"
         self.repo_path = Path("/workspace")
+        # Sessions without a repository have no git remote to fall back on, so
+        # their project files are also copied to object storage.
+        self.workspace_copy: WorkspaceCopier | None = (
+            None
+            if os.environ.get("REPO_NAME")
+            else WorkspaceCopier(
+                control_plane_url=control_plane_url,
+                session_id=session_id,
+                auth_token=auth_token,
+                log=self.log,
+                roots=default_roots(self.session_id_file),
+            )
+        )
         # Supervisor-written canonical repo manifest; push targeting resolves
         # member checkout paths through it rather than joining spec-supplied
         # names into the filesystem.
@@ -237,13 +259,18 @@ class AgentBridge:
             send_event=lambda event: self._send_event(event),
             end_run=self._end_run,
             record_fatal_error=self._record_fatal_error,
+            on_attached=self._start_prewarm,
         )
+        self._prewarm_task: asyncio.Task[None] | None = None
         self.activity = ActivitySupervisor(
             send_event=lambda event: self._send_event(event),
             prompt_finished=lambda: self.diff_refresh.prompt_finished(),
             refresh_diff=lambda message_id: self.diff_refresh.request(message_id),
             log=self.log,
         )
+        # Every prompt this process received. A prompt the control plane
+        # dispatched to an earlier bridge process is not here (see reconcile).
+        self._received_prompt_ids: set[str] = set()
 
         self._connected_at_monotonic: float | None = None
         self._connection_count = 0
@@ -374,6 +401,10 @@ class AgentBridge:
 
         finally:
             await self.boot_attach.stop()
+            if self._prewarm_task is not None and not self._prewarm_task.done():
+                self._prewarm_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._prewarm_task
             await self.activity.shutdown()
             # Cleanup failures are logged, never raised: an exception here
             # would replace the one that ended the run, and a deterministic
@@ -390,6 +421,11 @@ class AgentBridge:
                     await self.harness.close()
                 except Exception as close_error:
                     self.log.error("bridge.harness_close_failed", exc=close_error)
+            if self.workspace_copy is not None:
+                try:
+                    await self.workspace_copy.aclose()
+                except Exception as close_error:
+                    self.log.error("bridge.workspace_copy_close_failed", exc=close_error)
             self.log.info(
                 "bridge.run_complete",
                 outcome=run_outcome,
@@ -609,6 +645,7 @@ class AgentBridge:
 
         if cmd_type == "prompt":
             message_id = cmd.get("messageId") or cmd.get("message_id", "unknown")
+            self._received_prompt_ids.add(message_id)
             if self.shutdown_preparation.fenced:
                 await self._send_event(
                     {
@@ -642,6 +679,8 @@ class AgentBridge:
                 await self._refuse_push_for_shutdown(cmd)
             else:
                 self._start_push(cmd)
+        elif cmd_type == "reconcile_prompt":
+            await self._reconcile_prompt(cmd)
         elif cmd_type == "refresh_diff":
             if self.shutdown_preparation.fenced:
                 self.log.warn("bridge.command_refused_for_preservation", cmd_type=cmd_type)
@@ -655,12 +694,37 @@ class AgentBridge:
             self.log.debug("bridge.unknown_command", cmd_type=cmd_type)
         return None
 
+    async def _reconcile_prompt(self, cmd: dict[str, Any]) -> None:
+        """Fail a processing message this process never received.
+
+        The control plane asks after every ``ready``. A process that only
+        reconnected received the message and settles it as usual (its
+        ``execution_complete`` is critical and re-sent until acknowledged). A
+        process that restarted never did, and nothing else would end the turn
+        before the execution timeout.
+        """
+        message_id = cmd.get("messageId")
+        if not isinstance(message_id, str) or not message_id:
+            return
+        if message_id in self._received_prompt_ids:
+            return
+        self.log.warn("prompt.lost_on_restart", message_id=message_id)
+        await self._send_event(
+            {
+                "type": "execution_complete",
+                "messageId": message_id,
+                "success": False,
+                "error": LOST_PROMPT_ERROR,
+            }
+        )
+
     async def _handle_prompt(self, cmd: dict[str, Any]) -> dict[str, Any]:
         """Run a harness turn and return its terminal-event candidate."""
         message_id = cmd.get("messageId") or cmd.get("message_id", "unknown")
         content = cmd.get("content", "")
         model = cmd.get("model")
         reasoning_effort = cmd.get("reasoningEffort")
+        permission_mode = parse_permission_mode(cmd.get("permissionMode"))
         raw_attachments = cmd.get("attachments")
         author_data = cmd.get("author", {})
         start_time = time.time()
@@ -674,6 +738,7 @@ class AgentBridge:
             message_id=message_id,
             model=model,
             reasoning_effort=reasoning_effort,
+            permission_mode=permission_mode,
         )
 
         # One deadline for the whole prompt, set at receipt: the wait for a
@@ -685,7 +750,7 @@ class AgentBridge:
         )
 
         try:
-            harness, attachments = await self._prepare_turn(
+            harness, attachments, files_note = await self._prepare_turn(
                 message_id, author_data, raw_attachments, turn_deadline
             )
 
@@ -702,14 +767,17 @@ class AgentBridge:
                 # When an outcome does arrive it is authoritative (below).
                 if event.get("type") == "step_finish" and "messageCostUsd" in event:
                     message_cost_usd = event["messageCostUsd"]
+                if event.get("type") == "error":
+                    event = {**event, **refusal_fields(event.get("error"))}
                 await self._send_event(event)
 
             turn: TurnOutcome = await harness.run_prompt(
                 HarnessPrompt(
                     message_id=message_id,
-                    text=content,
+                    text=f"{content}\n\n{files_note}" if files_note else content,
                     model=model,
                     reasoning_effort=reasoning_effort,
+                    permission_mode=permission_mode,
                     attachments=tuple(attachments or ()),
                     author=author_data if isinstance(author_data, dict) else {},
                     max_duration_seconds=max(
@@ -756,6 +824,8 @@ class AgentBridge:
             self.log.error("prompt.error", exc=e, message_id=message_id)
         finally:
             duration_ms = int((time.time() - start_time) * 1000)
+            if self.workspace_copy is not None and not self.shutdown_preparation.fenced:
+                self.workspace_copy.turn_ended()
             self.log.info(
                 "prompt.run",
                 message_id=message_id,
@@ -770,6 +840,8 @@ class AgentBridge:
             "messageId": message_id,
             "success": not had_error,
             **({"error": error_message} if error_message else {}),
+            # A spent budget is not a passing hiccup: say which one, for the web to word it.
+            **refusal_fields(error_message),
             **({"messageCostUsd": message_cost_usd} if message_cost_usd is not None else {}),
         }
 
@@ -779,12 +851,12 @@ class AgentBridge:
         author_data: Any,
         raw_attachments: Any,
         deadline: float,
-    ) -> tuple[AgentHarness, list[HydratedSessionAttachment] | None]:
-        """The harness and hydrated attachments a turn needs, within the prompt's deadline.
+    ) -> tuple[AgentHarness, list[HydratedSessionAttachment] | None, str | None]:
+        """The harness, hydrated attachments and attached-files note a turn needs, in time.
 
         Everything before the turn spends the prompt's own budget: the wait
         for a booting sandbox, the git identity, the vendor session and the
-        attachment downloads. A prompt whose deadline passes here fails the
+        attachment and input downloads. A prompt whose deadline passes here fails the
         way a turn that never finishes would, and `stop` cancels it like any
         running turn.
         """
@@ -809,6 +881,7 @@ class AgentBridge:
                         f"{rejected_attachments} invalid attachment(s) were skipped."
                     )
                 attachments = await self.attachment_processor.process(session_attachments)
+                files_note = await self._fetch_inputs(message_id)
         except TimeoutError:
             budget = int(self.prompt_limits.prompt_max_duration_seconds)
             if self.boot_attach.booting:
@@ -816,7 +889,50 @@ class AgentBridge:
             raise RuntimeError(f"prompt could not start within {budget} s") from None
         if self.shutdown_preparation.fenced:
             raise RuntimeError("sandbox_lifetime_expiring")
-        return harness, attachments
+        return harness, attachments, files_note
+
+    async def _fetch_inputs(self, message_id: str) -> str | None:
+        """Fetch files the user attached into /workspace/inputs; the note tells the agent.
+
+        Uploads finish and are attached to the session before their message is
+        sent, so every file a message carries is on disk before its turn. A
+        failure never fails the turn: the note names what could not be fetched.
+        """
+        try:
+            client = FilesClient(self.control_plane_url, self.session_id, self.auth_token)
+            result = await asyncio.to_thread(sync_inputs, client)
+        except Exception as exc:
+            self.log.warn("inputs.fetch_failed", message_id=message_id, exc=exc)
+            return None
+        if result.arrived or result.failed:
+            self.log.info(
+                "inputs.fetched",
+                message_id=message_id,
+                arrived=len(result.arrived),
+                failed=len(result.failed),
+            )
+        if result.failed:
+            await self._send_media_warning(f"{', '.join(result.failed)} could not be loaded.")
+        return inputs_note(result)
+
+    def _start_prewarm(self, harness: AgentHarness) -> None:
+        """Let a harness that can start its agent ahead of the first prompt do so.
+
+        Runs beside the socket (a reconnect must not cancel it); a prompt that
+        arrives meanwhile waits for the agent rather than starting a second one.
+        """
+        prewarm = getattr(harness, "prewarm", None)
+        if not inspect.iscoroutinefunction(prewarm):
+            return
+
+        async def run() -> None:
+            try:
+                await self._ensure_agent_session(harness)
+                await prewarm()
+            except Exception as exc:
+                self.log.warn("bridge.prewarm_failed", exc=exc)
+
+        self._prewarm_task = asyncio.create_task(run())
 
     async def _ensure_agent_session(self, harness: AgentHarness | None = None) -> None:
         """Create the vendor session on first use and persist its id."""
@@ -829,7 +945,7 @@ class AgentBridge:
     async def _handle_stop(self) -> None:
         """Handle stop command - cancel prompt task and ask the harness to abort."""
         self.log.info("bridge.stop")
-        self.activity.interrupt_prompt("Task was cancelled")
+        self.activity.interrupt_prompt("Task was cancelled", stopped=True)
         # Best-effort: also tell the agent to stop (saves LLM compute cost)
         if self.harness is not None:
             await self.harness.abort()
@@ -880,14 +996,22 @@ class AgentBridge:
                 stop_execution=harness.stop_execution,
             )
 
+        stop_deadline: list[float] = []
+
+        async def contain_and_note_deadline(deadline: float) -> bool:
+            stop_deadline.append(deadline)
+            return await contain_activity(deadline)
+
         async def persist_session() -> None:
             # The provider prepares Docker during capture, after the stop deadline.
             await self._persist_rotated_session_id(self._require_harness(), strict=True)
+            if self.workspace_copy is not None and stop_deadline:
+                await self.workspace_copy.save_before_shutdown(stop_deadline[0])
 
         result = await self.shutdown_preparation.prepare(
             cmd,
             parsed_generation=generation,
-            contain_activity=contain_activity,
+            contain_activity=contain_and_note_deadline,
             persist_session=persist_session,
             log=self.log,
         )

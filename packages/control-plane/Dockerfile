@@ -52,7 +52,7 @@ WORKDIR /app
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=litestream /usr/local/bin/litestream /usr/local/bin/litestream
 COPY --from=build /app/packages/control-plane/dist/node/main.js packages/control-plane/dist/node/main.js
-COPY terraform/d1/migrations/ terraform/d1/migrations/
+COPY deploy/d1/migrations/ deploy/d1/migrations/
 COPY --chmod=755 packages/control-plane/docker/entrypoint.sh /app/entrypoint.sh
 COPY packages/control-plane/docker/litestream.yml /etc/litestream.yml
 RUN mkdir -p /data && chown node:node /data && chmod 700 /data

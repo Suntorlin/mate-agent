@@ -20,9 +20,9 @@ import type {
   SessionProviderAuthMode,
 } from "./types/provider-accounts";
 
-export const HARNESS_IDS = ["opencode", "claude"] as const;
+export const HARNESS_IDS = ["claude", "opencode"] as const;
 export type HarnessId = (typeof HARNESS_IDS)[number];
-export const DEFAULT_HARNESS: HarnessId = "opencode";
+export const DEFAULT_HARNESS: HarnessId = "claude";
 export const harnessIdSchema = z.enum(HARNESS_IDS);
 
 export interface HarnessCapabilities {

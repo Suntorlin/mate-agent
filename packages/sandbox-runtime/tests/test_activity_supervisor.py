@@ -1,6 +1,7 @@
 """Behavioral interleavings owned by the runtime activity supervisor."""
 
 import asyncio
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
@@ -225,3 +226,49 @@ async def test_ordinary_stop_does_not_replace_shutdown_override() -> None:
 
     await asyncio.wait_for(wait_for_terminal(), timeout=0.1)
     assert events[0]["error"] == "sandbox_lifetime_expiring"
+
+
+@pytest.mark.asyncio
+async def test_stop_marks_the_terminal_stopped_and_other_interruptions_do_not() -> None:
+    async def run(interrupt: Callable[[ActivitySupervisor], None]) -> dict:
+        events: list[dict] = []
+        entered = asyncio.Event()
+
+        async def pending_prompt() -> dict:
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        supervisor = make_supervisor(events)
+        supervisor.start_prompt("message-1", pending_prompt)
+        await entered.wait()
+        interrupt(supervisor)
+
+        async def wait_for_terminal() -> None:
+            while not events:
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(wait_for_terminal(), timeout=0.1)
+        return events[0]
+
+    stopped = await run(lambda s: s.interrupt_prompt("Task was cancelled", stopped=True))
+    assert stopped == {
+        "type": "execution_complete",
+        "messageId": "message-1",
+        "success": False,
+        "error": "Task was cancelled",
+        "stopped": True,
+    }
+
+    failed = await run(lambda s: s.interrupt_prompt("Task was cancelled"))
+    assert failed["success"] is False
+    assert "stopped" not in failed
+
+    def stop_then_shutdown(supervisor: ActivitySupervisor) -> None:
+        supervisor.set_prompt_interruption("Task was cancelled", stopped=True)
+        supervisor.set_prompt_interruption("sandbox_lifetime_expiring", overwrite=True)
+        supervisor.interrupt_prompt("Task was cancelled", stopped=True)
+
+    overridden = await run(stop_then_shutdown)
+    assert overridden["error"] == "sandbox_lifetime_expiring"
+    assert "stopped" not in overridden

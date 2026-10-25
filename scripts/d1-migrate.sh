@@ -3,7 +3,7 @@ set -euo pipefail
 
 DATABASE_NAME="${1:?Usage: d1-migrate.sh <database-name> [migrations-dir]}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MIGRATIONS_DIR="${2:-$SCRIPT_DIR/../terraform/d1/migrations}"
+MIGRATIONS_DIR="${2:-$SCRIPT_DIR/../deploy/d1/migrations}"
 
 WRANGLER="npx wrangler"
 

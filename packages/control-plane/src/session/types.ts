@@ -8,9 +8,11 @@ import {
   messageStatusSchema,
   messageSourceSchema,
   sandboxStatusSchema,
+  sessionPermissionModeSchema,
   sessionStatusSchema,
   spawnSourceSchema,
   type ParticipantRole,
+  type SessionPermissionMode,
 } from "@open-inspect/shared/types/sessions";
 import { artifactTypeSchema } from "@open-inspect/shared/types/artifacts";
 import type { GitPushSpec } from "../source-control";
@@ -58,6 +60,7 @@ export const sessionRowSchema = z.object({
   total_cost: z.number(), // Running aggregate of step_finish event costs
   sandbox_settings: z.string().nullable(), // JSON blob of SandboxSettings
   max_cost_usd: z.number().nullable(), // Mutable effective session cost limit; NULL = unlimited
+  permission_mode: sessionPermissionModeSchema, // When the agent asks before acting; mutable
   budget_exhausted: z.number(), // 0 = promptable by budget, 1 = paused
   environment_id: z.string().nullable(), // Launch environment provenance; NULL for repo-launched/ad-hoc sessions
   created_at: z.number(),
@@ -131,6 +134,7 @@ export const messageRowSchema = z.object({
   error_message: z.string().nullable(),
   stop_confirmation_deadline: z.number().nullable(),
   reported_cost_usd: z.number(),
+  runtime: z.enum(["inline", "sandbox"]).nullable().optional(),
   created_at: z.number(),
   started_at: z.number().nullable(),
   completed_at: z.number().nullable(),
@@ -234,6 +238,7 @@ interface PromptCommand {
   content: string;
   model?: string; // LLM model for per-message override
   reasoningEffort?: string; // Reasoning effort level
+  permissionMode: SessionPermissionMode; // When the agent asks before acting, as of this prompt
   author: {
     userId: string;
     gitIdentity: PromptGitIdentity;
@@ -267,6 +272,16 @@ interface RefreshDiffCommand {
   type: "refresh_diff";
 }
 
+/**
+ * Asks a bridge that has just said `ready` whether it holds the processing
+ * message. A bridge that never received it (it restarted after the dispatch)
+ * answers with a failed `execution_complete`; one that did ignores this.
+ */
+interface ReconcilePromptCommand {
+  type: "reconcile_prompt";
+  messageId: string;
+}
+
 export type SandboxCommand =
   | { type: "sandbox_generation"; generation: { sandboxId: string; createdAt: number } }
   | {
@@ -282,4 +297,5 @@ export type SandboxCommand =
   | ShutdownCommand
   | AckCommand
   | PushCommand
-  | RefreshDiffCommand;
+  | RefreshDiffCommand
+  | ReconcilePromptCommand;

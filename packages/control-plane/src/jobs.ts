@@ -11,25 +11,26 @@
  * the same registry (`node/job-queue.ts`).
  *
  * Retry taxonomy. Delivery is at-least-once on every host, so a handler
- * must tolerate a duplicate: image-build finalization is fenced by a store
- * lease and a completion hash, and the autofix ledger is keyed by the
- * provider object. Both kinds retry on failure until `maxAttempts`, then
- * dead-letter. A payload that does not parse, or a handler that throws, is
- * retried on the same terms rather than dropped: a poison message ends in
- * the dead-letter queue, where an operator (and, for autofix, the queue
- * health check) can see it.
+ * must tolerate a duplicate. Every kind retries on failure until
+ * `maxAttempts`, then dead-letters. A payload that does not parse, or a
+ * handler that throws, is retried on the same terms rather than dropped: a
+ * poison message ends in the dead-letter queue, where an operator can see
+ * it.
  */
 
-import { githubAutofixEnvelopeSchema, type GitHubAutofixEnvelope } from "@open-inspect/shared";
 import type { z } from "zod";
-import { handleAutofixJob } from "./autofix/handler";
 import type { SqlDatabase } from "./db/sql-database";
-import { handleImageBuildFinalization } from "./image-builds/finalization-consumer";
 import {
-  imageBuildFinalizationJobSchema,
-  type ImageBuildFinalizationJob,
-} from "./image-builds/finalization-job";
-import { IMAGE_BUILD_FINALIZATION_RETRY_DELAY_MS } from "./image-builds/finalizer";
+  userMemoryConsolidateJobSchema,
+  handleUserMemoryConsolidate,
+  type UserMemoryConsolidateJob,
+} from "./memory/consolidate";
+import {
+  userMemoryExtractJobSchema,
+  handleUserMemoryExtract,
+  type UserMemoryExtractJob,
+} from "./memory/extract";
+import { USER_MEMORY_JOB_RETRY } from "./memory/llm";
 import type { CorrelationContext, Logger } from "./logger";
 import type { Env } from "./types";
 
@@ -80,25 +81,25 @@ function defineJobKind<Payload>(
 
 export const JOB_KINDS = {
   /**
-   * Finalize an accepted image build: snapshot the provider session and
-   * publish the ready image. Retried while the build's lease is held
-   * elsewhere and on provider failure; the completion hash makes a
-   * duplicate a no-op.
+   * Read a finished turn for what the user's memory should keep
+   * (docs/USER_MEMORY.md). Retried when the session or the gateway cannot
+   * answer; a spent budget is acknowledged. The batch `extract:<messageId>`
+   * makes a duplicate a no-op.
    */
-  "image_build.finalize": defineJobKind<ImageBuildFinalizationJob>({
-    payload: imageBuildFinalizationJobSchema,
-    retry: { maxAttempts: 13, retryDelayMs: IMAGE_BUILD_FINALIZATION_RETRY_DELAY_MS },
-    handle: handleImageBuildFinalization,
+  "user_memory.extract": defineJobKind<UserMemoryExtractJob>({
+    payload: userMemoryExtractJobSchema,
+    retry: USER_MEMORY_JOB_RETRY,
+    handle: handleUserMemoryExtract,
   }),
   /**
-   * Turn PR feedback the GitHub bot received into a session prompt. Retried
-   * on transient provider failure; the handler records the last failed
-   * delivery in the ledger before the host dead-letters it.
+   * Rewrite a user's recent-focus summary after their memory changed.
+   * Retried like the extraction; a summary written in the last half hour
+   * makes a duplicate a no-op.
    */
-  "github.autofix": defineJobKind<GitHubAutofixEnvelope>({
-    payload: githubAutofixEnvelopeSchema,
-    retry: { maxAttempts: 5, retryDelayMs: 30_000 },
-    handle: handleAutofixJob,
+  "user_memory.consolidate": defineJobKind<UserMemoryConsolidateJob>({
+    payload: userMemoryConsolidateJobSchema,
+    retry: USER_MEMORY_JOB_RETRY,
+    handle: handleUserMemoryConsolidate,
   }),
 };
 

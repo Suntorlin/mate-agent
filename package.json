@@ -1,6 +1,6 @@
 {
   "name": "open-inspect",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -18,12 +18,18 @@
     "test:lint-complexity": "node --test scripts/lint-complexity-message.test.mjs",
     "test:lint-sandbox-boundaries": "node --test scripts/lint-sandbox-boundaries.test.mjs",
     "test:lint-sql-portability": "node --test scripts/lint-sql-portability.test.mjs",
-    "test:deploy-aws": "node --test scripts/deploy-aws.test.mjs",
     "test:rbac-bootstrap-owner": "node --experimental-transform-types --test scripts/bootstrap-workspace-owner.test.ts",
     "test:user-merge-cli": "node --experimental-transform-types --test scripts/merge-split-users.test.ts",
     "test:cf-logs-cli": "node --test scripts/cf-logs.test.ts",
-    "test:terraform-workflow-contract": "node --test scripts/terraform-workflow-contract.test.mjs",
     "test:node-version-workflow-contract": "node --test scripts/node-version-workflow-contract.test.mjs",
+    "test:harness": "node --test scripts/check-layout.test.mjs scripts/check-version.test.mjs scripts/check-migrations.test.mjs scripts/git-hooks/git-hooks.test.mjs scripts/agent-guard/agent-guard.test.mjs scripts/verify.test.mjs",
+    "check:layout": "node scripts/check-layout.mjs",
+    "check:public-safety": "node scripts/check-public-safety.ts --tree",
+    "check:version": "node scripts/check-version.mjs",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "verify": "node scripts/verify.mjs",
+    "e2e:local": "node scripts/local/e2e-demo.mjs",
+    "e2e:ui": "node scripts/local/e2e-ui.mjs",
     "test:coverage": "npm run test:coverage --workspaces --if-present",
     "test:integration": "npm run test:integration --workspaces --if-present",
     "typecheck": "npm run build -w @open-inspect/shared && npm run typecheck --workspaces --if-present",
@@ -38,12 +44,11 @@
     "@types/node": "^24.0.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
-    "eslint-plugin-react": "^7.37.4",
-    "eslint-plugin-react-hooks": "^5.1.0",
     "globals": "^15.14.0",
     "husky": "^9.1.7",
     "knip": "^6.32.1",
     "lint-staged": "^16.2.7",
+    "playwright-core": "1.64.1",
     "prettier": "^3.4.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.21.0",
@@ -51,6 +56,24 @@
   },
   "engines": {
     "node": ">=24.0.0"
+  },
+  "prettier": {
+    "semi": true,
+    "singleQuote": false,
+    "tabWidth": 2,
+    "trailingComma": "es5",
+    "printWidth": 100,
+    "bracketSpacing": true,
+    "arrowParens": "always",
+    "endOfLine": "lf",
+    "overrides": [
+      {
+        "files": "*.md",
+        "options": {
+          "proseWrap": "always"
+        }
+      }
+    ]
   },
   "overrides": {
     "minimatch": "^10.2.5",

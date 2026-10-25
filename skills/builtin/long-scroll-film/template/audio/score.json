@@ -1,0 +1,65 @@
+{
+  "worlds": {
+    "cave": {
+      "bpm": 96,
+      "loop_beats": 8,
+      "tracks": [
+        { "wave": "tri", "vol": 0.45, "notes": "45:2 48:2 47:2 44:2" },
+        { "wave": "sq", "vol": 0.08, "duty": 0.125, "notes": "r:1 69:1 r:1 72:1 r:1 71:1 r:1 68:1" }
+      ]
+    },
+    "now": {
+      "bpm": 84,
+      "loop_beats": 16,
+      "tracks": [
+        { "wave": "sin", "vol": 0.12, "notes": "60:4 57:4 53:4 55:4" },
+        { "wave": "sin", "vol": 0.1, "notes": "64:4 60:4 57:4 59:4" },
+        { "wave": "tri", "vol": 0.1, "notes": "76:1 79:1 81:2 76:1 74:1 72:2 74:1 76:1 79:2 74:4" }
+      ]
+    }
+  },
+  "sfx": [
+    {
+      "at": "take",
+      "kind": "jingle",
+      "notes": "67:0.5 71:0.5 74:0.5 79:2",
+      "bpm": 200,
+      "wave": "sq",
+      "vol": 0.22
+    },
+    {
+      "at": "morph",
+      "kind": "sweep",
+      "f0": 200,
+      "f1": 1600,
+      "dur": 1.4,
+      "wave": "sin",
+      "vol": 0.18
+    },
+    {
+      "at": "continue",
+      "offset": 0.0,
+      "kind": "jingle",
+      "notes": "81:0.3",
+      "bpm": 120,
+      "vol": 0.18
+    },
+    {
+      "at": "continue",
+      "offset": 0.95,
+      "kind": "jingle",
+      "notes": "81:0.3",
+      "bpm": 120,
+      "vol": 0.18
+    },
+    {
+      "at": "continue",
+      "offset": 1.9,
+      "kind": "jingle",
+      "notes": "81:0.3",
+      "bpm": 120,
+      "vol": 0.18
+    }
+  ],
+  "blips": { "sage": { "chars": 18, "hz": 1800 } }
+}

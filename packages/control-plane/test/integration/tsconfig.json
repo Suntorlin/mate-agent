@@ -14,6 +14,7 @@
     "paths": { "@/*": ["../../src/*"] }
   },
   "include": ["**/*.ts", "../../src/**/*.ts"],
-  // The Node host's adapters (src/node/**) belong to tsconfig.node.json.
-  "exclude": ["../../src/**/*.test.ts", "../../src/node/**/*.ts"]
+  // The Node host's adapters (src/node/**) belong to tsconfig.node.json, and so does src/test-helpers.ts,
+  // which reads the dev Worker config from disk for the co-located tests.
+  "exclude": ["../../src/**/*.test.ts", "../../src/node/**/*.ts", "../../src/test-helpers.ts"]
 }

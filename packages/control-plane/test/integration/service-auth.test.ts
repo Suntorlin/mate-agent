@@ -8,21 +8,22 @@ import {
   type ServiceName,
 } from "@open-inspect/shared/service-auth";
 import { generateInternalToken } from "@open-inspect/shared/auth";
-import { GlobalSecretsStore } from "../../src/db/global-secrets";
 import { UserStore } from "../../src/db/user-store";
-import { REPOS_CACHE_KEY, reposCacheIdentity } from "../../src/routes/repos";
 import { cleanD1Tables } from "./cleanup";
 import { initNamedSession, seedSandboxAuth } from "./helpers";
 
-const SERVICE_SECRET: Record<ServiceName, string> = {
+type TestServiceName = ServiceName;
+
+const SERVICE_SECRET: Record<TestServiceName, string> = {
   web: "test-service-secret-web",
   "slack-bot": "test-service-secret-slack-bot",
   "github-bot": "test-service-secret-github-bot",
   "linear-bot": "test-service-secret-linear-bot",
+  app: "test-service-secret-app",
 };
 
 async function signedFetch(p: {
-  service: ServiceName;
+  service: TestServiceName;
   method: string;
   url: string;
   body?: string;
@@ -50,7 +51,7 @@ describe("sig1 service-credential authentication", () => {
 
   it("rejects actorless service requests on broad routes", async () => {
     for (const service of Object.keys(SERVICE_SECRET).filter(
-      (candidate): candidate is Exclude<ServiceName, "web"> => candidate !== "web"
+      (candidate): candidate is Exclude<TestServiceName, "web"> => candidate !== "web"
     )) {
       const response = await signedFetch({
         service,
@@ -62,76 +63,16 @@ describe("sig1 service-credential authentication", () => {
     }
   });
 
-  it.each([
-    ["slack-bot", "/repos", 200],
-    ["linear-bot", "/repos", 200],
-    ["github-bot", "/repos/acme/widgets/metadata", 200],
-    ["slack-bot", "/environments", 200],
-    ["linear-bot", "/environments", 200],
-    ["github-bot", "/environments/missing", 404],
-    ["slack-bot", "/integration-settings/slack", 200],
-    ["slack-bot", "/integration-settings/slack/watched-channels", 200],
-    ["slack-bot", "/model-preferences", 200],
-  ] as const)(
-    "allows actorless %s metadata/config read %s",
-    async (service, path, expectedStatus) => {
-      if (path === "/repos") {
-        await env.REPOS_CACHE.put(
-          REPOS_CACHE_KEY,
-          JSON.stringify({
-            repos: [],
-            cachedAt: new Date().toISOString(),
-            scmIdentity: await reposCacheIdentity(env),
-            freshUntil: Date.now() + 60_000,
-          })
-        );
-      }
-      const response = await signedFetch({
-        service,
-        method: "GET",
-        url: `https://test.local${path}`,
-      });
-      expect(response.status).toBe(expectedStatus);
-    }
-  );
-
   it("denies an actorless service without the route's exact grant", async () => {
-    const response = await signedFetch({
-      service: "linear-bot",
-      method: "GET",
-      url: "https://test.local/integration-settings/slack",
-    });
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({ code: "service_actor_required" });
-  });
-
-  it("denies actorless resolved settings for the wrong integration", async () => {
     const response = await signedFetch({
       service: "github-bot",
       method: "GET",
-      url: "https://test.local/integration-settings/linear/resolved/acme/widgets",
+      url: "https://test.local/sessions/missing-session/events",
     });
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toMatchObject({ code: "service_actor_required" });
   });
-
-  it.each([
-    ["github-bot", "github"],
-    ["linear-bot", "linear"],
-  ] as const)(
-    "authorizes actorless %s only for matching resolved settings",
-    async (service, id) => {
-      const response = await signedFetch({
-        service,
-        method: "GET",
-        url: `https://test.local/integration-settings/${id}/resolved/missing/repository`,
-      });
-
-      expect(response.status).not.toBe(403);
-    }
-  );
 
   it("requires a browser session in addition to the web service channel", async () => {
     const response = await signedFetch({
@@ -190,44 +131,28 @@ describe("sig1 service-credential authentication", () => {
     expect(response.status).toBe(200);
   });
 
-  it("does not let an actorless service mutate global secrets", async () => {
-    const response = await signedFetch({
-      service: "linear-bot",
-      method: "PUT",
-      url: "https://test.local/secrets",
-      body: JSON.stringify({ secrets: { SIGNED_BODY_TEST: "intact" } }),
-    });
-    expect(response.status).toBe(403);
-
-    const secrets = await new GlobalSecretsStore(
-      env.DB,
-      env.REPO_SECRETS_ENCRYPTION_KEY!
-    ).getDecryptedSecrets();
-    expect(secrets.SIGNED_BODY_TEST).toBeUndefined();
-  });
-
   it("rejects a body tampered after signing", async () => {
-    const url = "https://test.local/secrets";
-    const intactBody = JSON.stringify({ secrets: { SIGNED_BODY_TEST: "intact" } });
+    const url = "https://test.local/sessions/missing-session/prompt";
+    const intactBody = JSON.stringify({ content: "intact" });
     const headers = await buildServiceAuthHeaders({
       service: "linear-bot",
       secret: SERVICE_SECRET["linear-bot"],
-      method: "PUT",
+      method: "POST",
       url,
       body: intactBody,
       actor: "linear:tamper-test",
     });
     const intact = await SELF.fetch(url, {
-      method: "PUT",
+      method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: intactBody,
     });
-    expect(intact.status).toBe(403);
+    expect(intact.status).toBe(404);
 
     const tampered = await SELF.fetch(url, {
-      method: "PUT",
+      method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify({ secrets: { SIGNED_BODY_TEST: "tampered" } }),
+      body: JSON.stringify({ content: "tampered" }),
     });
     expect(tampered.status).toBe(401);
   });
@@ -240,7 +165,7 @@ describe("sig1 service-credential authentication", () => {
       method: "GET",
       url,
     });
-    const wrongPath = await SELF.fetch("https://test.local/repos", { headers });
+    const wrongPath = await SELF.fetch("https://test.local/skills", { headers });
     expect(wrongPath.status).toBe(401);
 
     const wrongMethod = await SELF.fetch(url, { method: "POST", headers });
@@ -522,63 +447,6 @@ describe("sig1 service-credential authentication", () => {
            (SELECT COUNT(*) FROM users) AS users`
       ).first<{ sessions: number; users: number }>()
     ).resolves.toEqual({ sessions: 0, users: 1 });
-  });
-
-  it("rejects bot automation creation at the service ceiling without enrolling its actor", async () => {
-    const response = await signedFetch({
-      service: "slack-bot",
-      method: "POST",
-      url: "https://test.local/automations",
-      actor: "slack:U-AUTOMATION-DENIED",
-      body: JSON.stringify({
-        name: "Denied automation",
-        instructions: "Must not run",
-        scheduleCron: "0 9 * * *",
-        scheduleTz: "UTC",
-      }),
-    });
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      code: "service_capability_required",
-    });
-    await expect(
-      env.DB.prepare(
-        `SELECT
-           (SELECT COUNT(*) FROM users) AS users,
-           (SELECT COUNT(*) FROM user_identities) AS identities,
-           (SELECT COUNT(*) FROM user_role_assignments) AS assignments,
-           (SELECT COUNT(*) FROM automations) AS automations`
-      ).first<{
-        users: number;
-        identities: number;
-        assignments: number;
-        automations: number;
-      }>()
-    ).resolves.toEqual({ users: 0, identities: 0, assignments: 0, automations: 0 });
-  });
-
-  it("does not enroll an actor on an exact-service internal route", async () => {
-    const response = await signedFetch({
-      service: "slack-bot",
-      method: "POST",
-      url: "https://test.local/internal/slack-event",
-      actor: "slack:U-INTERNAL-NONMEMBER",
-      body: JSON.stringify({}),
-    });
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringContaining("Invalid event"),
-    });
-    await expect(
-      env.DB.prepare(
-        `SELECT
-           (SELECT COUNT(*) FROM users) AS users,
-           (SELECT COUNT(*) FROM user_identities) AS identities,
-           (SELECT COUNT(*) FROM user_role_assignments) AS assignments`
-      ).first<{ users: number; identities: number; assignments: number }>()
-    ).resolves.toEqual({ users: 0, identities: 0, assignments: 0 });
   });
 
   it("creates a session for the active Member selected by a first-contact Slack email claim", async () => {
@@ -882,7 +750,7 @@ describe("sig1 service-credential authentication", () => {
   });
 
   it("requires a user or signed actor before any service can create a session", async () => {
-    for (const service of Object.keys(SERVICE_SECRET) as ServiceName[]) {
+    for (const service of Object.keys(SERVICE_SECRET) as TestServiceName[]) {
       const response = await signedFetch({
         service,
         method: "POST",

@@ -195,7 +195,7 @@ describe("VercelSandboxProvider", () => {
     expect(createCall).toEqual(
       expect.objectContaining({
         name: "sandbox-456",
-        runtime: "node24",
+        image: "vercel/sandbox/node:24",
         sourceSnapshotId: "base-snapshot-1",
         ports: [8080, 7680],
         tags: {
@@ -214,7 +214,7 @@ describe("VercelSandboxProvider", () => {
         // runtime version — and so keep its snapshots restorable — if the
         // provider exports it here.
         SANDBOX_VERSION: VERCEL_SANDBOX_VERSION,
-        PATH: expect.stringContaining("/vercel/runtimes/node24/bin"),
+        PATH: "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin",
         CONTROL_PLANE_URL: "https://control-plane.test",
         SANDBOX_AUTH_TOKEN: "auth-token",
         REPO_OWNER: "testowner",
@@ -391,6 +391,22 @@ describe("VercelSandboxProvider", () => {
     );
   });
 
+  it("uses the configured plan ceiling for create and restore timeouts", async () => {
+    const client = createMockClient();
+    const provider = new VercelSandboxProvider(client, {
+      ...providerConfig,
+      maxSessionTimeoutMs: 24 * 60 * 60 * 1000,
+    });
+
+    await provider.createSandbox({ ...baseCreateConfig, timeoutSeconds: 3 * 60 * 60 });
+    await provider.restoreFromSnapshot({ ...baseRestoreConfig, timeoutSeconds: 3 * 60 * 60 });
+
+    const timeouts = vi
+      .mocked(client.createSandbox)
+      .mock.calls.map(([request]) => request.timeoutMs);
+    expect(timeouts).toEqual([3 * 60 * 60 * 1000, 3 * 60 * 60 * 1000]);
+  });
+
   it("caps restore timeouts at Vercel's 45 minute limit", async () => {
     const client = createMockClient();
     const provider = new VercelSandboxProvider(client, providerConfig);
@@ -427,6 +443,21 @@ describe("VercelSandboxProvider", () => {
     });
 
     expect(vi.mocked(client.createSandbox).mock.calls[0][0].resources).toBeUndefined();
+  });
+
+  it("sizes sessions without CPU or memory settings with the configured default vCPUs", async () => {
+    const client = createMockClient();
+    const provider = new VercelSandboxProvider(client, { ...providerConfig, defaultVcpus: 8 });
+
+    await provider.createSandbox({
+      ...baseCreateConfig,
+      sandboxSettings: { cpuCores: null, memoryMib: null },
+    });
+    await provider.createSandbox({ ...baseCreateConfig, sandboxSettings: { cpuCores: 2 } });
+    await provider.createSandbox({ ...baseCreateConfig, sandboxSettings: { memoryMib: 4096 } });
+
+    const calls = vi.mocked(client.createSandbox).mock.calls.map(([request]) => request.resources);
+    expect(calls).toEqual([{ vcpus: 8 }, { vcpus: 2 }, { vcpus: 2 }]);
   });
 
   it("maps restore sandbox memory settings to Vercel vCPU resources", async () => {
@@ -637,19 +668,19 @@ describe("VercelSandboxProvider", () => {
     expect(vi.mocked(client.createSandbox)).not.toHaveBeenCalled();
   });
 
-  it("uses the configured Vercel runtime when composing PATH", async () => {
+  it("starts from Vercel's Ubuntu managed image unless another image is configured", async () => {
+    const defaultClient = createMockClient();
+    await new VercelSandboxProvider(defaultClient, providerConfig).createSandbox(baseCreateConfig);
+    expect(vi.mocked(defaultClient.createSandbox).mock.calls[0][0].image).toBe(
+      "vercel/sandbox/node:24"
+    );
+
     const client = createMockClient();
-    const provider = new VercelSandboxProvider(client, {
+    await new VercelSandboxProvider(client, {
       ...providerConfig,
-      runtime: "node22",
-    });
-
-    await provider.createSandbox(baseCreateConfig);
-
-    const createCall = vi.mocked(client.createSandbox).mock.calls[0][0];
-    expect(createCall.runtime).toBe("node22");
-    expect(createCall.env?.PATH).toContain("/vercel/runtimes/node22/bin");
-    expect(createCall.env?.PATH).not.toContain("/vercel/runtimes/node24/bin");
+      image: "vercel/sandbox/node:26",
+    }).createSandbox(baseCreateConfig);
+    expect(vi.mocked(client.createSandbox).mock.calls[0][0].image).toBe("vercel/sandbox/node:26");
   });
 
   it("restores from a session snapshot and sets restore mode env vars", async () => {
@@ -681,6 +712,89 @@ describe("VercelSandboxProvider", () => {
     );
   });
 
+  it("keeps a workspace copy out of a sandbox restored from its snapshot", async () => {
+    const client = createMockClient();
+    const provider = new VercelSandboxProvider(client, providerConfig);
+
+    const result = await provider.restoreFromSnapshot({
+      ...baseRestoreConfig,
+      workspaceCopyUrl: "https://store.test/copy.tar.zst?sig",
+    });
+
+    const createCall = vi.mocked(client.createSandbox).mock.calls[0][0];
+    expect(createCall.sourceSnapshotId).toBe("snapshot-restore-1");
+    expect(createCall.env).not.toHaveProperty("WORKSPACE_RESTORE_URL");
+    expect(result).toEqual(expect.objectContaining({ success: true, restoredFrom: "snapshot" }));
+  });
+
+  it.each([404, 410])(
+    "rebuilds from the workspace copy when the snapshot is gone (%i)",
+    async (status) => {
+      const createSandbox = vi
+        .fn<(request: VercelCreateSandboxRequest) => Promise<VercelCreateSandboxResponse>>()
+        .mockRejectedValueOnce(new VercelSandboxApiError("snapshot not found", status))
+        .mockResolvedValueOnce(createSessionResponse("vercel-session-fresh"));
+      const client = createMockClient({ createSandbox });
+      const provider = new VercelSandboxProvider(client, providerConfig);
+
+      const result = await provider.restoreFromSnapshot({
+        ...baseRestoreConfig,
+        workspaceCopyUrl: "https://store.test/copy.tar.zst?sig",
+      });
+
+      expect(createSandbox).toHaveBeenCalledTimes(2);
+      const fresh = createSandbox.mock.calls[1][0];
+      expect(fresh.name).toBe("sandbox-456");
+      expect(fresh.sourceSnapshotId).toBe("base-snapshot-1");
+      expect(fresh.env).toEqual(
+        expect.objectContaining({ WORKSPACE_RESTORE_URL: "https://store.test/copy.tar.zst?sig" })
+      );
+      expect(fresh.env).not.toHaveProperty("RESTORED_FROM_SNAPSHOT");
+      expect(client.startCommand).toHaveBeenCalled();
+      expect(result).toEqual(
+        expect.objectContaining({
+          success: true,
+          restoredFrom: "workspace_copy",
+          sandboxId: "sandbox-456",
+          providerObjectId: "vercel-session-fresh",
+        })
+      );
+    }
+  );
+
+  it("says the snapshot is gone when there is no workspace copy to fall back on", async () => {
+    const client = createMockClient({
+      createSandbox: vi.fn(async () => {
+        throw new VercelSandboxApiError("snapshot not found", 404);
+      }),
+    });
+    const provider = new VercelSandboxProvider(client, providerConfig);
+
+    const error = await provider.restoreFromSnapshot(baseRestoreConfig).catch((e) => e);
+
+    expect(error).toBeInstanceOf(SandboxProviderError);
+    expect(error.errorType).toBe("permanent");
+    expect(error.message).toContain("no longer exists");
+    expect(client.createSandbox).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not rebuild on other restore failures", async () => {
+    const client = createMockClient({
+      createSandbox: vi.fn(async () => {
+        throw new VercelSandboxApiError("bad gateway", 502);
+      }),
+    });
+    const provider = new VercelSandboxProvider(client, providerConfig);
+
+    await expect(
+      provider.restoreFromSnapshot({
+        ...baseRestoreConfig,
+        workspaceCopyUrl: "https://store.test/copy.tar.zst?sig",
+      })
+    ).rejects.toBeInstanceOf(SandboxProviderError);
+    expect(client.createSandbox).toHaveBeenCalledTimes(1);
+  });
+
   it("takes and deletes Vercel snapshots", async () => {
     const client = createMockClient();
     const provider = new VercelSandboxProvider(client, {
@@ -704,7 +818,24 @@ describe("VercelSandboxProvider", () => {
     expect(vi.mocked(client.deleteSnapshot)).toHaveBeenCalledWith("snapshot-1");
   });
 
-  it("does not claim sourceStopped when the snapshot response is not stopped", async () => {
+  it("accepts a source still snapshotting without claiming it stopped", async () => {
+    const client = createMockClient({
+      snapshotSession: vi.fn(async () => ({
+        snapshot: { id: "snapshot-1", status: "created" as const, createdAt: 456 },
+        session: { ...createSessionResponse().session, status: "snapshotting" as const },
+      })),
+    });
+    const provider = new VercelSandboxProvider(client, providerConfig);
+    await expect(
+      provider.takeSnapshot({
+        providerObjectId: "vercel-session-1",
+        sessionId: "session-123",
+        reason: "inactivity_timeout",
+      })
+    ).resolves.toEqual({ success: true, imageId: "snapshot-1", sourceStopped: false });
+  });
+
+  it("rejects a snapshot whose source is still running", async () => {
     const client = createMockClient({
       snapshotSession: vi.fn(async () => ({
         snapshot: { id: "snapshot-1", status: "created" as const, createdAt: 456 },
@@ -796,7 +927,7 @@ describe("VercelSandboxProvider", () => {
     const createCall = vi.mocked(client.createSandbox).mock.calls[0][0];
     expect(createCall).toEqual(
       expect.objectContaining({
-        runtime: "node24",
+        image: "vercel/sandbox/node:24",
         timeoutMs: 2400 * 1000,
         sourceSnapshotId: "base-snapshot-1",
       })
@@ -981,5 +1112,114 @@ describe("VercelSandboxProvider", () => {
     expect(onProviderSessionCreated.mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(client.startCommand).mock.invocationCallOrder[0]
     );
+  });
+});
+
+describe("VercelSandboxProvider.extendSandboxLifetime", () => {
+  const HOUR_MS = 60 * 60 * 1000;
+  const STEP_MS = 30 * 60 * 1000;
+  const CREATED_AT = 1_000_000;
+
+  function session(timeout: number, status: "running" | "stopped" = "running") {
+    return { id: "vercel-session-1", status, createdAt: CREATED_AT, cwd: "/workspace", timeout };
+  }
+
+  function clientWith(timeout: number, status: "running" | "stopped" = "running") {
+    const getSession = vi.fn(async () => session(timeout, status));
+    const extendSessionTimeout = vi.fn(async (_id: string, durationMs: number) =>
+      session(timeout + durationMs)
+    );
+    const client = {
+      ...createMockClient(),
+      getSession,
+      extendSessionTimeout,
+    } as unknown as VercelSandboxClient;
+    return { client, getSession, extendSessionTimeout };
+  }
+
+  const pro = { ...providerConfig, maxSessionTimeoutMs: 24 * HOUR_MS };
+
+  it("adds the requested step to the running session and reports the new expiry", async () => {
+    const { client, extendSessionTimeout } = clientWith(2 * HOUR_MS);
+    const provider = new VercelSandboxProvider(client, pro);
+
+    const result = await provider.extendSandboxLifetime({
+      providerObjectId: "vercel-session-1",
+      extensionMs: STEP_MS,
+    });
+
+    expect(extendSessionTimeout).toHaveBeenCalledWith("vercel-session-1", STEP_MS, undefined);
+    expect(result.lifetime).toMatchObject({
+      kind: "finite",
+      expiresAtMs: CREATED_AT + 2 * HOUR_MS + STEP_MS,
+      source: "provider",
+    });
+    expect(result.atCeiling).toBe(false);
+  });
+
+  it("grants only what is left under the plan ceiling, then nothing", async () => {
+    const nearCeiling = clientWith(24 * HOUR_MS - 10 * 60 * 1000);
+    const provider = new VercelSandboxProvider(nearCeiling.client, pro);
+
+    const partial = await provider.extendSandboxLifetime({
+      providerObjectId: "vercel-session-1",
+      extensionMs: STEP_MS,
+    });
+    expect(nearCeiling.extendSessionTimeout).toHaveBeenCalledWith(
+      "vercel-session-1",
+      10 * 60 * 1000,
+      undefined
+    );
+    expect(partial).toMatchObject({
+      lifetime: { expiresAtMs: CREATED_AT + 24 * HOUR_MS },
+      atCeiling: true,
+    });
+
+    const atCeiling = clientWith(24 * HOUR_MS);
+    const full = await new VercelSandboxProvider(atCeiling.client, pro).extendSandboxLifetime({
+      providerObjectId: "vercel-session-1",
+      extensionMs: STEP_MS,
+    });
+    expect(atCeiling.extendSessionTimeout).not.toHaveBeenCalled();
+    expect(full).toMatchObject({
+      lifetime: { expiresAtMs: CREATED_AT + 24 * HOUR_MS },
+      atCeiling: true,
+    });
+  });
+
+  it("defaults the ceiling to the Hobby session maximum", async () => {
+    const { client, extendSessionTimeout } = clientWith(45 * 60 * 1000);
+    const result = await new VercelSandboxProvider(client, providerConfig).extendSandboxLifetime({
+      providerObjectId: "vercel-session-1",
+      extensionMs: STEP_MS,
+    });
+    expect(extendSessionTimeout).not.toHaveBeenCalled();
+    expect(result.atCeiling).toBe(true);
+  });
+
+  it("refuses a session that is no longer running", async () => {
+    const { client, extendSessionTimeout } = clientWith(2 * HOUR_MS, "stopped");
+    await expect(
+      new VercelSandboxProvider(client, pro).extendSandboxLifetime({
+        providerObjectId: "vercel-session-1",
+        extensionMs: STEP_MS,
+      })
+    ).rejects.toBeInstanceOf(SandboxProviderError);
+    expect(extendSessionTimeout).not.toHaveBeenCalled();
+  });
+
+  it("classifies API failures", async () => {
+    const client = {
+      ...createMockClient(),
+      getSession: vi.fn(async () => {
+        throw new VercelSandboxApiError("Vercel Sandbox API error: 503", 503);
+      }),
+    } as unknown as VercelSandboxClient;
+    await expect(
+      new VercelSandboxProvider(client, pro).extendSandboxLifetime({
+        providerObjectId: "vercel-session-1",
+        extensionMs: STEP_MS,
+      })
+    ).rejects.toMatchObject({ name: "SandboxProviderError", errorType: "transient" });
   });
 });

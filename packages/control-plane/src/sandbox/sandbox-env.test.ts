@@ -59,6 +59,13 @@ describe("buildSessionConfig", () => {
     expect(buildSessionConfig(baseInput).bridge_early_connect).toBe(true);
   });
 
+  it("carries the default reasoning effort only when there is one", () => {
+    expect(buildSessionConfig({ ...baseInput, reasoningEffort: "high" })).toEqual(
+      expect.objectContaining({ reasoning_effort: "high" })
+    );
+    expect(buildSessionConfig(baseInput)).not.toHaveProperty("reasoning_effort");
+  });
+
   it("omits branch when not provided", () => {
     expect(buildSessionConfig(baseInput)).not.toHaveProperty("branch");
   });
@@ -322,6 +329,27 @@ describe("buildSandboxEnvVars", () => {
       expect(envVars).not.toHaveProperty(marker);
     }
     expect(envVars.LEGITIMATE_SECRET).toBe("keep-me");
+  });
+
+  it("asks only a fresh sandbox to unpack a workspace copy", () => {
+    const url = "https://store.test/sessions/s1/workspace/copy.tar.zst?sig";
+    const fresh = buildSandboxEnvVars(
+      { ...baseConfig, workspaceCopyUrl: url },
+      { scmIdentity: scmCloneIdentity("github") }
+    );
+    expect(fresh.WORKSPACE_RESTORE_URL).toBe(url);
+
+    const restored = buildSandboxEnvVars(
+      { ...baseConfig, snapshotImageId: "snap-1", workspaceCopyUrl: url },
+      { scmIdentity: scmCloneIdentity("github") }
+    );
+    expect(restored).not.toHaveProperty("WORKSPACE_RESTORE_URL");
+
+    const injected = buildSandboxEnvVars(
+      { ...baseConfig, userEnvVars: { WORKSPACE_RESTORE_URL: "https://evil.test/x" } },
+      { scmIdentity: scmCloneIdentity("github") }
+    );
+    expect(injected).not.toHaveProperty("WORKSPACE_RESTORE_URL");
   });
 
   it("sets the slack-notify flag only when enabled", () => {

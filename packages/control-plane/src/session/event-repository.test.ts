@@ -5,6 +5,10 @@ import { createNodeSqlStorage } from "../node/sqlite-storage";
 import { EventRepository } from "./event-repository";
 import { initSchema } from "./schema";
 import type { SqlResult, SqlStorage } from "./sql-storage";
+import {
+  mediaGenerationEventId,
+  type MediaGenerationEvent,
+} from "@open-inspect/shared/types/media-generation";
 import { SessionStorageIntegrityError } from "./types";
 
 function createMockSql() {
@@ -500,5 +504,99 @@ describe("EventRepository token persistence", () => {
       created_at: 110,
       data: JSON.stringify({ ...token, content: "before corrected", partId: "part-1" }),
     });
+  });
+});
+
+describe("EventRepository media generation cost", () => {
+  let db: DatabaseSync;
+  let repository: EventRepository;
+
+  const generation = (generationId: string, overrides: Partial<MediaGenerationEvent> = {}) =>
+    ({
+      type: "media_generation",
+      generationId,
+      messageId: "msg-1",
+      status: "running",
+      mediaKind: "video",
+      source: "mcp",
+      startedAt: 1,
+      timestamp: 1,
+      ...overrides,
+    }) satisfies MediaGenerationEvent;
+
+  const upsert = (event: MediaGenerationEvent, createdAt = 100) =>
+    repository.upsertMediaGenerationEvent(
+      mediaGenerationEventId(event.generationId),
+      event,
+      createdAt
+    );
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    const storage = createNodeSqlStorage(db);
+    initSchema(storage.sql);
+    repository = new EventRepository(storage.sql, storage.transactionSync);
+  });
+
+  afterEach(() => db.close());
+
+  it("is nothing for a session that generated no media", () => {
+    expect(repository.sumMediaGenerationCostUsd()).toBe(0);
+    repository.upsertTokenEvent(
+      "msg-1",
+      { type: "token", content: "hi", messageId: "msg-1", sandboxId: "sb-1", timestamp: 1 },
+      100
+    );
+    expect(repository.sumMediaGenerationCostUsd()).toBe(0);
+  });
+
+  it("counts a generation once, at its latest cost: held while it runs, net once it finished", () => {
+    upsert(generation("gen-1", { costUsd: 4.5 }));
+    upsert(generation("gen-2", { costUsd: 1 }));
+    expect(repository.sumMediaGenerationCostUsd()).toBe(5.5);
+
+    // The first one finished and settled lower; the second failed and was refunded. The row
+    // is rewritten, so what it held before is not counted as well.
+    upsert(generation("gen-1", { status: "succeeded", costUsd: 3.75 }));
+    upsert(generation("gen-2", { status: "failed", costUsd: 0 }));
+    expect(repository.sumMediaGenerationCostUsd()).toBe(3.75);
+  });
+
+  it("counts a generation the two reporters both saw once", () => {
+    // The same generation reported by the product and by the sandbox lands on one row, so it
+    // costs what it costs once.
+    upsert(generation("gen-1", { source: "mcp", costUsd: 0.25 }));
+    upsert(generation("gen-1", { source: "api", costUsd: 0.25 }));
+    expect(repository.sumMediaGenerationCostUsd()).toBe(0.25);
+  });
+
+  it("ignores rows that carry no usable cost, credits alone, and every other kind of event", () => {
+    upsert(generation("gen-none"));
+    upsert(generation("gen-zero", { costUsd: 0 }));
+    upsert(generation("gen-credits-only", { credits: 900 }));
+    upsert(generation("gen-ok", { costUsd: 0.5 }));
+    for (const [id, data] of [
+      ["bad-json", "{not json"],
+      ["null-row", "null"],
+      ["negative", JSON.stringify({ type: "media_generation", costUsd: -50 })],
+      ["text", JSON.stringify({ type: "media_generation", costUsd: "900" })],
+    ] as const) {
+      repository.createEvent({
+        id: `media_generation:${id}`,
+        type: "media_generation",
+        data,
+        messageId: "msg-1",
+        createdAt: 100,
+      });
+    }
+    // A cost on an event that is not a media generation is not media spend.
+    repository.createEvent({
+      id: "tool-1",
+      type: "tool_call",
+      data: JSON.stringify({ costUsd: 5_000 }),
+      messageId: "msg-1",
+      createdAt: 100,
+    });
+    expect(repository.sumMediaGenerationCostUsd()).toBe(0.5);
   });
 });

@@ -17,7 +17,7 @@ function sessionRow(overrides: Partial<SessionRow> = {}): SessionRow {
   } as SessionRow;
 }
 
-function makeHarness(options: { session?: SessionRow | null } = {}) {
+function makeHarness(options: { session?: SessionRow | null; prompts?: string[] } = {}) {
   const session = options.session === undefined ? sessionRow() : options.session;
   const repository = {
     getSession: vi.fn(() => session),
@@ -34,6 +34,7 @@ function makeHarness(options: { session?: SessionRow | null } = {}) {
     statusService,
     backgroundTasks,
     sessionIndexStore: { updateTitle },
+    earliestPrompts: () => options.prompts ?? [],
     durableObjectId: "do-hex-id",
     now: () => NOW,
   });
@@ -73,6 +74,59 @@ describe("SessionTitleService", () => {
     });
     expect(h.repository.updateSessionTitle).not.toHaveBeenCalled();
     expect(h.messenger.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("replaces a title that is still a prompt's first line when asked to", () => {
+    const h = makeHarness({
+      session: sessionRow({ title: "你能做这个吗" }),
+      prompts: ["https://example.com/reel 你能做这个吗"],
+    });
+
+    const result = h.service.applySessionTitleUpdate("一镜到底穿越房间", {
+      onlyIfUnset: true,
+      replaceFallback: true,
+    });
+
+    expect(result).toEqual({ ok: true, title: "一镜到底穿越房间" });
+    expect(h.repository.updateSessionTitle).toHaveBeenCalledWith(
+      "session-1",
+      "一镜到底穿越房间",
+      NOW
+    );
+    expect(h.repository.updateSessionTitleIfUnset).not.toHaveBeenCalled();
+    expect(h.messenger.broadcast).toHaveBeenCalledWith({
+      type: "session_title",
+      title: "一镜到底穿越房间",
+    });
+  });
+
+  it("keeps a title somebody chose even when asked to replace the fallback", () => {
+    const h = makeHarness({
+      session: sessionRow({ title: "我的发布片" }),
+      prompts: ["做一条 30 秒的产品发布片"],
+    });
+    h.repository.updateSessionTitleIfUnset.mockReturnValue(false);
+
+    const result = h.service.applySessionTitleUpdate("Creative Agent 发布片", {
+      onlyIfUnset: true,
+      replaceFallback: true,
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: "already_set" });
+    expect(h.repository.updateSessionTitle).not.toHaveBeenCalled();
+  });
+
+  it("keeps the fallback when only onlyIfUnset is asked", () => {
+    const h = makeHarness({
+      session: sessionRow({ title: "你能做这个吗" }),
+      prompts: ["你能做这个吗"],
+    });
+    h.repository.updateSessionTitleIfUnset.mockReturnValue(false);
+
+    const result = h.service.applySessionTitleUpdate("A title", { onlyIfUnset: true });
+
+    expect(result).toMatchObject({ ok: false, reason: "already_set" });
+    expect(h.repository.updateSessionTitle).not.toHaveBeenCalled();
   });
 
   it("persists, broadcasts, and schedules the index sync on success", async () => {

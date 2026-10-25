@@ -9,6 +9,7 @@ from websockets import State
 
 from sandbox_runtime.bridge import AgentBridge, SessionTerminatedError
 from sandbox_runtime.git_signing import GitSigningError
+from sandbox_runtime.harness import HarnessId
 
 
 class TestIsFatalConnectionError:
@@ -21,6 +22,7 @@ class TestIsFatalConnectionError:
             session_id="test-session",
             control_plane_url="https://example.com",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
 
     def test_http_410_is_fatal(self, bridge):
@@ -274,6 +276,7 @@ class TestStalledWriteReconnect:
             session_id="test-session",
             control_plane_url="https://example.com",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
 
     @pytest.mark.asyncio

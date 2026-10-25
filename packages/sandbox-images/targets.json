@@ -21,8 +21,8 @@
     "home": "/home/user"
   },
   "vercel": {
-    "os": "amazon-linux",
-    "base": "node24",
+    "os": "debian",
+    "base": "vercel/sandbox/node:24",
     "node": "24",
     "user": "root",
     "home": "/root"

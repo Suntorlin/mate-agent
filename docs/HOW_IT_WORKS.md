@@ -528,12 +528,18 @@ will not see `send-child-prompt` until it starts in a fresh sandbox built from t
 The sandbox runtime speaks to its coding agent through one seam, the **agent harness**. A session
 runs on exactly one harness, chosen at create:
 
-- **OpenCode** (built-in): [OpenCode](https://opencode.ai) runs as a server inside the sandbox; the
-  supervisor owns the `opencode serve` process and the bridge talks to it over HTTP/SSE.
-- **Claude Agent**: the [Claude Agent SDK](https://docs.anthropic.com/en/docs/agent-sdk) runs inside
-  the bridge and spawns the `claude` binary as its own child, launched with a clean environment that
-  carries exactly one Anthropic credential. This is the harness that can use a connected Claude
-  subscription. See [Using the Claude Agent Harness](CLAUDE_AGENT.md).
+- **Claude Agent** (the default): the
+  [Claude Agent SDK](https://docs.anthropic.com/en/docs/agent-sdk) runs inside the bridge and spawns
+  the `claude` binary as its own child, launched with a clean environment that carries exactly one
+  Anthropic credential. It runs Anthropic models only, and is the harness that can use a connected
+  Claude subscription. See [Using the Claude Agent Harness](CLAUDE_AGENT.md).
+- **OpenCode**: [OpenCode](https://opencode.ai) runs as a server inside the sandbox; the supervisor
+  owns the `opencode serve` process and the bridge talks to it over HTTP/SSE. It runs every catalog
+  model, and is the harness for OpenAI and xAI (API keys or a connected ChatGPT or SuperGrok
+  subscription) and the other non-Anthropic providers. Anthropic models on it use an API key.
+
+A create request names its harness (`harness`); one that names none runs on the deployment's
+`DEFAULT_SESSION_HARNESS`, else on the Claude Agent.
 
 Both harnesses emit the same session events (tokens, tool calls, steps, warnings), so everything
 above the sandbox is harness-neutral. The bridge owns turn completion: a harness reports the outcome

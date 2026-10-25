@@ -25,8 +25,9 @@ def main() -> None:
     api_key = os.environ.get("E2B_API_KEY")
     if not name or not api_key:
         raise RuntimeError("E2B_TEMPLATE_ID and E2B_API_KEY are required")
-    cpu = int(os.environ.get("E2B_TEMPLATE_CPU", "2"))
-    memory_mb = int(os.environ.get("E2B_TEMPLATE_MEMORY_MB", "4096"))
+    # Sized for in-sandbox video rendering (Remotion + ffmpeg).
+    cpu = int(os.environ.get("E2B_TEMPLATE_CPU", "4"))
+    memory_mb = int(os.environ.get("E2B_TEMPLATE_MEMORY_MB", "8192"))
     if cpu < 1 or memory_mb < 2 or memory_mb % 2:
         raise ValueError("E2B template CPU must be positive and memory a positive even number")
     bundle = pack_bundle(ROOT, "e2b", ROOT / ".cache/sandbox-images")
@@ -41,6 +42,11 @@ def main() -> None:
         .copy(".", "/tmp/openinspect-image", user="root")
         .run_cmd(
             "bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh", user="root"
+        )
+        # Media toolchain: ffmpeg, Remotion libraries/fonts, preinstalled starter.
+        .run_cmd(
+            "bash /tmp/openinspect-image/packages/sandbox-images/install/install.sh media",
+            user="root",
         )
         .set_user(plan["target"]["user"])
         .set_workdir("/workspace")

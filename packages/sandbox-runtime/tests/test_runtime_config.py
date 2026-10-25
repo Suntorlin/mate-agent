@@ -57,7 +57,13 @@ def test_runtime_config_rejects_insecure_control_plane_url(url):
 
 @pytest.mark.parametrize(
     "url",
-    ["http://localhost:8787", "http://127.0.0.1:8787", "http://[::1]:8787"],
+    [
+        "http://localhost:8787",
+        "http://127.0.0.1:8787",
+        "http://[::1]:8787",
+        # The host's loopback as a local Docker container reaches it.
+        "http://host.docker.internal:8797",
+    ],
 )
 def test_runtime_config_allows_loopback_http_control_plane_url(url):
     assert RuntimeConfig.from_env({"CONTROL_PLANE_URL": url}).control_plane_url == url

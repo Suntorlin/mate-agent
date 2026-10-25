@@ -1,0 +1,16 @@
+.ui-notice {
+  align-self: center;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  text-align: center;
+}
+.ui-notice--neutral {
+  background: var(--social-muted);
+  color: var(--social-fg-muted);
+}
+.ui-notice--danger {
+  background: var(--badge-error-bg);
+  color: var(--badge-error-text);
+}

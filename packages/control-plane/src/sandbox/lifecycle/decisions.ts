@@ -442,6 +442,8 @@ export interface InactivityState {
   status: SandboxStatus;
   /** Number of connected client WebSockets */
   connectedClientCount: number;
+  /** Whether the session has never been prompted (a warm draft) */
+  unprompted?: boolean;
 }
 
 /**
@@ -454,6 +456,12 @@ export interface InactivityConfig {
   extensionMs: number;
   /** Minimum interval between alarm checks (default: 30s) */
   minCheckIntervalMs: number;
+  /**
+   * Idle time after which a warm sandbox nobody has prompted, and nobody is
+   * watching, is released. Short because its author has most likely left the
+   * composer; a later prompt still starts a fresh sandbox.
+   */
+  unpromptedTimeoutMs: number;
 }
 
 /**
@@ -463,7 +471,23 @@ export const DEFAULT_INACTIVITY_CONFIG: InactivityConfig = {
   timeoutMs: 10 * 60 * 1000, // 10 minutes
   extensionMs: 5 * 60 * 1000, // 5 minutes
   minCheckIntervalMs: 30000, // 30 seconds
+  unpromptedTimeoutMs: 2 * 60 * 1000,
 };
+
+/** The idle time after which this sandbox stops, before any extension. */
+export function effectiveInactivityTimeoutMs(
+  state: Pick<InactivityState, "unprompted" | "connectedClientCount">,
+  config: InactivityConfig
+): number {
+  return state.unprompted && state.connectedClientCount === 0
+    ? Math.min(config.unpromptedTimeoutMs, config.timeoutMs)
+    : config.timeoutMs;
+}
+
+/** SANDBOX_INACTIVITY_TIMEOUT_MS, or DEFAULT_INACTIVITY_CONFIG.timeoutMs when unset. */
+export function resolveInactivityTimeoutMs(raw: string | undefined): number {
+  return raw ? parseInt(raw, 10) : DEFAULT_INACTIVITY_CONFIG.timeoutMs;
+}
 
 /**
  * Possible inactivity actions.
@@ -520,9 +544,10 @@ export function evaluateInactivityTimeout(
   }
 
   const inactiveTime = now - state.lastActivity;
+  const timeoutMs = effectiveInactivityTimeoutMs(state, config);
 
   // Check if inactivity threshold exceeded
-  if (inactiveTime >= config.timeoutMs) {
+  if (inactiveTime >= timeoutMs) {
     // If clients are still connected, they may be actively reviewing
     // Grant an extension and warn them
     if (state.connectedClientCount > 0) {
@@ -537,7 +562,7 @@ export function evaluateInactivityTimeout(
   }
 
   // Not yet timed out - schedule next check at remaining time (minimum interval)
-  const remainingTime = Math.max(config.timeoutMs - inactiveTime, config.minCheckIntervalMs);
+  const remainingTime = Math.max(timeoutMs - inactiveTime, config.minCheckIntervalMs);
   return { action: "schedule", nextCheckMs: remainingTime };
 }
 

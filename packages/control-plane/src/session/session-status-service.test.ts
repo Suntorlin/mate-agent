@@ -69,7 +69,13 @@ function harness(options: { session?: SessionRow | null } = {}) {
   };
   const artifactRepository = {
     listArtifacts: vi.fn(
-      () => [{ type: "pr" }, { type: "screenshot" }, { type: "pr" }] as ArtifactRow[]
+      () =>
+        [
+          { id: "pr-2", type: "pr", created_at: 40 },
+          { id: "video-1", type: "video", created_at: 30 },
+          { id: "shot-1", type: "screenshot", created_at: 20 },
+          { id: "pr-1", type: "pr", created_at: 10 },
+        ] as ArtifactRow[]
     ),
   } as unknown as ArtifactRepository;
 
@@ -221,6 +227,8 @@ describe("SessionStatusService.transition", () => {
       activeDurationMs: 4500,
       messageCount: 3,
       prCount: 2,
+      cover: { artifactId: "shot-1", type: "screenshot" },
+      mediaCount: 2,
       inputTokens: 1200,
       outputTokens: 340,
       reasoningTokens: 56,
@@ -448,7 +456,7 @@ describe("SessionStatusService.reconcileAfterExecution", () => {
     const h = harness({ session: createSession({ status: "created" }) });
     h.repository.getPendingOrProcessingCount.mockReturnValue(2);
 
-    await h.service.reconcileAfterExecution(true);
+    await h.service.reconcileAfterExecution("completed");
 
     expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "active" });
   });
@@ -456,7 +464,15 @@ describe("SessionStatusService.reconcileAfterExecution", () => {
   it("completes when idle and the execution succeeded", async () => {
     const h = harness({ session: createSession({ status: "active" }) });
 
-    await h.service.reconcileAfterExecution(true);
+    await h.service.reconcileAfterExecution("completed");
+
+    expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "completed" });
+  });
+
+  it("completes, not fails, when idle and someone stopped the execution", async () => {
+    const h = harness({ session: createSession({ status: "active" }) });
+
+    await h.service.reconcileAfterExecution("stopped");
 
     expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "completed" });
   });
@@ -464,7 +480,7 @@ describe("SessionStatusService.reconcileAfterExecution", () => {
   it("fails when idle and the execution failed", async () => {
     const h = harness({ session: createSession({ status: "active" }) });
 
-    await h.service.reconcileAfterExecution(false);
+    await h.service.reconcileAfterExecution("failed");
 
     expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "failed" });
   });
@@ -474,7 +490,7 @@ describe("SessionStatusService.reconcileAfterExecution", () => {
     // message remains), and the reconcile runs after the D1 projection await.
     const h = harness({ session: createSession({ status: "archived" }) });
 
-    await h.service.reconcileAfterExecution(true);
+    await h.service.reconcileAfterExecution("completed");
 
     expect(h.repository.updateSessionStatus).not.toHaveBeenCalled();
     expect(h.broadcast).not.toHaveBeenCalled();
@@ -483,7 +499,7 @@ describe("SessionStatusService.reconcileAfterExecution", () => {
   it("leaves a session cancelled while its terminal projection was in flight", async () => {
     const h = harness({ session: createSession({ status: "cancelled" }) });
 
-    await h.service.reconcileAfterExecution(false);
+    await h.service.reconcileAfterExecution("failed");
 
     expect(h.repository.updateSessionStatus).not.toHaveBeenCalled();
     expect(h.broadcast).not.toHaveBeenCalled();
@@ -507,6 +523,15 @@ describe("SessionStatusService.reconcileAfterQueueRemoval", () => {
     await h.service.reconcileAfterQueueRemoval();
 
     expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "failed" });
+  });
+
+  it("completes when the latest turn was stopped", async () => {
+    const h = harness({ session: createSession({ status: "active" }) });
+    h.repository.getLatestTerminalMessage.mockReturnValue({ status: "stopped" } as MessageRow);
+
+    await h.service.reconcileAfterQueueRemoval();
+
+    expect(h.broadcast).toHaveBeenCalledWith({ type: "session_status", status: "completed" });
   });
 
   it("completes when no failed terminal message remains", async () => {

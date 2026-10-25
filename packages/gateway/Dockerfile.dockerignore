@@ -1,0 +1,7 @@
+# The build context is the repository root; the gateway's image needs only these.
+*
+!package.json
+!package-lock.json
+!packages/gateway/package.json
+!packages/gateway/src/**
+!packages/gateway/src

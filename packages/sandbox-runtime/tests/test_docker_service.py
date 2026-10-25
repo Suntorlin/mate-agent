@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock
 
@@ -103,11 +104,18 @@ def _service(tmp_path, **kwargs) -> DockerService:
     return service
 
 
-def _session_supervisor(tmp_path, service):
+@pytest.fixture
+def socket_path():
+    # pytest's tmp_path is too long for a unix socket on macOS (104 bytes).
+    with tempfile.TemporaryDirectory(prefix="oi-docker-", dir="/tmp") as directory:
+        yield directory + "/control.sock"
+
+
+def _session_supervisor(tmp_path, service, socket_path):
     supervisor, *_ = _supervisor(tmp_path, [])
     supervisor.docker_service = service
     supervisor.docker_control = DockerControl(
-        service, str(tmp_path / "control.sock"), supervisor._recover_docker_after_prepare
+        service, socket_path, supervisor._recover_docker_after_prepare
     )
     return supervisor
 
@@ -241,7 +249,7 @@ async def test_preparation_requires_a_running_daemon(processes, tmp_path):
 
 @pytest.mark.parametrize("failure", ["ignored", "late", "nonzero", "cancelled"])
 async def test_failed_session_preparation_recovers_and_can_retry(
-    processes, tmp_path, monkeypatch, failure
+    processes, tmp_path, socket_path, monkeypatch, failure
 ):
     from sandbox_runtime import docker_control
 
@@ -249,7 +257,7 @@ async def test_failed_session_preparation_recovers_and_can_retry(
     processes.exit_delay = 0.15 if failure == "late" else 0
     processes.daemon_exit = 2 if failure == "nonzero" else 0
     service = _service(tmp_path, stop_timeout_seconds=0.1, start_timeout_seconds=0.5)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     supervisor._report_fatal_error = AsyncMock()
     preparation_timeout = docker_control.PREPARATION_TIMEOUT_SECONDS
     if failure == "cancelled":
@@ -289,10 +297,10 @@ async def test_failed_session_preparation_recovers_and_can_retry(
         await supervisor.shutdown()
 
 
-async def test_failed_preparation_restart_failure_is_reported(processes, tmp_path):
+async def test_failed_preparation_restart_failure_is_reported(processes, tmp_path, socket_path):
     processes.daemon_exit = 1
     service = _service(tmp_path, stop_timeout_seconds=0.1, start_timeout_seconds=0.2)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     try:
         await supervisor._start_docker()
         processes.fail_probe = True
@@ -309,9 +317,9 @@ async def test_failed_preparation_restart_failure_is_reported(processes, tmp_pat
         await supervisor.shutdown()
 
 
-async def test_clean_session_preparation_does_not_restart(processes, tmp_path):
+async def test_clean_session_preparation_does_not_restart(processes, tmp_path, socket_path):
     service = _service(tmp_path)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     supervisor.boot_mode = BootMode.SNAPSHOT_RESTORE
     try:
         await supervisor._start_docker()
@@ -325,9 +333,9 @@ async def test_clean_session_preparation_does_not_restart(processes, tmp_path):
         await supervisor.shutdown()
 
 
-async def test_unrequested_exit_before_preparation_remains_fatal(processes, tmp_path):
+async def test_unrequested_exit_before_preparation_remains_fatal(processes, tmp_path, socket_path):
     service = _service(tmp_path)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     try:
         await supervisor._start_docker()
         processes.children[0].kill()
@@ -342,10 +350,10 @@ async def test_unrequested_exit_before_preparation_remains_fatal(processes, tmp_
         await supervisor.shutdown()
 
 
-async def test_restarted_daemon_is_watched_for_crashes(processes, tmp_path):
+async def test_restarted_daemon_is_watched_for_crashes(processes, tmp_path, socket_path):
     processes.daemon_exit = 1
     service = _service(tmp_path, stop_timeout_seconds=0.1)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     try:
         await supervisor._start_docker()
         with pytest.raises(RuntimeError):
@@ -360,9 +368,9 @@ async def test_restarted_daemon_is_watched_for_crashes(processes, tmp_path):
         await supervisor.shutdown()
 
 
-async def test_requested_stop_is_not_reported_as_a_crash(processes, tmp_path):
+async def test_requested_stop_is_not_reported_as_a_crash(processes, tmp_path, socket_path):
     service = _service(tmp_path, stop_timeout_seconds=0.1)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     try:
         await supervisor._start_docker()
         await service.stop()
@@ -391,10 +399,12 @@ async def test_control_rejects_service_budgets_beyond_capture_deadline(tmp_path,
     assert not (tmp_path / "control.sock").exists()
 
 
-async def test_shutdown_during_preparation_does_not_restart_docker(processes, tmp_path):
+async def test_shutdown_during_preparation_does_not_restart_docker(
+    processes, tmp_path, socket_path
+):
     processes.ignore_sigterm = True
     service = _service(tmp_path, stop_timeout_seconds=0.1)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     try:
         await supervisor._start_docker()
         preparing = asyncio.create_task(request("prepare", supervisor.docker_control.path))
@@ -412,10 +422,10 @@ async def test_shutdown_during_preparation_does_not_restart_docker(processes, tm
         await supervisor.shutdown()
 
 
-async def test_shutdown_cancels_inflight_recovery_without_watcher(processes, tmp_path):
+async def test_shutdown_cancels_inflight_recovery_without_watcher(processes, tmp_path, socket_path):
     processes.daemon_exit = 1
     service = _service(tmp_path, stop_timeout_seconds=0.1)
-    supervisor = _session_supervisor(tmp_path, service)
+    supervisor = _session_supervisor(tmp_path, service, socket_path)
     restart_entered = asyncio.Event()
     finish_restart = asyncio.Event()
     try:

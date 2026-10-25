@@ -174,10 +174,15 @@ export async function hashSessionSkillManifest(
   selection: SessionSkillManifestSelection,
   skills: readonly ManifestHashSkill[]
 ): Promise<string> {
-  const selectionByte = selection.mode === "all" ? 0 : selection.mode === "none" ? 1 : 2;
+  const selectionByte = { all: 0, none: 1, profile: 2, ids: 3 }[selection.mode];
   const parts = [MANIFEST_DOMAIN, u32(SKILL_RESOLVER_VERSION), Uint8Array.of(selectionByte)];
   if (selection.mode === "profile") {
     parts.push(...stringBytes(selection.profileId), ...stringBytes(selection.profileName));
+  }
+  if (selection.mode === "ids") {
+    const sortedIds = [...selection.skillIds].sort(compareUtf8);
+    parts.push(u32(sortedIds.length));
+    for (const id of sortedIds) parts.push(...stringBytes(id));
   }
   const sortedSkills = [...skills].sort(
     (left, right) => compareUtf8(left.name, right.name) || compareUtf8(left.skillId, right.skillId)

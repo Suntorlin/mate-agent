@@ -1,6 +1,7 @@
 import { DEFAULT_HARNESS, type HarnessId } from "@open-inspect/shared/harnesses";
 import {
   type PullRequestSummary,
+  type SessionCover,
   type SessionReadAction,
   type SessionReadResult,
   type SessionReadState,
@@ -89,6 +90,8 @@ export interface SessionEntry {
   activeDurationMs?: number;
   messageCount?: number;
   prCount?: number;
+  cover?: SessionCover | null;
+  mediaCount?: number;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
@@ -332,21 +335,26 @@ export class SessionIndexStore {
     manifest: SessionSkillManifestInput
   ): SqlStatement[] {
     const profile = manifest.selection.mode === "profile" ? manifest.selection : null;
+    const selectedSkillIds =
+      manifest.selection.mode === "ids" ? JSON.stringify(manifest.selection.skillIds) : null;
     return [
       this.db
         .prepare(
           `INSERT INTO session_skill_manifests
-           (session_id, selection_mode, profile_id, profile_name, resolver_version, manifest_sha256, resolved_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`
+           (session_id, selection_mode, profile_id, profile_name, selected_skill_ids,
+            resolver_version, manifest_sha256, resolved_at, disabled_bundled_skills)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           sessionId,
           manifest.selection.mode,
           profile?.profileId ?? null,
           profile?.profileName ?? null,
+          selectedSkillIds,
           manifest.resolverVersion,
           manifest.manifestSha256,
-          manifest.resolvedAt
+          manifest.resolvedAt,
+          JSON.stringify(manifest.disabledBundledSkills ?? [])
         ),
       ...bulkInsertStatements(
         this.db,
@@ -373,10 +381,10 @@ export class SessionIndexStore {
       this.db
         .prepare(
           `INSERT INTO session_skill_manifests
-           (session_id, selection_mode, profile_id, profile_name, manifest_sha256, resolved_at,
-              resolver_version)
-             SELECT ?, selection_mode, profile_id, profile_name, manifest_sha256, resolved_at,
-                    resolver_version
+           (session_id, selection_mode, profile_id, profile_name, selected_skill_ids,
+              manifest_sha256, resolved_at, resolver_version, disabled_bundled_skills)
+             SELECT ?, selection_mode, profile_id, profile_name, selected_skill_ids,
+                    manifest_sha256, resolved_at, resolver_version, disabled_bundled_skills
            FROM session_skill_manifests WHERE session_id = ?`
         )
         .bind(childSessionId, parentSessionId),
@@ -678,6 +686,8 @@ export class SessionIndexStore {
       activeDurationMs: number;
       messageCount: number;
       prCount: number;
+      cover: SessionCover | null;
+      mediaCount: number;
       inputTokens: number;
       outputTokens: number;
       reasoningTokens: number;
@@ -688,6 +698,7 @@ export class SessionIndexStore {
     const result = await this.db
       .prepare(
         `UPDATE sessions SET total_cost = ?, active_duration_ms = ?, message_count = ?, pr_count = ?,
+           cover_artifact_id = ?, cover_artifact_type = ?, media_count = ?,
            input_tokens = ?, output_tokens = ?, reasoning_tokens = ?, cache_read_tokens = ?,
            cache_write_tokens = ?
          WHERE id = ?`
@@ -697,6 +708,9 @@ export class SessionIndexStore {
         metrics.activeDurationMs,
         metrics.messageCount,
         metrics.prCount,
+        metrics.cover?.artifactId ?? null,
+        metrics.cover?.type ?? null,
+        metrics.mediaCount,
         metrics.inputTokens,
         metrics.outputTokens,
         metrics.reasoningTokens,

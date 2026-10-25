@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { describe, it, expect } from "vitest";
 import {
   initSession,
@@ -11,8 +12,8 @@ import {
 } from "./helpers";
 
 describe("POST /internal/stop", () => {
-  it("marks processing message as failed", async () => {
-    const { stub } = await initSession();
+  it("marks processing message as stopped and leaves the session usable", async () => {
+    const { stub, sessionName } = await initSession();
 
     const participants = await queryDO<{ id: string }>(
       stub,
@@ -47,10 +48,24 @@ describe("POST /internal/stop", () => {
        FROM messages WHERE id = ?`,
       msgId
     );
-    expect(messages[0].status).toBe("failed");
+    expect(messages[0].status).toBe("stopped");
     expect(messages[0].completed_at).toEqual(expect.any(Number));
     expect(messages[0].error_message).toBe("Execution was stopped");
     expect(messages[0].stop_confirmation_deadline).toBeNull();
+
+    // Stopping is not failing: the session settles as completed, not failed, in both stores.
+    const [session] = await queryDO<{ status: string }>(stub, "SELECT status FROM session");
+    expect(session.status).toBe("completed");
+    const row = await env.DB.prepare("SELECT status FROM sessions WHERE id = ?")
+      .bind(sessionName)
+      .first<{ status: string }>();
+    expect(row?.status).toBe("completed");
+    const [event] = await queryDO<{ data: string }>(
+      stub,
+      "SELECT data FROM events WHERE id = ?",
+      `execution_complete:${msgId}`
+    );
+    expect(JSON.parse(event.data)).toMatchObject({ success: false, stopped: true });
   });
 
   it("is idempotent with no processing message", async () => {
@@ -110,6 +125,7 @@ describe("POST /internal/stop", () => {
     expect(execComplete).toBeDefined();
     const execEvent = execComplete!.event as Record<string, unknown>;
     expect(execEvent.success).toBe(false);
+    expect(execEvent.stopped).toBe(true);
     expect(execEvent.messageId).toBe(msgId);
 
     // Should have processing_status: false
@@ -218,16 +234,16 @@ describe("POST /internal/stop", () => {
       createdAt: Date.now() - 1000,
     });
 
-    // Stop execution - marks message A as failed
+    // Stop execution - marks message A as stopped
     await stub.fetch("http://internal/internal/stop", { method: "POST" });
 
-    // Verify A is failed
+    // Verify A is stopped
     const msgsAfterStop = await queryDO<{ id: string; status: string }>(
       stub,
       "SELECT id, status FROM messages WHERE id = ?",
       msgA
     );
-    expect(msgsAfterStop[0].status).toBe("failed");
+    expect(msgsAfterStop[0].status).toBe("stopped");
 
     // Bridge sends execution_complete for message A
     await stub.fetch("http://internal/internal/sandbox-event", {
@@ -242,13 +258,13 @@ describe("POST /internal/stop", () => {
       }),
     });
 
-    // Verify A is still failed (not double-updated)
+    // Verify A is still stopped (not double-updated)
     const msgsAfterComplete = await queryDO<{ id: string; status: string }>(
       stub,
       "SELECT id, status FROM messages WHERE id = ?",
       msgA
     );
-    expect(msgsAfterComplete[0].status).toBe("failed");
+    expect(msgsAfterComplete[0].status).toBe("stopped");
 
     // B should transition to processing (queue drained) IF sandbox is connected.
     // Without a sandbox WS, it stays pending (sandbox not connected to dispatch to).
@@ -299,7 +315,7 @@ describe("POST /internal/stop", () => {
     // Connect sandbox WS so queue drain can dispatch
     const { ws: sandboxWs } = await openSandboxWs(name, sandboxAuth);
     if (sandboxWs) sandboxWs.accept();
-    // Stop execution - marks A as failed
+    // Stop execution - marks A as stopped
     await stub.fetch("http://internal/internal/stop", { method: "POST" });
 
     const stopped = await queryDO<{
@@ -379,13 +395,13 @@ describe("POST /internal/stop", () => {
     expect(processingStatus).toBeDefined();
     expect(processingStatus!.isProcessing).toBe(false);
 
-    // Verify message is failed in DB
+    // Verify message is stopped in DB
     const dbMessages = await queryDO<{ status: string }>(
       stub,
       "SELECT status FROM messages WHERE id = ?",
       msgId
     );
-    expect(dbMessages[0].status).toBe("failed");
+    expect(dbMessages[0].status).toBe("stopped");
 
     clientWs.close();
     if (sandboxWs) sandboxWs.close();

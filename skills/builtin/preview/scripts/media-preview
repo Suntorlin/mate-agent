@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""media-preview: open files in the user's preview pane (stdlib only).
+
+  media-preview <file> "<title>" [<file> "<title>" ...]
+  media-preview --file <file> "<title>" [...]
+
+A video (.mp4, H.264), image (.png, .jpg, .jpeg, .webp) or self-contained web page (.html) becomes a
+session artifact through the runtime's upload-media; the newest one opens in the preview pane under
+<title>. Video duration, frame size and audio are read with ffprobe. Any other file is handed over
+as a file listed in the pane under <title>: audio (.mp3, .wav, .m4a, ...) plays there, Markdown and
+text are read there, anything else (archives, editing-app project files, .mov/.webm/HEVC masters,
+LUTs) is a download. --file before a pair hands over a previewable file that way too (a master
+.mp4, a full-resolution still).
+
+Several pairs publish in one call, in the order given (so put the final cut last). Every pair is
+checked before anything is published. Prints one line of JSON per pair, which carries the
+artifactId, then one summary line:
+
+  published 8/8: 分镜 1 · 开场, 分镜 2, ..., 成片 v1
+
+and exits 0 only when every pair is published; otherwise it exits 1 and names what was not.
+Publishing a file again in the same session (same bytes, file name and title, as a preview or
+--file both times) uploads nothing and returns the artifact it already became, marked
+"alreadyPublished": a new version is new content or a new title.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# The control plane's limits (packages/control-plane/src/media.ts).
+VIDEO_MAX_DURATION_MS = 10 * 60_000
+VIDEO_MAX_BYTES = 1024 * 1024 * 1024
+IMAGE_MAX_BYTES = 10 * 1024 * 1024
+PAGE_MAX_BYTES = 10 * 1024 * 1024
+FILE_MAX_BYTES = 4 * 1024 * 1024 * 1024
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+PAGE_SUFFIXES = {".html", ".htm"}
+# Content types sent with a handed-over file, so the pane knows to play or read it. Only types that
+# are safe to label; anything else goes without one (a plain download).
+FILE_CONTENT_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".flac": "audio/flac",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain",
+    ".srt": "text/plain",
+    ".vtt": "text/vtt",
+    ".csv": "text/csv",
+    ".pdf": "application/pdf",
+}
+
+
+# What this session has published (file hash, title, preview or file -> artifact), so publishing
+# the same thing again returns it instead of a second card. Kept beside the other workspace ledgers.
+LEDGER_ENV_VAR = "MEDIA_PREVIEW_LEDGER"
+DEFAULT_LEDGER = "/workspace/.media-preview.json"
+
+
+class PreviewError(Exception):
+    pass
+
+
+def session_id() -> str:
+    try:
+        config = json.loads(os.environ.get("SESSION_CONFIG") or "{}")
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(config, dict):
+        return ""
+    return str(config.get("sessionId") or config.get("session_id") or "")
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ledger_path() -> Path:
+    return Path(os.environ.get(LEDGER_ENV_VAR) or DEFAULT_LEDGER)
+
+
+def load_ledger(path: Path) -> dict:
+    try:
+        ledger = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return ledger if isinstance(ledger, dict) else {}
+
+
+def save_ledger(path: Path, ledger: dict) -> None:
+    """Best effort: a ledger that cannot be written only means a repeat would upload again."""
+    try:
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(ledger, ensure_ascii=False, indent=1))
+        temporary.replace(path)
+    except OSError:
+        pass
+
+
+def ledger_key(session: str, as_file: bool, path: Path, title: str) -> str:
+    """The same bytes under the same file name and title, published the same way, in this session."""
+    kind = "file" if as_file else "preview"
+    return "\t".join((session, kind, file_sha256(path), path.name, title))
+
+
+def json_line(value: dict) -> str:
+    """One compact line per pair, so `grep -o '"artifactId":"[^"]*"'` finds every id."""
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def published_result(stdout: str) -> dict | None:
+    """upload-media's JSON (indented or not), when it carries an artifactId."""
+    try:
+        result = json.loads(stdout)
+    except ValueError:
+        return None
+    if isinstance(result, dict) and isinstance(result.get("artifactId"), str):
+        return result if result["artifactId"] else None
+    return None
+
+
+def probe_video(path: Path) -> dict:
+    """Duration, frame size and audio of an MP4, from ffprobe."""
+    try:
+        output = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise PreviewError(f"ffprobe could not read {path}: {error}") from error
+    info = json.loads(output)
+    streams = info.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video is None:
+        raise PreviewError(f"{path} has no video stream")
+    if video.get("codec_name") != "h264":
+        raise PreviewError(
+            f"{path} is {video.get('codec_name')}; the preview plays H.264 only. Publish an "
+            "H.264 preview (-c:v libx264 -pix_fmt yuv420p -movflags +faststart) and hand this "
+            f'one over as a download: media-preview --file {path} "<title>"'
+        )
+    duration = float(info.get("format", {}).get("duration") or video.get("duration") or 0)
+    return {
+        "duration_ms": max(1, round(duration * 1000)),
+        "width": int(video["width"]),
+        "height": int(video["height"]),
+        "has_audio": any(s.get("codec_type") == "audio" for s in streams),
+    }
+
+
+def file_args(path: Path, title: str) -> list[str]:
+    size = path.stat().st_size
+    if size > FILE_MAX_BYTES:
+        raise PreviewError(f"{size} bytes is over the {FILE_MAX_BYTES}-byte file limit")
+    args = ["--artifact-type", "file", "--caption", title]
+    content_type = FILE_CONTENT_TYPES.get(path.suffix.lower())
+    return [*args, "--content-type", content_type] if content_type else args
+
+
+def upload_args(path: Path, title: str) -> list[str]:
+    suffix = path.suffix.lower()
+    size = path.stat().st_size
+    if suffix == ".mp4":
+        if size > VIDEO_MAX_BYTES:
+            raise PreviewError(
+                f"{size} bytes is over the {VIDEO_MAX_BYTES}-byte preview limit; publish a "
+                "smaller H.264 preview (higher CRF or lower resolution) and hand this one over "
+                f'as a download: media-preview --file {path} "<title>"'
+            )
+        video = probe_video(path)
+        if video["duration_ms"] > VIDEO_MAX_DURATION_MS:
+            raise PreviewError(
+                f"{video['duration_ms']} ms is longer than the {VIDEO_MAX_DURATION_MS} ms preview "
+                f'limit; hand it over as a download: media-preview --file {path} "<title>"'
+            )
+        ended_at = int(time.time() * 1000)
+        dimensions = json.dumps({"width": video["width"], "height": video["height"]})
+        return [
+            "--artifact-type",
+            "video",
+            "--caption",
+            title,
+            "--duration-ms",
+            str(video["duration_ms"]),
+            "--recording-started-at",
+            str(ended_at - video["duration_ms"]),
+            "--recording-ended-at",
+            str(ended_at),
+            "--dimensions",
+            dimensions,
+            "--truncated",
+            "false",
+            "--has-audio",
+            "true" if video["has_audio"] else "false",
+        ]
+    if suffix in IMAGE_SUFFIXES:
+        if size > IMAGE_MAX_BYTES:
+            raise PreviewError(f"{size} bytes is over the {IMAGE_MAX_BYTES}-byte image limit")
+        return ["--caption", title]
+    if suffix in PAGE_SUFFIXES:
+        if size > PAGE_MAX_BYTES:
+            raise PreviewError(f"{size} bytes is over the {PAGE_MAX_BYTES}-byte page limit")
+        return ["--artifact-type", "page", "--caption", title]
+    return file_args(path, title)
+
+
+def parse_pairs(argv: list[str]) -> list[tuple[bool, Path, str]] | None:
+    """(as_file, path, title) for each `[--file] <file> "<title>"`, or None when malformed."""
+    pairs = []
+    index = 0
+    while index < len(argv):
+        as_file = argv[index] == "--file"
+        index += as_file
+        if index + 2 > len(argv):
+            return None
+        pairs.append((as_file, Path(argv[index]), argv[index + 1].strip()))
+        index += 2
+    return pairs or None
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    pairs = parse_pairs(argv)
+    if pairs is None:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    uploads = []
+    for as_file, path, title in pairs:
+        if not path.is_file():
+            print(f"media-preview: {path} is not a file; nothing was published", file=sys.stderr)
+            return 1
+        if not title:
+            print(f"media-preview: give {path} a title; nothing was published", file=sys.stderr)
+            return 1
+        try:
+            args = file_args(path, title) if as_file else upload_args(path, title)
+        except PreviewError as error:
+            print(f"media-preview: {error}; nothing was published", file=sys.stderr)
+            return 1
+        uploads.append((as_file, path, title, args))
+
+    session = session_id()
+    ledger_file = ledger_path()
+    ledger = load_ledger(ledger_file)
+    published: list[str] = []
+    repeated: list[str] = []
+    failed: list[tuple[str, Path]] = []
+    for as_file, path, title, args in uploads:
+        key = ledger_key(session, as_file, path, title)
+        known = ledger.get(key)
+        if isinstance(known, dict) and isinstance(known.get("artifactId"), str):
+            line = {**known, "title": title, "alreadyPublished": True}
+            print(json_line(line), flush=True)
+            published.append(title)
+            repeated.append(title)
+            continue
+        upload = subprocess.run(
+            ["upload-media", str(path), *args], stdout=subprocess.PIPE, text=True
+        )
+        if upload.returncode != 0:
+            failed.append((title, path))
+            continue
+        result = published_result(upload.stdout)
+        if result is None:
+            # Published, but without an artifactId to remember; show what came back.
+            print(upload.stdout.strip(), flush=True)
+        else:
+            print(json_line({**result, "title": title}), flush=True)
+            ledger[key] = {**result, "file": str(path)}
+            save_ledger(ledger_file, ledger)
+        published.append(title)
+
+    summary = f"published {len(published)}/{len(uploads)}"
+    if published:
+        summary += ": " + ", ".join(published)
+    if repeated:
+        summary += f" (already published, not uploaded again: {', '.join(repeated)})"
+    print(summary, flush=True)
+    if failed:
+        names = ", ".join(f'"{title}" ({path})' for title, path in failed)
+        print(
+            f"media-preview: not published: {names}; publish only these again",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

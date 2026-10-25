@@ -1,6 +1,6 @@
 import { harnessIdSchema } from "../harnesses";
 import { z } from "zod";
-import { sessionSkillSelectionSchema } from "./skills";
+import { MAX_SESSION_SKILL_SELECTION_IDS, sessionSkillSelectionSchema } from "./skills";
 import type { AgentResponse } from "./artifacts";
 import { sessionRepositoriesInputSchema } from "./repositories";
 import type { EventResponse } from "./sandbox-events";
@@ -8,6 +8,7 @@ import { MAX_WEB_PROMPT_CHARS, promptContentSchema } from "./prompts";
 import { modelProviderSelectionsSchema } from "./provider-accounts";
 import {
   messageSourceSchema,
+  sessionPermissionModeSchema,
   sessionStatusSchema,
   type SandboxStatus,
   type SessionListResponse,
@@ -169,6 +170,12 @@ export const sessionBudgetUpdateSchema = z.strictObject({
 
 export type SessionBudgetUpdate = z.infer<typeof sessionBudgetUpdateSchema>;
 
+export const sessionPermissionModeUpdateSchema = z.strictObject({
+  permissionMode: sessionPermissionModeSchema,
+});
+
+export type SessionPermissionModeUpdate = z.infer<typeof sessionPermissionModeUpdateSchema>;
+
 /** Request body for POST /sessions/:parentId/children/:childId/prompt. */
 export const childFollowUpPromptRequestSchema = z.strictObject({
   content: z
@@ -226,6 +233,11 @@ function hasExclusiveSessionTarget(
   return activeModes <= 1;
 }
 
+/** Per-session skill keys replace a skill selection; a request names one or the other. */
+function hasExclusiveSkillChoice(data: { skillSelection?: unknown; skillKeys?: unknown }): boolean {
+  return data.skillSelection === undefined || data.skillKeys === undefined;
+}
+
 const createSessionRequestBaseSchema = z.object({
   repoOwner: z.string().trim().min(1).nullish(),
   repoName: z.string().trim().min(1).nullish(),
@@ -234,6 +246,8 @@ const createSessionRequestBaseSchema = z.object({
   harness: harnessIdSchema.optional(),
   model: z.string().optional(),
   reasoningEffort: z.string().optional(),
+  /** When the agent asks before acting. Omission means DEFAULT_SESSION_PERMISSION_MODE. */
+  permissionMode: sessionPermissionModeSchema.optional(),
   branch: z.string().optional(),
   /**
    * Ordered repository list ([0] = primary). Mutually exclusive with the
@@ -249,6 +263,13 @@ const createSessionRequestBaseSchema = z.object({
   environmentId: z.string().trim().min(1).nullish(),
   /** Managed skills are resolved and pinned when the session is created. */
   skillSelection: sessionSkillSelectionSchema.optional(),
+  /**
+   * The skills the creator ticked for this one session, as `/my-skills` keys
+   * (`builtin:<name>` or a skill id). Overrides the account's on/off switches:
+   * unticked switchable built-ins are off, ticked shared and own skills are in.
+   * Mutually exclusive with `skillSelection`.
+   */
+  skillKeys: z.array(z.string().min(1)).max(MAX_SESSION_SKILL_SELECTION_IDS).optional(),
   /** Explicit account/API-key choices. Omission resolves provider policy. */
   providerSelections: modelProviderSelectionsSchema.optional(),
 });
@@ -265,6 +286,10 @@ export const createSessionRequestSchema = createSessionRequestBaseSchema
   .refine(hasExclusiveSessionTarget, {
     message: "environmentId, repositories, and repoOwner/repoName/branch are mutually exclusive",
     path: ["repositories"],
+  })
+  .refine(hasExclusiveSkillChoice, {
+    message: "skillSelection and skillKeys are mutually exclusive",
+    path: ["skillKeys"],
   });
 
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
@@ -293,6 +318,10 @@ export const createSessionInputSchema = createSessionRequestBaseSchema
   .refine(hasExclusiveSessionTarget, {
     message: "environmentId, repositories, and repoOwner/repoName/branch are mutually exclusive",
     path: ["repositories"],
+  })
+  .refine(hasExclusiveSkillChoice, {
+    message: "skillSelection and skillKeys are mutually exclusive",
+    path: ["skillKeys"],
   });
 
 export type CreateSessionInput = z.infer<typeof createSessionInputSchema>;

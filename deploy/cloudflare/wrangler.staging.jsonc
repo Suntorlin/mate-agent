@@ -1,0 +1,92 @@
+// Creative Agent engine: control plane on Cloudflare Workers (the dev environment, created as staging).
+// Template only: not bound to any Cloudflare account. Resource names share the `agent-engine-staging` prefix.
+// Secrets are not kept here; see README.md. Build the bundle first:
+//   npm run build -w @open-inspect/shared && npm run build:worker -w @open-inspect/control-plane
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "agent-engine-staging-engine",
+  "main": "../../packages/control-plane/dist/index.js",
+  "no_bundle": true,
+  "compatibility_date": "2024-09-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  // Run next to D1, R2 and the sandboxes: a request makes dozens of D1 queries, each a round trip.
+  "placement": { "region": "aws:us-east-1" },
+  "durable_objects": {
+    "bindings": [{ "name": "SESSION", "class_name": "SessionDO" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SessionDO"] }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "agent-engine-staging",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
+  ],
+  "kv_namespaces": [{ "binding": "REPOS_CACHE", "id": "00000000000000000000000000000000" }],
+  "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "agent-engine-staging" }],
+  // The engine's own calls to the gateway (usage, memory). A Worker cannot fetch another Worker by
+  // its public address (error 1042), so these go through the binding; sandboxes use GATEWAY_URL.
+  "services": [{ "binding": "GATEWAY", "service": "agent-engine-staging-gateway" }],
+  "queues": {
+    "producers": [
+      { "binding": "USER_MEMORY_EXTRACT_QUEUE", "queue": "agent-engine-memory-extract-staging" },
+      {
+        "binding": "USER_MEMORY_CONSOLIDATE_QUEUE",
+        "queue": "agent-engine-memory-consolidate-staging",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "agent-engine-memory-extract-staging",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 5,
+        "max_retries": 2,
+        "retry_delay": 60,
+        "dead_letter_queue": "agent-engine-memory-extract-dlq-staging",
+      },
+      {
+        "queue": "agent-engine-memory-consolidate-staging",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_concurrency": 5,
+        "max_retries": 2,
+        "retry_delay": 60,
+        "dead_letter_queue": "agent-engine-memory-consolidate-dlq-staging",
+      },
+    ],
+  },
+  "triggers": { "crons": ["23 * * * *", "41 3 * * *"] },
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "vars": {
+    "DEPLOYMENT_NAME": "staging",
+    "APP_NAME": "Mate Agent",
+    "GITHUB_BOT_USERNAME": "agent-engine",
+    "SCM_PROVIDER": "github",
+    "LOG_LEVEL": "info",
+    "WORKER_URL": "https://agent-engine-staging-engine.example.workers.dev",
+    "WEB_APP_URL": "https://app.example.com",
+    "ALLOWED_EMAIL_DOMAINS": "example.com",
+    "SANDBOX_PROVIDER": "vercel",
+    "VERCEL_TEAM_ID": "",
+    "VERCEL_PROJECT_ID": "",
+    "VERCEL_BASE_SNAPSHOT_ID": "",
+    "VERCEL_DEFAULT_VCPUS": "8",
+    "VERCEL_MAX_SESSION_TIMEOUT_MS": "86400000",
+    "VERCEL_SNAPSHOT_EXPIRATION_MS": "0",
+    "SESSION_DO_LOCATION_HINT": "enam",
+    "DEFAULT_SESSION_VISIBILITY": "private",
+    "GATEWAY_URL": "https://agent-engine-staging-gateway.example.workers.dev",
+    // Direct uploads (workspace copies, large files, library files): signed URLs on the bucket's S3
+    // address, which needs an access key pair (secrets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).
+    "OBJECT_STORE_ENDPOINT": "https://ACCOUNT_ID.r2.cloudflarestorage.com",
+    "OBJECT_STORE_PUBLIC_ENDPOINT": "https://ACCOUNT_ID.r2.cloudflarestorage.com",
+    "OBJECT_STORE_REGION": "auto",
+    "OBJECT_STORE_BUCKET": "agent-engine-staging",
+    "OBJECT_STORE_FORCE_PATH_STYLE": "true",
+    "OBJECT_STORE_SANDBOX_ACCESS": "direct",
+    // Documentation of the browser origins the bucket's CORS rule names (set with wrangler r2 bucket cors).
+    "OBJECT_STORE_CORS_ORIGINS": "https://app.example.com",
+  },
+}

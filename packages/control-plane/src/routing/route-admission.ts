@@ -1,10 +1,6 @@
 /** Framework-neutral authentication and authorization for a matched route. */
 
-import {
-  SCOPED_PERMISSION_PAIRS,
-  resolveScopedPermission,
-  type PermissionId,
-} from "@open-inspect/shared/rbac";
+import type { PermissionId } from "@open-inspect/shared/rbac";
 import { authenticate, isAuthError } from "../auth/authenticate";
 import type { Principal } from "../auth/principal";
 import type {
@@ -13,12 +9,8 @@ import type {
 } from "../authorization/request-audit";
 import { AuthorizationError, AuthorizationService } from "../authorization/service";
 import { serviceAllowsPermission } from "../authorization/service-permissions";
-import { evaluateSessionAdmission, viewerFromContext } from "../authorization/session-admission";
+import { evaluateSessionAdmission } from "../authorization/session-admission";
 import { legacyPermissionForAction } from "../authorization/teams-enforcement";
-import { AutomationStore } from "../db/automation-store";
-import { TeamStore } from "../db/teams";
-import { TeamMembershipStore } from "../db/team-memberships";
-import { resolveTeamAccess } from "@open-inspect/shared/types/team-access";
 import { UserStore } from "../db/user-store";
 import type { RequestContext } from "../http/request-context";
 import { error, json } from "../http/responses";
@@ -477,6 +469,15 @@ function enforceServiceRouteAuthorization(
   }
   if (principal?.kind !== "service") return null;
   if (policy.authentication.kind === "web-service" && principal.service === "web") return null;
+  if (authorization.kind === "active-self") {
+    if (!authorization.actingServices.some((service) => service === principal.service)) {
+      return serviceCapabilityRequired();
+    }
+    // A person's own account is never a service's: without an actor there is no self.
+    if (!principal.actor) return serviceActorRequired();
+    evidence.requirements.push(requirement);
+    return null;
+  }
   if (
     (authorization.kind !== "active-user" && authorization.kind !== "active-global") ||
     authorization.service.kind === "deny"
@@ -536,122 +537,6 @@ async function enforcePermissionRequirement(
     "Forbidden",
     requirement.permission
   );
-}
-
-async function enforceAutomationRequirement(
-  requirement: Extract<RouteAuthorizationRequirement, { kind: "automation" }>,
-  params: RouteParams,
-  ctx: RequestContext,
-  evidence: AuthorizationEvidence
-): Promise<AuthorizationFailure | null> {
-  if (ctx.principal?.kind !== "user") {
-    // Ownership is defined for canonical human users only. Service policy
-    // normally rejects bots earlier; this keeps a future `requireAll`
-    // composition from skipping the ownership check.
-    return authorizationDenial(
-      json({ error: "Forbidden", code: "service_capability_required" }, 403),
-      evidence,
-      requirement,
-      "service_capability_required",
-      "Forbidden"
-    );
-  }
-  const automationId = params[requirement.automationIdParam];
-  if (!automationId) return { response: json({ error: "Invalid automation route" }, 400) };
-
-  try {
-    const authorization = ctx.authorization;
-    if (!authorization) throw new Error("Missing request authorization");
-    const store = new AutomationStore(ctx.db);
-    const storedAutomation = await store.getById(automationId);
-    if (!storedAutomation) return { response: error("Automation not found", 404) };
-    const automation = await store.resolveCanonicalOwner(storedAutomation);
-
-    const permissionStem = `automations.${requirement.operation}` as const;
-    const pair = SCOPED_PERMISSION_PAIRS[permissionStem];
-    const isOwner = automation.user_id === ctx.principal.userId;
-    const scope = resolveScopedPermission(permissionStem, authorization.permissions);
-    if (!scope || (scope === "own" && !isOwner)) {
-      return authorizationDenial(
-        json({ error: "Forbidden", code: "permission_required", permission: pair.own }, 403),
-        evidence,
-        requirement,
-        "permission_required",
-        "Forbidden",
-        pair.own
-      );
-    }
-
-    evidence.requirements.push(requirement);
-    evidence.effectivePermissions.push(pair[scope]);
-    ctx.automationAdmission = { automation };
-    return null;
-  } catch {
-    return authorizationUnavailable();
-  }
-}
-
-async function enforceTeamRequirement(
-  requirement: Extract<RouteAuthorizationRequirement, { kind: "team" }>,
-  params: RouteParams,
-  ctx: RequestContext,
-  evidence: AuthorizationEvidence
-): Promise<AuthorizationFailure | null> {
-  if (ctx.principal?.kind !== "user") {
-    return authorizationDenial(
-      json({ error: "Forbidden", code: "service_capability_required" }, 403),
-      evidence,
-      requirement,
-      "service_capability_required",
-      "Forbidden"
-    );
-  }
-  const teamId = params[requirement.teamIdParam];
-  if (!teamId) return { response: json({ error: "Invalid team route" }, 400) };
-  try {
-    const team = await new TeamStore(ctx.db).getById(teamId);
-    if (!team) return { response: error("Team not found", 404) };
-    const memberships = new TeamMembershipStore(ctx.db);
-    const viewer = viewerFromContext(
-      ctx,
-      (ctx.sessionMemberships ??= await memberships.listForUser(ctx.principal.userId))
-    );
-    if (viewer.kind !== "user") throw new Error("Missing team viewer");
-    const access = resolveTeamAccess(
-      {
-        userId: viewer.userId,
-        roleKey: viewer.roleKey,
-        memberships: viewer.memberships,
-      },
-      { ...team, leadCount: await memberships.countLeads(teamId) }
-    );
-    const isAdmin = viewer.roleKey === "owner" || viewer.roleKey === "administrator";
-    const visible = isAdmin || viewer.memberships.has(teamId);
-    if (!visible && requirement.need !== "canJoin")
-      return { response: error("Team not found", 404) };
-    if (requirement.need !== "read" && !access[requirement.need]) {
-      const reasonCode =
-        requirement.need === "canJoin"
-          ? team.archivedAt !== null
-            ? "team_archived"
-            : team.joinPolicy === "invite_only"
-              ? "invite_only"
-              : "already_member"
-          : "team_capability_required";
-      return authorizationDenial(
-        json({ error: "Forbidden", code: reasonCode, reason_code: reasonCode }, 403),
-        evidence,
-        requirement,
-        reasonCode,
-        "Forbidden"
-      );
-    }
-    evidence.requirements.push(requirement);
-    ctx.teamAdmission = { team, access };
-    return null;
-  } catch {
-    return authorizationUnavailable();
-  }
 }
 
 async function enforceSessionRequirement(
@@ -775,12 +660,6 @@ async function enforceRouteAuthorization(
       switch (requirement.kind) {
         case "permission":
           failure = await enforcePermissionRequirement(requirement, ctx, evidence);
-          break;
-        case "automation":
-          failure = await enforceAutomationRequirement(requirement, params, ctx, evidence);
-          break;
-        case "team":
-          failure = await enforceTeamRequirement(requirement, params, ctx, evidence);
           break;
         case "session":
           failure = await enforceSessionRequirement(requirement, params, env, ctx, evidence);

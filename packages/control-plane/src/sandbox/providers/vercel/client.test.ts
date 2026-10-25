@@ -208,7 +208,7 @@ describe("VercelSandboxClient", () => {
     const result = await createClient().createSandbox(
       {
         name: "sandbox-1",
-        runtime: "node24",
+        image: "vercel/sandbox/node:24",
         timeoutMs: 7200000,
         resources: { vcpus: 4 },
         ports: [8080],
@@ -239,7 +239,7 @@ describe("VercelSandboxClient", () => {
     expect(lastFetchBody()).toEqual({
       projectId: "project-123",
       name: "sandbox-1",
-      runtime: "node24",
+      image: "vercel/sandbox/node:24",
       timeout: 7200000,
       resources: { vcpus: 4 },
       ports: [8080],
@@ -492,6 +492,35 @@ describe("VercelSandboxClient", () => {
     expect(headers.get("x-request-id")).toBe("request-1");
     expect(headers.get("x-session-id")).toBe("session-logical");
     expect(headers.get("x-sandbox-id")).toBe("sandbox-logical");
+  });
+
+  it("reads a session and extends its timeout with the SDK's endpoints", async () => {
+    const session = {
+      id: "session-1",
+      status: "running",
+      createdAt: 1_000,
+      cwd: "/vercel/sandbox",
+      timeout: 7_200_000,
+    };
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ session, routes: [] }))
+      .mockResolvedValueOnce(jsonResponse({ session: { ...session, timeout: 9_000_000 } }));
+    const client = createClient();
+
+    await expect(client.getSession("session-1")).resolves.toEqual(session);
+    expect(fetchSpy.mock.calls[0][0]).toBe(
+      "https://vercel.test/api/v2/sandboxes/sessions/session-1?teamId=team-456"
+    );
+    expect(lastFetchInit().method).toBe("GET");
+
+    await expect(client.extendSessionTimeout("session-1", 1_800_000)).resolves.toMatchObject({
+      timeout: 9_000_000,
+    });
+    expect(fetchSpy.mock.calls[1][0]).toBe(
+      "https://vercel.test/api/v2/sandboxes/sessions/session-1/extend-timeout?teamId=team-456"
+    );
+    expect(lastFetchInit().method).toBe("POST");
+    expect(lastFetchBody()).toEqual({ duration: 1_800_000 });
   });
 
   it("wraps non-OK responses in VercelSandboxApiError", async () => {

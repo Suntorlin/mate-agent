@@ -10,23 +10,39 @@
 import { createLogger } from "../../control-plane/src/logger";
 import type { CorrelationContext } from "../../control-plane/src/logger";
 import {
-  DEFAULT_VERCEL_RUNTIME,
   VERCEL_LOCAL_RUNTIME_EXTRACT_DIR,
   VERCEL_RUNTIME_WORKDIR,
   buildVercelBootstrapScript,
 } from "./bootstrap";
-import { VERCEL_PYTHON_BIN } from "../../control-plane/src/sandbox/providers/vercel/bootstrap";
+import {
+  DEFAULT_VERCEL_IMAGE,
+  VERCEL_PYTHON_BIN,
+} from "../../control-plane/src/sandbox/providers/vercel/bootstrap";
 import type { VercelSandboxClient } from "../../control-plane/src/sandbox/providers/vercel/client";
 
 const log = createLogger("vercel-base-snapshot");
 
 const DEFAULT_BASE_SNAPSHOT_NAME_PREFIX = "openinspect-base";
-const DEFAULT_BASE_SNAPSHOT_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * How long the bootstrap may run. 20 min is plenty on a healthy Ubuntu mirror (a build takes about
+ * 6); a slow mirror can stretch the apt phase alone past that, so VERCEL_BOOTSTRAP_TIMEOUT_MS can
+ * raise it for a build. The build sandbox lives 10 min longer, for the snapshot step.
+ */
+const BOOTSTRAP_TIMEOUT_MS = Number(process.env.VERCEL_BOOTSTRAP_TIMEOUT_MS) || 20 * 60 * 1000;
+const DEFAULT_BASE_SNAPSHOT_TIMEOUT_MS = BOOTSTRAP_TIMEOUT_MS + 10 * 60 * 1000;
 const PREPARE_RUNTIME_UPLOAD_TIMEOUT_MS = 30_000;
-const BOOTSTRAP_TIMEOUT_MS = 20 * 60 * 1000;
+const BOOTSTRAP_POLL_INTERVAL_MS = 15_000;
+const BOOTSTRAP_POLL_TIMEOUT_MS = 30_000;
+const BOOTSTRAP_EXIT_FILE = `${VERCEL_RUNTIME_WORKDIR}/bootstrap.exit`;
+const BOOTSTRAP_LOG_FILE = `${VERCEL_RUNTIME_WORKDIR}/bootstrap.log`;
+/** Exit code of the poll command while the bootstrap is still running. */
+const STILL_RUNNING = 255;
 
 export interface BuildVercelBaseSnapshotConfig {
-  runtime?: string;
+  /** Managed image to build on; defaults to DEFAULT_VERCEL_IMAGE. */
+  image?: string;
+  /** How often to check whether the detached bootstrap finished; defaults to 15 s. */
+  bootstrapPollIntervalMs?: number;
   runtimeArchive: Uint8Array;
   runtimeExtractDir?: string;
   sourceVersion?: string;
@@ -59,7 +75,7 @@ export async function buildVercelBaseSnapshot(
   const created = await client.createSandbox(
     {
       name: sandboxName,
-      runtime: config.runtime || DEFAULT_VERCEL_RUNTIME,
+      image: config.image || DEFAULT_VERCEL_IMAGE,
       timeoutMs: DEFAULT_BASE_SNAPSHOT_TIMEOUT_MS,
       ports: [],
       tags: {
@@ -102,18 +118,15 @@ export async function buildVercelBaseSnapshot(
       config.correlation
     );
 
-    const result = await client.runCommandAndWait(
-      {
-        sessionId,
-        command: "bash",
-        args: ["-lc", buildVercelBootstrapScript({ runtimeExtractDir })],
-        timeoutMs: BOOTSTRAP_TIMEOUT_MS,
-      },
+    const exitCode = await runDetachedAndPoll(
+      client,
+      sessionId,
+      buildVercelBootstrapScript({ runtimeExtractDir }),
+      config.bootstrapPollIntervalMs ?? BOOTSTRAP_POLL_INTERVAL_MS,
       config.correlation
     );
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Vercel base runtime bootstrap failed with exit code ${result.exitCode}`);
+    if (exitCode !== 0) {
+      throw new Error(`Vercel base runtime bootstrap failed with exit code ${exitCode}`);
     }
 
     const snapshot = await client.snapshotSession(
@@ -151,6 +164,48 @@ export async function buildVercelBaseSnapshot(
       });
     }
   }
+}
+
+/**
+ * Vercel closes a waiting command request after about five minutes, and the media phase
+ * (models, Python libraries) makes the bootstrap longer than that, so it runs detached and its exit
+ * code is polled from a file. Returns the bootstrap's exit code.
+ */
+async function runDetachedAndPoll(
+  client: VercelSandboxClient,
+  sessionId: string,
+  script: string,
+  pollIntervalMs: number,
+  correlation?: CorrelationContext
+): Promise<number> {
+  await client.startCommand(
+    {
+      sessionId,
+      command: "bash",
+      args: [
+        "-lc",
+        `(${script}) > ${shellQuote(BOOTSTRAP_LOG_FILE)} 2>&1; echo $? > ${shellQuote(BOOTSTRAP_EXIT_FILE)}`,
+      ],
+      timeoutMs: BOOTSTRAP_TIMEOUT_MS,
+    },
+    correlation
+  );
+  const deadline = Date.now() + BOOTSTRAP_TIMEOUT_MS;
+  const exitFile = shellQuote(BOOTSTRAP_EXIT_FILE);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    const poll = await client.runCommandAndWait(
+      {
+        sessionId,
+        command: "bash",
+        args: ["-c", `test -s ${exitFile} || exit ${STILL_RUNNING}; exit "$(cat ${exitFile})"`],
+        timeoutMs: BOOTSTRAP_POLL_TIMEOUT_MS,
+      },
+      correlation
+    );
+    if (poll.exitCode !== STILL_RUNNING) return poll.exitCode ?? -1;
+  }
+  throw new Error(`Vercel base runtime bootstrap did not finish within ${BOOTSTRAP_TIMEOUT_MS} ms`);
 }
 
 export function buildBaseSnapshotSandboxName(params: {

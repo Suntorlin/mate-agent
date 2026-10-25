@@ -6,6 +6,8 @@ import { sessionChildSpawnRoutes } from "./session-child-spawn";
 import { sessionIndexRoutes } from "./session-index";
 import { sessionMediaRoutes } from "./session-media";
 import { sessionPromptRoutes } from "./session-prompt";
+import { sessionQuestionRoutes } from "./session-questions";
+import { sessionMediaGenerationRoutes } from "./session-media-generations";
 import { sessionPullRequestRoutes } from "./session-pull-requests";
 import { sessionRuntimeProxyRoutes } from "./session-runtime-proxy";
 import { sessionBatchArchiveRoutes } from "./session-batch-archive";
@@ -25,6 +27,8 @@ for (const module of [
   sessionBatchArchiveRoutes,
   sessionWsTokenRoutes,
   sessionPromptRoutes,
+  sessionQuestionRoutes,
+  sessionMediaGenerationRoutes,
   sessionPullRequestRoutes,
   sessionMediaRoutes,
   sessionAttachmentRoutes,

@@ -10,6 +10,7 @@ import {
   evaluateCircuitBreaker,
   evaluateSpawnDecision,
   evaluateInactivityTimeout,
+  effectiveInactivityTimeoutMs,
   evaluateHeartbeatHealth,
   evaluateConnectingTimeout,
   evaluateBootBudget,
@@ -633,7 +634,52 @@ describe("evaluateInactivityTimeout", () => {
     timeoutMs: 10 * 60 * 1000, // 10 minutes
     extensionMs: 5 * 60 * 1000, // 5 minutes
     minCheckIntervalMs: 30000, // 30 seconds
+    unpromptedTimeoutMs: 2 * 60 * 1000,
   };
+
+  describe("a sandbox no prompt has reached", () => {
+    it("times out after the short unprompted idle when nobody is watching", () => {
+      const now = Date.now();
+      const state: InactivityState = {
+        lastActivity: now - config.unpromptedTimeoutMs,
+        status: "ready",
+        connectedClientCount: 0,
+        unprompted: true,
+      };
+      expect(evaluateInactivityTimeout(state, config, now)).toEqual({ action: "timeout" });
+      expect(
+        evaluateInactivityTimeout({ ...state, lastActivity: now - 60_000 }, config, now)
+      ).toEqual({ action: "schedule", nextCheckMs: config.unpromptedTimeoutMs - 60_000 });
+    });
+
+    it("keeps the ordinary timeout while a client is connected or once prompted", () => {
+      const now = Date.now();
+      const idle = { lastActivity: now - config.unpromptedTimeoutMs, status: "ready" as const };
+      expect(
+        evaluateInactivityTimeout(
+          { ...idle, connectedClientCount: 1, unprompted: true },
+          config,
+          now
+        ).action
+      ).toBe("schedule");
+      expect(
+        evaluateInactivityTimeout(
+          { ...idle, connectedClientCount: 0, unprompted: false },
+          config,
+          now
+        ).action
+      ).toBe("schedule");
+    });
+
+    it("never waits longer than the ordinary timeout", () => {
+      expect(
+        effectiveInactivityTimeoutMs(
+          { unprompted: true, connectedClientCount: 0 },
+          { ...config, timeoutMs: 60_000 }
+        )
+      ).toBe(60_000);
+    });
+  });
 
   it('returns "schedule" for terminal states (stopped)', () => {
     const now = Date.now();

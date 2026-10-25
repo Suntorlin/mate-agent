@@ -10,14 +10,12 @@
 
 import { SELF, env } from "cloudflare:test";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { buildServiceAuthHeaders } from "@open-inspect/shared/service-auth";
+import { buildServiceAuthHeaders, type ServiceName } from "@open-inspect/shared/service-auth";
 import { createExecutionContext } from "cloudflare:test";
 import { cloudflareHost, createControlPlaneHttpHandler } from "../../src/cloudflare/http-host";
 import { createControlPlaneApp } from "../../src/routing/hono-app";
 import { listRouteContracts, type RouteContract } from "../../src/routing/route-contracts";
 import { createCloudflareEnv } from "../../src/cloudflare/platform";
-import { AutomationStore, type AutomationRow } from "../../src/db/automation-store";
-import { TeamStore } from "../../src/db/teams";
 import { TeamMembershipStore } from "../../src/db/team-memberships";
 import { SessionCollaboratorStore } from "../../src/db/session-collaborators";
 import { catalog } from "../../src/routes/catalog";
@@ -31,12 +29,13 @@ import {
   serviceFetch,
   serviceRequestHeaders,
   waitForSandboxStatus,
+  seedTeam,
 } from "./helpers";
 
 const BASE = "https://test.local";
 const BROWSER_USER_ID = "11111111111111111111111111111111";
 const SANDBOX_TOKEN = "matrix-sandbox-token";
-const BOT_SERVICES = ["slack-bot", "github-bot", "linear-bot"] as const;
+const BOT_SERVICES = ["slack-bot", "github-bot", "linear-bot", "app"] as const;
 const PROTECTED_STATUSES = new Set([401, 403]);
 const ROUTE_MISS_BODY = JSON.stringify({ error: "Not found" });
 // Each pass issues one request per catalog route, and a fresh session per
@@ -51,40 +50,13 @@ const routes: readonly RouteContract[] = listRouteContracts(
 interface MatrixFixtures {
   readonlySessionId: string;
   sandboxSessionId: string;
-  automationId: string;
   teamId: string;
-}
-
-function automation(id: string, userId: string): AutomationRow {
-  return {
-    id,
-    owner_team_id: null,
-    name: id,
-    instructions: "Run tests",
-    trigger_type: "schedule",
-    schedule_cron: "0 9 * * *",
-    schedule_tz: "UTC",
-    harness: "opencode",
-    event_type: null,
-    trigger_config: null,
-    trigger_auth_data: null,
-    model: "anthropic/claude-sonnet-4-6",
-    reasoning_effort: null,
-    enabled: 1,
-    next_run_at: null,
-    consecutive_failures: 0,
-    created_by: userId,
-    user_id: userId,
-    created_at: 1,
-    updated_at: 1,
-    deleted_at: null,
-  };
 }
 
 const PARAMETER_VALUES: Record<string, string> = {
   owner: "acme",
   name: "web-app",
-  provider: "openai",
+  provider: "anthropic",
   key: "MATRIX_KEY",
 };
 
@@ -96,21 +68,6 @@ function materialize(route: RouteContract, values: Record<string, string>): stri
 
 function isSessionRoute(route: RouteContract): boolean {
   return route.path.startsWith("/sessions/:id");
-}
-
-function isAutomationRoute(route: RouteContract): boolean {
-  return route.path.startsWith("/automations/:id");
-}
-
-function isTeamRoute(route: RouteContract): boolean {
-  return route.path.startsWith("/teams/:id");
-}
-
-let automationSequence = 0;
-async function createAutomation(): Promise<string> {
-  const id = `matrix-automation-${automationSequence++}`;
-  await new AutomationStore(env.DB).create(automation(id, BROWSER_USER_ID));
-  return id;
 }
 
 function isMutation(route: RouteContract): boolean {
@@ -135,7 +92,6 @@ describe("route admission matrix", { timeout: MATRIX_TIMEOUT_MS }, () => {
   const fixtures: MatrixFixtures = {
     readonlySessionId: "",
     sandboxSessionId: "",
-    automationId: "",
     teamId: "",
   };
 
@@ -149,9 +105,8 @@ describe("route admission matrix", { timeout: MATRIX_TIMEOUT_MS }, () => {
     await seedSandboxAuth(stub, { authToken: SANDBOX_TOKEN, sandboxId: "sb-matrix" });
     fixtures.sandboxSessionId = sessionName;
 
-    fixtures.automationId = await createAutomation();
     fixtures.teamId = (
-      await new TeamStore(env.DB).create({
+      await seedTeam({
         slug: "matrix-team",
         name: "Matrix",
         joinPolicy: "open",
@@ -201,15 +156,10 @@ describe("route admission matrix", { timeout: MATRIX_TIMEOUT_MS }, () => {
 
       // Mutating routes get a fresh resource so an earlier DELETE or state
       // change cannot turn later routes into handler-owned 404s.
-      const id = isTeamRoute(route)
-        ? fixtures.teamId
-        : isAutomationRoute(route)
-          ? isMutation(route)
-            ? await createAutomation()
-            : fixtures.automationId
-          : isSessionRoute(route) && isMutation(route)
-            ? await createReadySession()
-            : fixtures.readonlySessionId;
+      const id =
+        isSessionRoute(route) && isMutation(route)
+          ? await createReadySession()
+          : fixtures.readonlySessionId;
       const url = `${BASE}${materialize(route, { id })}`;
       const response = await serviceFetch(url, {
         method: route.method,
@@ -232,52 +182,6 @@ describe("route admission matrix", { timeout: MATRIX_TIMEOUT_MS }, () => {
       if (route.cacheControl) {
         expect(response.headers.get("Cache-Control"), identity).toBe(route.cacheControl);
       }
-    }
-    expect(observed).toMatchSnapshot();
-  });
-
-  it("admits only the named bot on every exact-service route", async () => {
-    const observed: string[] = [];
-    const serviceRoutes = routes.filter((route) => route.authentication.kind === "service");
-    expect(serviceRoutes.length).toBeGreaterThan(0);
-
-    for (const route of serviceRoutes) {
-      const identity = `${route.method} ${route.path}`;
-      if (route.authorization.kind !== "service") {
-        throw new Error(`${identity} declares service authentication without a service policy`);
-      }
-      const url = `${BASE}${materialize(route, {})}`;
-      const services: readonly string[] = route.authorization.services;
-      const allowedService = route.authorization.services[0];
-      const deniedService = BOT_SERVICES.find((service) => !services.includes(service));
-      if (!deniedService) throw new Error(`${identity} admits every bot service`);
-
-      const admitted = await serviceFetch(url, {
-        method: route.method,
-        service: allowedService,
-        body: "{}",
-      });
-      expect(PROTECTED_STATUSES.has(admitted.status), `${identity} allowed bot`).toBe(false);
-
-      const wrongBot = await serviceFetch(url, {
-        method: route.method,
-        service: deniedService,
-        body: "{}",
-      });
-      expect(wrongBot.status, `${identity} wrong bot`).toBe(403);
-      await expect(wrongBot.json(), identity).resolves.toMatchObject({
-        code: "service_capability_required",
-      });
-
-      const browser = await serviceFetch(url, { method: route.method, body: "{}" });
-      expect(browser.status, `${identity} browser owner`).toBe(403);
-      await expect(browser.json(), identity).resolves.toMatchObject({
-        code: "service_capability_required",
-      });
-
-      observed.push(
-        `${identity} ${outcome(allowedService, admitted.status)} ${outcome(deniedService, wrongBot.status)} ${outcome("web", browser.status)}`
-      );
     }
     expect(observed).toMatchSnapshot();
   });
@@ -330,9 +234,7 @@ describe("route admission matrix", { timeout: MATRIX_TIMEOUT_MS }, () => {
     const malformed = [
       `${BASE}/sessions/%E0%A4%A`,
       `${BASE}/sessions/%E0%A4%A/events`,
-      `${BASE}/automations/%E0%A4%A`,
       `${BASE}/roles/%E0%A4%A`,
-      `${BASE}/repos/acme/%E0%A4%A/secrets`,
     ];
     for (const url of malformed) {
       const response = await serviceFetch(url);
@@ -361,20 +263,6 @@ describe("route admission matrix", { timeout: MATRIX_TIMEOUT_MS }, () => {
     );
     expect(encoded.status).toBe(200);
 
-    // Repository segments decode exactly once in the handler: a nested owner
-    // arrives as one segment, a slash in the name is refused after that one
-    // decode, and a doubly-encoded slash survives it because nothing decodes
-    // the segment a second time.
-    const nested = await serviceFetch(`${BASE}/repos/group%2Fsubgroup/web-app/secrets`);
-    expect(nested.status).not.toBe(400);
-    const slashInName = await serviceFetch(`${BASE}/repos/acme/web%2Fapp/secrets`);
-    expect(slashInName.status).toBe(400);
-    await expect(slashInName.json()).resolves.toEqual({
-      error: "Owner and name must be valid repository path segments",
-    });
-    const doubleEncoded = await serviceFetch(`${BASE}/repos/acme/web%252Fapp/secrets`);
-    expect(doubleEncoded.status).not.toBe(400);
-
     // RBAC member ids decode once too: an id that is canonical only after a
     // second decode is refused.
     const memberInit = {
@@ -402,7 +290,6 @@ describe("route admission sentinel", { timeout: MATRIX_TIMEOUT_MS }, () => {
   const fixtures: MatrixFixtures = {
     readonlySessionId: "",
     sandboxSessionId: "",
-    automationId: "",
     teamId: "",
   };
   // Every production contract, admitted by its own policy, in front of a
@@ -427,9 +314,8 @@ describe("route admission sentinel", { timeout: MATRIX_TIMEOUT_MS }, () => {
     const { stub, sessionName } = await initSession({ userId: BROWSER_USER_ID });
     await seedSandboxAuth(stub, { authToken: SANDBOX_TOKEN, sandboxId: "sb-sentinel" });
     fixtures.sandboxSessionId = sessionName;
-    fixtures.automationId = await createAutomation();
     fixtures.teamId = (
-      await new TeamStore(env.DB).create({
+      await seedTeam({
         slug: "sentinel-team",
         name: "Sentinel",
         joinPolicy: "open",
@@ -469,7 +355,7 @@ describe("route admission sentinel", { timeout: MATRIX_TIMEOUT_MS }, () => {
   async function botHeaders(
     url: string,
     method: string,
-    service: (typeof BOT_SERVICES)[number],
+    service: ServiceName,
     actor?: string
   ): Promise<Record<string, string>> {
     return buildServiceAuthHeaders({
@@ -498,11 +384,7 @@ describe("route admission sentinel", { timeout: MATRIX_TIMEOUT_MS }, () => {
           ? fixtures.sandboxSessionId
           : fixtures.readonlySessionId;
       const url = `${BASE}${materialize(route, {
-        id: isTeamRoute(route)
-          ? fixtures.teamId
-          : isAutomationRoute(route)
-            ? fixtures.automationId
-            : sessionId,
+        id: sessionId,
         childId: fixtures.sandboxSessionId,
       })}`;
       const method = route.method;
@@ -590,11 +472,6 @@ describe("route admission sentinel", { timeout: MATRIX_TIMEOUT_MS }, () => {
         method: "GET",
         url: `${BASE}/sessions/abc%2Fdef`,
         groups: { id: "abc/def" },
-      },
-      {
-        method: "GET",
-        url: `${BASE}/repos/group%2Fsubgroup/web%252Fapp/secrets`,
-        groups: { owner: "group/subgroup", name: "web%2Fapp" },
       },
       {
         method: "PUT",

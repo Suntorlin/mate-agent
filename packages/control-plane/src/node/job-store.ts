@@ -24,20 +24,17 @@
  * attempts and reaches the dead rows instead of being redelivered for ever.
  *
  * It is deliberately not part of the global store, whose schema is
- * `terraform/d1/migrations` and lands on D1 as well: nothing on Cloudflare
+ * `deploy/d1/migrations` and lands on D1 as well: nothing on Cloudflare
  * reads a jobs table. This is the arrangement the host alarm index and the
  * cache file already use — a Node-local file whose schema is a
  * `CREATE TABLE IF NOT EXISTS` in code, applied on open.
  *
  * Litestream does not replicate it, and that is a decision with a condition
- * attached. Every job the control plane produces today is
- * `image_build.finalize`, which the image-build scheduler republishes from
- * the global store on its cron slot (`listRecoverableFinalizations`: a build
- * still `building` with an accepted completion and no live lease). So a lost
- * volume loses no work, only time — the same reasoning that leaves the alarm
- * index unreplicated, where the session's own file re-arms the deadline. A
- * job kind that is *not* reconstructible from replicated state — session
- * callbacks, when those move onto this seam — has to revisit that.
+ * attached. The jobs the control plane produces today refine user memory
+ * after a turn, and a later turn produces them again, so a lost volume costs
+ * one round of memory upkeep and no session state. A job kind that is *not*
+ * reconstructible from replicated state — session callbacks, when those move
+ * onto this seam — has to revisit that.
  *
  * A row carries a status rather than a nullable slot per state, because
  * `dead` is a real destination here and not the absence of one: it is what a

@@ -1,330 +1,144 @@
-# Background Agents: Open-Inspect
-
-An open-source background agents coding system inspired by
-[Ramp's Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent).
-
-![Open-Inspect web UI: session sidebar and new session composer](docs/images/ui-overview.png)
-
-## Overview
-
-Open-Inspect provides a hosted background coding agent that can:
-
-- Work on tasks in the background while you focus on other things
-- Access full development environments (Node.js, Python, git, browser automation, VS Code)
-- Connect from anywhere — web UI, Slack, GitHub PRs, Linear issues, or webhooks
-- Enable multiplayer sessions where multiple people can collaborate in real time
-- Create PRs with proper commit attribution to the prompting user
-- Run scheduled automations for cron jobs, or event-driven automations for GitHub events, Sentry
-  alerts, and webhooks
-- Spawn parallel sub-tasks that work in separate sandboxes simultaneously
-- Use your choice of AI model — Anthropic Claude (via API key or a connected Claude subscription on
-  the Claude Agent harness), OpenAI Codex (via ChatGPT subscription), xAI Grok (via SuperGrok
-  subscription), or OpenCode Zen
-
-## Security Model (Single-Tenant Only)
-
-> **Important**: This system is designed for **single-tenant deployment only**, where all users are
-> trusted members of the same organization with access to the same repositories.
-
-### How It Works
-
-The system uses a shared GitHub App installation for git operations (clone, fetch, push). The
-control plane mints short-lived installation tokens server-side and brokers them to sandboxes
-through the git credential helper on demand. This means:
-
-- **Authorized users share the same GitHub App credentials** - The GitHub App must be installed on
-  your organization's repositories, and active users whose role permits repository use can access
-  any repo the App has access to
-- **No per-user repository access validation** - The system does not verify that a user has
-  permission to access a specific repository before creating a session
-- **GitHub users' OAuth tokens are used for PR creation** - For GitHub logins, PRs are created using
-  the user's GitHub OAuth token, ensuring proper attribution and that they can only create PRs on
-  repos they have write access to. Users who sign in another way (e.g. Google) carry no SCM token,
-  so their PRs fall back to the shared GitHub App bot
-
-### Token Architecture
-
-| Token Type         | Purpose                                | Scope                            |
-| ------------------ | -------------------------------------- | -------------------------------- |
-| GitHub App Token   | Brokered git clone/fetch/push auth     | All repos where App is installed |
-| User OAuth Token   | Create PRs, user info                  | Repos user has access to         |
-| Sandbox Auth Token | Sandbox-to-control-plane session calls | Single session                   |
-| WebSocket Token    | Real-time session auth                 | Single session                   |
-
-### Why Single-Tenant Only
-
-This architecture follows
-[Ramp's Inspect design](https://builders.ramp.com/post/why-we-built-our-background-agent), which was
-built for internal use where all employees are trusted and have access to company repositories.
-
-**For multi-tenant deployment**, you would need:
-
-- Per-tenant GitHub App installations
-- Access validation at session creation
-- Tenant isolation in the data model
-
-### Deployment Recommendations
-
-1. **Deploy behind your organization's SSO/VPN** - Ensure only authorized employees can access the
-   web interface
-2. **Install GitHub App only on intended repositories** - The App's installation scope defines what
-   the system can access
-3. **Restrict sign-in** - Configure allowed GitHub users, email domains, or active GitHub
-   organization membership (`ALLOWED_GITHUB_ORGS`)
-4. **Use GitHub's repository selection** - When installing the App, select specific repositories
-   rather than "All repositories"
-
-See [Authentication and Authorization](docs/AUTH.md) for workspace roles, session access, automation
-ownership, bots, and member suspension.
-
-## Architecture
-
-```
-                                    ┌──────────────────┐
-                                    │     Clients      │
-                                    │ ┌──────────────┐ │
-                                    │ │  Web / Slack │ │
-                                    │ │ GitHub / Lin.│ │
-                                    │ │   Webhooks   │ │
-                                    │ └──────────────┘ │
-                                    └────────┬─────────┘
-                                             │
-                                             ▼
-┌────────────────────────────────────────────────────────────────────┐
-│                     Control Plane (Cloudflare)                     │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │                   Durable Objects (per session)              │  │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌───────────────┐    │  │
-│  │  │ SQLite  │  │WebSocket│  │  Event  │  │   GitHub      │    │  │
-│  │  │   DB    │  │   Hub   │  │ Stream  │  │ Integration   │    │  │
-│  │  └─────────┘  └─────────┘  └─────────┘  └───────────────┘    │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │              D1 Database (repo-scoped secrets)               │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────┬───────────────────────────────────┘
-                                 │
-                                 ▼
-┌────────────────────────────────────────────────────────────────────┐
-│                 Data Plane (Sandbox Backend)                       │
-│  ┌──────────────────────────────────────────────────────────────┐  │
-│  │                     Session Sandbox                          │  │
-│  │  ┌───────────┐  ┌───────────┐  ┌───────────┐                 │  │
-│  │  │ Supervisor│──│  Harness  │──│   Bridge  │─────────────────┼──┼──▶ Control Plane
-│  │  └───────────┘  │ (OpenCode │  └───────────┘                 │  │
-│  │                 │ or Claude)│                                │  │
-│  │                 └───────────┘                                │  │
-│  │                      │                                       │  │
-│  │              Full Dev Environment                            │  │
-│  │      (Node.js, Python, git, agent-browser)                   │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────┘
-```
-
-## Packages
-
-| Package                                           | Description                                 |
-| ------------------------------------------------- | ------------------------------------------- |
-| [control-plane](packages/control-plane)           | Cloudflare Workers + Durable Objects        |
-| [web](packages/web)                               | Next.js web client                          |
-| [sandbox-runtime](packages/sandbox-runtime)       | Shared in-sandbox agent runtime             |
-| [modal-infra](packages/modal-infra)               | Modal sandbox infrastructure                |
-| [daytona-infra](packages/daytona-infra)           | Daytona snapshot infrastructure             |
-| [e2b-infra](packages/e2b-infra)                   | E2B sandbox template infrastructure         |
-| [opencomputer-infra](packages/opencomputer-infra) | OpenComputer template infrastructure        |
-| [slack-bot](packages/slack-bot)                   | Slack integration (sessions from messages)  |
-| [github-bot](packages/github-bot)                 | GitHub integration (auto-review, @mention)  |
-| [linear-bot](packages/linear-bot)                 | Linear integration (issue → coding session) |
-| [shared](packages/shared)                         | Shared types and utilities                  |
-
-## Getting Started
-
-For a practical setup guide (local + contributor + deployment paths), start with
-**[docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)**.
-
-See **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** for deployment instructions.
-
-To understand the architecture and core concepts, read
-**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)**.
-
-To set up recurring scheduled tasks, see **[docs/AUTOMATIONS.md](docs/AUTOMATIONS.md)**.
-
-To create and use reusable agent instructions, see
-**[docs/MANAGED_SKILLS.md](docs/MANAGED_SKILLS.md)**.
-
-## Key Features
-
-### Fast Startup
-
-Sessions start near-instantly through multiple layers of warming:
-
-- **Filesystem snapshots** — After each prompt, sandbox state is saved; follow-up sessions restore
-  instead of re-cloning
-- **Pre-built images** — Toggle per-repo (Settings > Images) or per-environment (Settings >
-  Environments); rebuilt every 30 minutes with latest commits and dependencies
-- **Proactive warming** — Sandbox begins spinning up as soon as you start typing, before you hit
-  Enter
-
-### Multi-Repository Sessions & Environments
-
-One session can work across several repositories in a single sandbox:
-
-- **Ad-hoc sets** — Pick up to 10 repositories in the new-session picker; each is cloned side by
-  side and the agent can make coordinated changes and open a PR per repository
-- **Environments** — Save a repository set as a named environment with its own secrets scope and
-  optional prebuilt images, then launch it from the picker like any repository
-- See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#environments) for the model and
-  [docs/IMAGE_PREBUILD.md](docs/IMAGE_PREBUILD.md) for environment prebuilds
-
-### Managed Skills
-
-Create reusable instructions and supporting files that agents receive when a session starts:
-
-- Assign shared skills globally or to selected repositories and environments
-- Save personal profiles for frequently used skill sets
-- Pin exact skill revisions to each session for repeatable behavior
-- See [docs/MANAGED_SKILLS.md](docs/MANAGED_SKILLS.md) for the user guide
-
-### Multiplayer Sessions
-
-Multiple users can collaborate in the same session:
-
-- Presence indicators show who's active
-- Prompts are attributed to their authors in git commits
-- Real-time streaming to all connected clients
-
-### Commit Attribution
-
-Commits are attributed to the user who sent the prompt:
-
-```typescript
-// Configure git identity per prompt
-await configureGitIdentity({
-  name: author.scmName,
-  email: author.scmEmail,
-});
-```
-
-### Multi-Provider Model Support
-
-Choose the AI model that fits your task, with per-session reasoning effort controls:
-
-Anthropic and OpenAI models are enabled by default. xAI / SuperGrok, OpenCode Zen and Go, Z.AI
-Coding Plan, and DeepSeek models are opt-in. See [Available Models](docs/AVAILABLE_MODELS.md) for
-current model IDs, descriptions, and reasoning efforts.
-
-OpenAI models work with your existing ChatGPT subscription via OAuth — no separate API key needed.
-Anthropic models can run on the **Claude Agent** harness with a connected Claude subscription; see
-[Using the Claude Agent Harness](docs/CLAUDE_AGENT.md). Grok models work with an eligible SuperGrok
-subscription through control-plane-managed OAuth. See
-**[docs/OPENAI_MODELS.md](docs/OPENAI_MODELS.md)** or **[docs/GROK_MODELS.md](docs/GROK_MODELS.md)**
-for subscription setup instructions.
-
-### Client Integrations
-
-Interact with agents from wherever your team already works:
-
-- **Web UI** — Full session management with real-time streaming, model/reasoning selectors, terminal
-  panel, and multiplayer presence
-- **Slack Bot** — @mention or DM to start a session, with PNG, JPEG, WebP, and GIF prompt
-  attachments; replies thread back with results. Per-user model and branch preferences via App Home.
-  See [Slack integration](docs/integrations/SLACK.md)
-- **GitHub Bot** — Auto-review on PR open or respond to @mentions in PR comments. Configurable
-  per-repo. See [GitHub integration](docs/integrations/GITHUB.md)
-- **Linear Bot** — Mention or assign the agent on an issue to start a coding session, post progress
-  activities, and link the resulting PR. See [Linear integration](docs/integrations/LINEAR.md)
-- **Webhooks** — Trigger sessions from any external system via authenticated HTTP POST
-
-### Automations
-
-Schedule recurring tasks or react to external events — no human in the loop:
-
-- **Cron schedules** — Hourly, daily, weekly, monthly, or custom 5-field cron with timezone support
-- **Sentry alerts** — Auto-triage on new errors, regressions, or critical metric alerts
-- **GitHub workflow runs** — Start work when a GitHub Actions workflow finishes, with optional
-  workflow-name and conclusion filters
-- **Inbound webhooks** — JSONPath condition filters to gate which payloads spawn sessions
-- **Multi-repo fan-out** — One scheduled automation can run across up to 10 repositories, opening a
-  separate session and pull request for each
-- Auto-pause after 3 consecutive failures, manual trigger button, full run history
-
-See **[docs/AUTOMATIONS.md](docs/AUTOMATIONS.md)** for setup instructions.
-
-### Sandbox Environment
-
-Every session runs in an isolated sandbox backend with a full development environment:
-
-- **Pre-installed:** Node.js 24, Python 3.12, Bun, git, GitHub CLI, build-essential
-- **Browser automation:** agent-browser CLI with headless Chromium for screenshots, visual diffs,
-  and UI verification
-- **Code-server:** Optional browser-based VS Code connected to the session workspace
-- **Web terminal:** ttyd-powered terminal accessible from the session UI
-- **Port tunneling:** Expose up to 10 dev server ports via encrypted tunnels. URLs are available
-  in-sandbox at `/workspace/.tunnels.env` before `.openinspect/start.sh` runs
-  ([details](docs/HOW_IT_WORKS.md#tunnel-urls-inside-the-sandbox))
-- **Secrets:** AES-256-GCM encrypted, scoped globally, per-repo, or per-environment, injected as env
-  vars at spawn time. Supports bulk `.env` paste import
-
-### Child Sessions
-
-Agents can decompose work into parallel child sessions:
-
-- `spawn-child` creates a child session in its own sandbox and returns immediately
-- Parent continues working while children run in parallel on separate branches
-- `send-child-prompt` queues follow-up instructions in an existing direct child session
-- `get-child-status` and `cancel-child` coordinate child sessions
-- Depth limits and per-repo guardrails enforced
-
-### Repository Lifecycle Scripts
-
-Repositories can define two optional startup scripts under `.openinspect/`:
+# Mate Agent
+
+A general-purpose agent runtime. A client opens a session; the engine keeps the session's messages,
+events and state, and runs the agent in a sandbox (Claude Code with skills and memory, or OpenCode
+for OpenAI, xAI and the other non-Anthropic models) or, for short turns, inline. It serves one
+product, which brings its own accounts, persona, tools (an MCP server) and credits; a new product
+forks the engine. `packages/demo-app` is the reference product. Built on
+[Open-Inspect](https://github.com/ColeMurray/background-agents)
+([docs/UPSTREAM.md](docs/UPSTREAM.md)).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
+  <img alt="Mate Agent architecture: your product (users, backend, MCP server) talks to the control plane, which runs agents in sandboxes; an LLM gateway meters model calls to OpenRouter, and OpenAI or xAI are called directly with the session's own key." src="docs/images/architecture-light.png">
+</picture>
+
+<sub>Source: [docs/images/architecture.html](docs/images/architecture.html). Edit it, then re-render
+both PNGs.</sub>
+
+## Repository map
+
+| Path                            | What is in it                                                                                      |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `packages/control-plane`        | The engine                                                                                         |
+| `packages/shared`               | Types and utilities shared by the workspaces                                                       |
+| `packages/sandbox-runtime`      | Python that runs inside a sandbox                                                                  |
+| `packages/sandbox-images`       | The sandbox image build; `vercel-infra` and the other `*-infra` are provider tooling               |
+| `packages/demo-app`             | Demo Studio: the reference product (accounts, credits, MCP tools; an app shell on a design system) |
+| `packages/gateway`              | The LLM gateway: a Cloudflare Worker (what dev runs) and a Node host (SQLite) for the local stack  |
+| `packages/docker-dataplane`     | The local Docker data plane                                                                        |
+| `skills/`                       | `builtin` (baked into the image), `remotion-starter`, `tests`                                      |
+| `deploy/cloudflare`             | Worker configs and the deploy and smoke scripts for the dev environment                            |
+| `deploy/d1/migrations`          | D1 migrations, additive only                                                                       |
+| `deploy/compose`, `deploy/edge` | The local Docker stacks, their env examples, the edge proxy                                        |
+| `scripts/`                      | `verify.mjs`, lint checks, git hooks, the agent guard, the local stack and benchmarks              |
+| `docs/`                         | Documentation; `docs/USER_MEMORY.md` is the memory design                                          |
+
+Everything at the root is there because a tool reads it from there (`.github`, `.husky`, `.claude`,
+`.nvmrc`, `package.json`, the lint configs); `scripts/check-layout.mjs` keeps it that way.
+
+## Getting started
+
+Node 24 is required (`.nvmrc`; other majors give false failures). On macOS with Homebrew:
 
 ```bash
-# .openinspect/setup.sh (provisioning)
-#!/bin/bash
-npm install
-pip install -r requirements.txt
+export PATH=/opt/homebrew/opt/node@24/bin:$PATH
+npm ci
+npm run build -w @open-inspect/shared      # the other workspaces import it built
+npm run verify -- --level static           # about a minute: layout, lint, format, contracts
+npm run verify                             # everything CI runs, about ten minutes
 ```
+
+Run the engine on your machine with Docker (copy `deploy/compose/engine.env.example` to
+`.env.engine` and fill in the secrets first):
 
 ```bash
-# .openinspect/start.sh (runtime startup)
-#!/bin/bash
-docker compose up -d postgres redis
+docker compose -p agent-engine --env-file .env.engine \
+  -f deploy/compose/docker-compose.engine.yml up -d --build --wait
 ```
 
-- `setup.sh` runs for image builds and fresh sessions
-- `setup.sh` is skipped for prebuilt-image and snapshot-restore starts
-- `setup.sh` failures are non-fatal for fresh sessions, but fatal in image build mode
-- `start.sh` runs for every non-build session startup (fresh, prebuilt-image, snapshot-restore)
-- `start.sh` failures are strict: if present and it fails, session startup fails
-- Open-Inspect does not impose hook-specific timeouts. Scripts remain subject to the boot budget
-  (`SANDBOX_BOOT_TIMEOUT_MS`, 30 minutes by default, measured across the whole session boot), to
-  enclosing sandbox shutdown and image-build limits, and can apply their own command-specific
-  deadlines when needed.
-- Each script's progress is reported to the session while it runs. Failure reports retain the phase,
-  repository when available, and error or warning metadata, but hook stdout and stderr are discarded
-  rather than collected or shown. Image builds report neither, having no session to report to. See
-  [How Open-Inspect Works](docs/HOW_IT_WORKS.md#fresh-start-no-snapshot)
-- Both hooks receive `OPENINSPECT_BOOT_MODE` (`build`, `fresh`, `repo_image`, `snapshot_restore`)
-- Git operations in hooks can authenticate to other private repos on the configured SCM host when
-  the shared installation has access
+## Run it on this machine
+
+No cloud: the control plane's Node host, a local Docker data plane that stands in for the sandbox
+provider, and SeaweedFS as the object store. Docker Desktop must be running.
+
+```bash
+scripts/local/env.sh            # once: writes .env.local (ignored) with fresh local secrets
+# put your own OPENROUTER_API_KEY into .env.local
+docker build -f packages/docker-dataplane/sandbox.Dockerfile -t agent-engine-sandbox:local \
+  packages/sandbox-runtime      # the slim, native sandbox image
+scripts/local/object-store.sh   # SeaweedFS on 127.0.0.1:9017
+scripts/local/gateway.sh        # the LLM gateway on 127.0.0.1:8795 (foreground)
+scripts/local/dataplane.sh      # sandboxes as containers, on 127.0.0.1:9910 (foreground)
+scripts/local/control-plane.sh  # the engine on 127.0.0.1:8797 (foreground)
+scripts/local/agent.sh "Write hello.txt and read it back"
+scripts/local/demo-app.sh       # optional: Demo Studio on 127.0.0.1:9320 (packages/demo-app/README.md)
+```
+
+Or all of it in the background, then check it works end to end with a real model (a few cents, about
+five minutes; `--no-model` runs only what costs nothing; see
+[docs/LOCAL_E2E.md](docs/LOCAL_E2E.md)). The browser check needs Chromium once:
+`npx playwright-core install chromium`.
+
+```bash
+scripts/local/stack.sh up       # object store, gateway, data plane, control plane, Demo Studio
+npm run e2e:local               # the API: accounts, isolation, MCP tools, credits, inline, sandbox, preview
+npm run e2e:ui                  # the browser: routing, themes, phone and desktop, preview (needs a browser, below)
+scripts/local/stack.sh down
+```
+
+If another stack already holds a port, set `ENGINE_PORT`, `GATEWAY_PORT`, `DATAPLANE_PORT`,
+`LOCAL_OBJECT_STORE_PORT` or `DEMO_PORT` when you run `scripts/local/env.sh`.
+
+The slim image is enough for most work. To run the full image (the one cloud providers build:
+Chromium, code-server, the pinned toolchain) on Apple silicon, turn on Docker Desktop's
+Virtualization framework and Rosetta (Settings → General), then:
+
+```bash
+python3 packages/sandbox-images/cli.py pack --provider daytona --output .local/image-context
+docker build --platform linux/amd64 -f packages/sandbox-images/Dockerfile \
+  --build-arg BASE_IMAGE=python:3.12-slim-bookworm -t agent-engine-sandbox:full \
+  .local/image-context/<the directory pack printed>
+DATAPLANE_IMAGE=agent-engine-sandbox:full DATAPLANE_PLATFORM=linux/amd64 scripts/local/dataplane.sh
+```
+
+Under QEMU (Rosetta off) the build fails: `uv python install` segfaults.
+
+## Environments, branches and versions
+
+There is no cloud environment: everything runs on this machine (see AGENTS.md, "Red lines"). `dev`
+is the trunk; feature branches go into it. `main` holds the released versions only: it moves
+forward, to a commit that carries a release tag, and nothing else is merged into it
+([docs/RELEASING.md](docs/RELEASING.md)). GitHub's default branch is `main`, so someone who clones
+the repository sees the latest release; develop on `dev` and open pull requests into `dev`. The
+repository is not a GitHub fork of Open-Inspect, and takes fixes from it by hand
+([docs/UPSTREAM.md](docs/UPSTREAM.md)).
+
+The repository has one version, now **0.2.0**: the root `package.json`, every workspace and
+`package-lock.json` carry the same number, `CHANGELOG.md` has a section for it, and the git tag
+`v0.2.0` marks the commit. `npm run verify` checks that they agree. How to cut one:
+[docs/RELEASING.md](docs/RELEASING.md).
+
+## Working in this repository
+
+[AGENTS.md](AGENTS.md) is the one page to read first, for people and agents alike: the red lines (no
+pushes without being asked, no `git stash`, no changes to cloud environments without asking), the
+layout, the checks. They are enforced by git hooks (`.husky`) and, in Claude Code sessions, by a
+hook (`scripts/agent-guard`).
+
+More: [CHANGELOG.md](CHANGELOG.md) (release notes), [docs/RELEASING.md](docs/RELEASING.md) (cutting
+a version), [docs/LOCAL_E2E.md](docs/LOCAL_E2E.md) (the end-to-end check),
+[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) (session lifecycle, from upstream),
+[packages/control-plane/README.md](packages/control-plane/README.md) (API and D1 schema),
+[docs/USER_MEMORY.md](docs/USER_MEMORY.md) (user memory),
+[packages/demo-app/DESIGN.md](packages/demo-app/DESIGN.md) (Demo Studio's design system).
+
+## Contributing
+
+Pull requests go into `dev`; see [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md). Report a
+security problem privately, as [.github/SECURITY.md](.github/SECURITY.md) says.
 
 ## License
 
-MIT
-
-## Credits
-
-Inspired by [Ramp's Inspect](https://builders.ramp.com/post/why-we-built-our-background-agent) and
-built with:
-
-- [Modal](https://modal.com) - Cloud sandbox infrastructure
-- [Daytona](https://www.daytona.io) - Cloud development sandboxes
-- [Vercel Sandbox](https://vercel.com/docs/vercel-sandbox) - Cloud sandbox infrastructure
-- [OpenComputer](https://www.opencomputer.dev) - Cloud sandbox infrastructure
-- [E2B](https://e2b.dev) - Cloud sandbox infrastructure
-- [Cloudflare Workers](https://workers.cloudflare.com) - Edge computing
-- [OpenCode](https://opencode.ai) - Coding agent runtime (built-in harness)
-- [Claude Agent SDK](https://docs.anthropic.com/en/docs/agent-sdk) - Coding agent runtime (Claude
-  Agent harness)
-- [Next.js](https://nextjs.org) - Web framework
+MIT, see [LICENSE](LICENSE). Mate Agent is built on Open-Inspect, also MIT. The HyperFrames skills
+in `skills/builtin` are Apache-2.0 ([NOTICE](skills/builtin/hyperframes/NOTICE.md)).

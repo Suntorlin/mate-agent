@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { admit } from "../routing/admit";
 import type { ControlPlaneHonoEnv } from "../routing/hono-env";
 import type {
+  PageArtifactMetadata,
   ScreenshotArtifactMetadata,
   VideoArtifactMetadata,
 } from "@open-inspect/shared/types/artifacts";
@@ -11,13 +12,17 @@ import {
   detectScreenshotFileType,
   detectVideoFileType,
   isMultipartFile,
+  isPageFile,
   isSupportedVideoMimeType,
+  PAGE_CONTENT_TYPE,
+  PAGE_MAX_BYTES,
+  PAGE_UPLOAD_LIMIT_PER_SESSION,
   parseDimensions,
   parseOptionalBoolean,
   parseVideoUploadMetadata,
   SCREENSHOT_MAX_BYTES,
   SCREENSHOT_UPLOAD_LIMIT_PER_SESSION,
-  VIDEO_MAX_BYTES,
+  VIDEO_INLINE_MAX_BYTES,
   VIDEO_UPLOAD_LIMIT_PER_SESSION,
   type MultipartFieldValue,
 } from "../media";
@@ -67,8 +72,11 @@ export async function handleMediaUpload(
   if (artifactTypeField === "video") {
     return handleVideoUpload({ sessionId, formData, fileEntry, storage, ctx });
   }
+  if (artifactTypeField === "page") {
+    return handlePageUpload({ sessionId, formData, fileEntry, storage, ctx });
+  }
   if (artifactTypeField !== "screenshot") {
-    return error("Only screenshot and video uploads are supported", 400);
+    return error("Only screenshot, video and page uploads are supported", 400);
   }
 
   if (fileEntry.size <= 0) {
@@ -182,8 +190,12 @@ async function handleVideoUpload(input: {
     return error("Uploaded file is empty", 400);
   }
 
-  if (fileEntry.size > VIDEO_MAX_BYTES) {
-    return error(`Video uploads must be ${VIDEO_MAX_BYTES} bytes or smaller`, 400);
+  if (fileEntry.size > VIDEO_INLINE_MAX_BYTES) {
+    return error(
+      `Video uploads through this route must be ${VIDEO_INLINE_MAX_BYTES} bytes or smaller; ` +
+        "send larger videos as a direct upload",
+      400
+    );
   }
 
   if (fileEntry.type && !isSupportedVideoMimeType(fileEntry.type)) {
@@ -235,6 +247,67 @@ async function handleVideoUpload(input: {
     storage,
     ctx,
     parseFallback: "Failed to persist video artifact",
+  });
+  if (persistError) return persistError;
+
+  return json({ artifactId, objectKey }, 201);
+}
+
+async function handlePageUpload(input: {
+  sessionId: string;
+  formData: FormData;
+  fileEntry: Exclude<MultipartFieldValue, string>;
+  storage: ObjectStorage;
+  ctx: SessionRouteContext;
+}): Promise<Response> {
+  const { sessionId, formData, fileEntry, storage, ctx } = input;
+
+  if (fileEntry.size <= 0) {
+    return error("Uploaded file is empty", 400);
+  }
+
+  if (fileEntry.size > PAGE_MAX_BYTES) {
+    return error(`Page uploads must be ${PAGE_MAX_BYTES} bytes or smaller`, 400);
+  }
+
+  if (fileEntry.type && fileEntry.type.split(";")[0].trim() !== "text/html") {
+    return error("Unsupported page MIME type", 400);
+  }
+
+  const bytes = new Uint8Array(await fileEntry.arrayBuffer());
+  if (!isPageFile(bytes)) {
+    return error("Uploaded page must be UTF-8 HTML", 400);
+  }
+
+  const artifactsResult = await listSessionArtifactsFromRuntime(sessionId, ctx);
+  if (artifactsResult instanceof Response) return artifactsResult;
+
+  const pageCount = artifactsResult.filter((artifact) => artifact.type === "page").length;
+  if (pageCount >= PAGE_UPLOAD_LIMIT_PER_SESSION) {
+    return error(`Session page limit of ${PAGE_UPLOAD_LIMIT_PER_SESSION} uploads exceeded`, 429);
+  }
+
+  const caption = getOptionalFormString(formData.get("caption"));
+  const artifactId = generateId();
+  const objectKey = buildMediaObjectKey(sessionId, artifactId, "html");
+  const metadata: PageArtifactMetadata = {
+    objectKey,
+    mimeType: "text/html",
+    sizeBytes: bytes.byteLength,
+    ...(caption ? { caption } : {}),
+  };
+
+  await storage.put(objectKey, bytes, { contentType: PAGE_CONTENT_TYPE });
+
+  const persistError = await persistMediaArtifact({
+    sessionId,
+    artifactId,
+    artifactType: "page",
+    objectKey,
+    metadata,
+    storage,
+    ctx,
+    parseFallback: "Failed to persist page artifact",
   });
   if (persistError) return persistError;
 

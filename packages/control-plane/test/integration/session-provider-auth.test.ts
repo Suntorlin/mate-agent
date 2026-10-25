@@ -19,6 +19,31 @@ describe("session provider auth persistence", () => {
     );
   });
 
+  it("seeds a row per subscription provider for a session inserted without them", async () => {
+    // The seed trigger (migration 0102) covers a worker that inserts a session but no
+    // provider rows; the control plane's completeness check needs all three.
+    await env.DB.prepare(
+      "INSERT INTO sessions (id, created_at, updated_at) VALUES ('seeded-session', 5, 5)"
+    ).run();
+
+    const rows = await env.DB.prepare(
+      `SELECT provider, auth_mode, selection_source FROM session_model_provider_auth
+       WHERE session_id = 'seeded-session' ORDER BY provider`
+    ).all();
+    expect(rows.results).toEqual([
+      { provider: "anthropic", auth_mode: "api_key", selection_source: "legacy_migration" },
+      {
+        provider: "openai",
+        auth_mode: "legacy_scoped_oauth",
+        selection_source: "legacy_migration",
+      },
+      { provider: "xai", auth_mode: "legacy_scoped_oauth", selection_source: "legacy_migration" },
+    ]);
+    expect(
+      await new SessionIndexStore(env.DB).getCompleteProviderAuth("seeded-session")
+    ).toHaveLength(3);
+  });
+
   it("keeps the authoritative D1 snapshot when the installation default changes", async () => {
     const accounts = new ModelProviderAccountStore(env.DB);
     const defaults = new ProviderDefaultStore(env.DB);

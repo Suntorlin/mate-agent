@@ -40,6 +40,7 @@ function createTestHarness() {
     getSandboxSocket: vi.fn(() => null),
     isSpawning: vi.fn(() => false),
     spawnSandbox: vi.fn(async () => {}),
+    backgroundTasks: { submit: vi.fn((task: () => Promise<unknown>) => void task()) },
     log,
   };
 
@@ -240,7 +241,7 @@ describe("PresenceService", () => {
       vi.mocked(harness.deps.getSandboxSocket).mockReturnValue(null);
       vi.mocked(harness.deps.isSpawning).mockReturnValue(false);
 
-      await harness.service.handleTyping();
+      harness.service.handleTyping();
 
       expect(harness.deps.messenger.broadcast).toHaveBeenCalledWith({ type: "sandbox_warming" });
       expect(harness.deps.spawnSandbox).toHaveBeenCalled();
@@ -258,16 +259,27 @@ describe("PresenceService", () => {
         callOrder.push("spawn");
       });
 
-      await harness.service.handleTyping();
+      harness.service.handleTyping();
 
       expect(callOrder).toEqual(["broadcast", "spawn"]);
+    });
+
+    it("returns before the spawn settles, so the prompt that follows is not held behind it", () => {
+      vi.mocked(harness.deps.spawnSandbox).mockReturnValue(new Promise(() => {}));
+
+      harness.service.handleTyping();
+
+      expect(harness.deps.spawnSandbox).toHaveBeenCalledOnce();
+      expect(harness.deps.backgroundTasks.submit).toHaveBeenCalledWith(expect.any(Function), {
+        name: "sandbox.warm",
+      });
     });
 
     it("skips when already spawning", async () => {
       vi.mocked(harness.deps.getSandboxSocket).mockReturnValue(null);
       vi.mocked(harness.deps.isSpawning).mockReturnValue(true);
 
-      await harness.service.handleTyping();
+      harness.service.handleTyping();
 
       expect(harness.deps.messenger.broadcast).not.toHaveBeenCalled();
       expect(harness.deps.spawnSandbox).not.toHaveBeenCalled();
@@ -276,7 +288,7 @@ describe("PresenceService", () => {
     it("skips when sandbox already connected", async () => {
       vi.mocked(harness.deps.getSandboxSocket).mockReturnValue({} as WebSocket);
 
-      await harness.service.handleTyping();
+      harness.service.handleTyping();
 
       expect(harness.deps.messenger.broadcast).not.toHaveBeenCalled();
       expect(harness.deps.spawnSandbox).not.toHaveBeenCalled();

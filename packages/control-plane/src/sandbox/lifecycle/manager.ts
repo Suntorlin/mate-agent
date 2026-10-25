@@ -18,6 +18,7 @@ import {
   type SandboxSettings,
 } from "@open-inspect/shared/types/integrations";
 import { extractProviderAndModel, getValidModelOrDefault } from "@open-inspect/shared/models";
+import { baseReasoningEffort } from "../../session/reasoning-effort";
 import type { ServerMessage } from "@open-inspect/shared/types/server-messages";
 import type { SandboxStatus } from "@open-inspect/shared/types/sessions";
 import type { SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
@@ -46,6 +47,7 @@ import {
   evaluateCircuitBreaker,
   evaluateSpawnDecision,
   evaluateWarmDecision,
+  effectiveInactivityTimeoutMs,
   isDeadSandboxStatus,
   isSnapshotRuntimeCompatible,
   shouldStopSandboxOnSessionCancel,
@@ -140,6 +142,11 @@ export interface SandboxShutdownLifecycle {
   isHolding(): boolean;
   /** Tells a runtime refused at reconnect to retry while a capture needs its sandbox. */
   onRefusedReconnect(): "retry" | "exit";
+  /**
+   * Stops a never-prompted sandbox without saving it. Optional: without it, or
+   * when it answers "unmanaged", the ordinary inactivity stop applies.
+   */
+  releaseUnprompted?(reason: string): Promise<"released" | "held" | "unmanaged">;
   /** Owns termination; only unmanaged permits the legacy lifecycle fallback. */
   requestShutdown(
     reason: string,
@@ -407,6 +414,12 @@ export interface SandboxLifecycleConfig extends AlarmPolicyConfig {
   slackAgentNotifyLookup?: SlackAgentNotifyLookup;
   /** Builds a provider dashboard URL for a persisted provider object ID. */
   sandboxDashboardUrlBuilder?: (providerObjectId: string) => string | null;
+  /**
+   * A signed URL of the session's newest workspace copy, or null when it has
+   * none. A restore passes it on so a provider whose snapshot is gone can
+   * rebuild the sandbox from the copy instead of failing.
+   */
+  resolveWorkspaceCopyUrl?: () => Promise<string | null>;
 }
 
 /**
@@ -788,21 +801,15 @@ export class SandboxLifecycleManager
         (previous?.last_heartbeat != null && previous.modal_sandbox_id
           ? { sandboxId: previous.modal_sandbox_id, createdAt: previous.created_at }
           : undefined);
+      // The replaced sandbox's state is gone, but its newest workspace copy
+      // (project files and the agent's transcript) may not be: unpacking it
+      // lets the conversation carry on as if the sandbox had been restored.
+      const workspaceCopyUrl = replaced ? await this.resolveWorkspaceCopyUrl() : null;
       if (replaced) {
         this.log.warn("Replacing a sandbox without restoring its state", {
           event: "sandbox.state_discarded",
+          workspace_copy: workspaceCopyUrl !== null,
         });
-        try {
-          this.config.recordWarning?.(
-            "A fresh sandbox was requested without restoring the previous state. Uncommitted changes and earlier conversation context will not be carried over.",
-            `sandbox-state-discarded:${replaced.sandboxId}:${replaced.createdAt}`
-          );
-        } catch (error) {
-          this.log.warn("Could not record sandbox continuity warning", {
-            event: "sandbox.state_discarded_notice_failed",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
       }
 
       const hasRepository = sessionHasRepository(session);
@@ -871,6 +878,7 @@ export class SandboxLifecycleManager
         harness: getValidHarnessOrDefault(session.harness),
         provider,
         model: modelId,
+        reasoningEffort: this.resolveDefaultReasoningEffort(session),
         userEnvVars,
         prebuiltImageId,
         prebuiltImageSha,
@@ -882,6 +890,7 @@ export class SandboxLifecycleManager
         mcpServers,
         sandboxSettings,
         ...multiRepoFields,
+        ...(workspaceCopyUrl ? { workspaceCopyUrl } : {}),
       };
 
       if (this.provider.name === "modal-vm")
@@ -958,6 +967,7 @@ export class SandboxLifecycleManager
       }
 
       this.broadcastProviderAccessIfConnected();
+      if (replaced) this.noteReplacedSandbox(replaced, workspaceCopyUrl !== null);
 
       this.log.info("Sandbox spawn completed", {
         event: "sandbox.spawn",
@@ -1018,6 +1028,26 @@ export class SandboxLifecycleManager
       this.providerStartupPending = false;
       if (this.vmStartupAuth?.generation === generation && this.bridgeStartupClaim !== generation)
         this.vmStartupAuth = null;
+    }
+  }
+
+  /**
+   * Tell the user, once per replaced sandbox, whether the session carried on
+   * and what to do next. Worded for creators, not as a provider warning.
+   */
+  private noteReplacedSandbox(replaced: SandboxGeneration, fromWorkspaceCopy: boolean): void {
+    try {
+      this.config.recordWarning?.(
+        fromWorkspaceCopy
+          ? "Reconnected. Your files and conversation are back, so just keep going."
+          : "Reconnected, but the earlier work could not be recovered. Send your request again to continue.",
+        `sandbox-state-discarded:${replaced.sandboxId}:${replaced.createdAt}`
+      );
+    } catch (error) {
+      this.log.warn("Could not record sandbox continuity notice", {
+        event: "sandbox.state_discarded_notice_failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1284,6 +1314,7 @@ export class SandboxLifecycleManager
       const mcpServers = await this.loadMcpServers(repositories);
       const sandboxSettings = this.parseSandboxSettings(session);
       const timeoutSeconds = this.resolveSandboxTimeoutSeconds(sandboxSettings);
+      const workspaceCopyUrl = await this.resolveWorkspaceCopyUrl();
       const restoreConfig = {
         snapshotImageId,
         generationCreatedAtMs: generation.createdAt,
@@ -1297,6 +1328,7 @@ export class SandboxLifecycleManager
         harness: getValidHarnessOrDefault(session.harness),
         provider,
         model: modelId,
+        reasoningEffort: this.resolveDefaultReasoningEffort(session),
         userEnvVars,
         timeoutSeconds,
         branch: session.base_branch,
@@ -1306,6 +1338,7 @@ export class SandboxLifecycleManager
         mcpServers,
         sandboxSettings,
         ...multiRepoSpawnFields(repositories),
+        ...(workspaceCopyUrl ? { workspaceCopyUrl } : {}),
       };
       if (this.provider.name === "modal-vm")
         this.vmStartupAuth = {
@@ -1347,16 +1380,24 @@ export class SandboxLifecycleManager
           );
         }
 
+        const fromCopy = result.restoredFrom === "workspace_copy";
+        // A sandbox rebuilt from the workspace copy runs today's runtime, not
+        // the snapshot's; clearing the seeded version lets it report its own.
+        if (fromCopy) this.storage.updateSandboxRuntimeVersion(null);
+
         this.broadcastProviderAccessIfConnected();
 
         this.broadcaster.broadcast({
           type: "sandbox_restored",
-          message: "Session restored from snapshot",
+          message: fromCopy
+            ? "Session restored from its saved project files"
+            : "Session restored from snapshot",
         });
 
         this.log.info("Sandbox restore completed", {
           event: "sandbox.restore",
           outcome: "success",
+          restored_from: fromCopy ? "workspace_copy" : "snapshot",
           duration_ms: Date.now() - restoreStartedAt,
           snapshot_image_id: snapshotImageId,
           sandbox_id: result.sandboxId,
@@ -1414,6 +1455,20 @@ export class SandboxLifecycleManager
       this.providerStartupPending = false;
       if (this.vmStartupAuth?.generation === generation && this.bridgeStartupClaim !== generation)
         this.vmStartupAuth = null;
+    }
+  }
+
+  /** The newest workspace copy's URL, or null; a lookup failure only loses the fallback. */
+  private async resolveWorkspaceCopyUrl(): Promise<string | null> {
+    if (!this.config.resolveWorkspaceCopyUrl) return null;
+    try {
+      return await this.config.resolveWorkspaceCopyUrl();
+    } catch (error) {
+      this.log.warn("Workspace copy lookup failed", {
+        event: "sandbox.workspace_copy_lookup_failed",
+        error: error instanceof Error ? error : String(error),
+      });
+      return null;
     }
   }
 
@@ -1797,7 +1852,14 @@ export class SandboxLifecycleManager
       last_heartbeat: sandbox.last_heartbeat,
     });
 
-    const finding = evaluateAlarmPolicy(sandbox, this.config, now, context.connectedClients);
+    const finding = evaluateAlarmPolicy(
+      sandbox,
+      this.config,
+      now,
+      context.connectedClients,
+      // Only a live sandbox can idle out; a dead row needs no session read.
+      !isDeadSandboxStatus(sandbox.status) && this.isUnprompted()
+    );
     switch (finding.outcome) {
       case "terminal":
         this.log.debug("Alarm: sandbox in terminal state, skipping", {
@@ -1816,6 +1878,9 @@ export class SandboxLifecycleManager
 
       case "inactivity_timeout":
         return this.stopForInactivity(context);
+
+      case "unprompted_timeout":
+        return this.releaseUnprompted(context);
 
       case "inactivity_warning":
         this.log.info("Inactivity extended", {
@@ -2103,6 +2168,35 @@ export class SandboxLifecycleManager
     return "sandbox_terminated";
   }
 
+  /**
+   * Release a warm sandbox no prompt ever reached. There is nothing of the
+   * author's in it, so it is stopped without a save when the shutdown owner
+   * allows; otherwise it takes the ordinary inactivity path.
+   */
+  private async releaseUnprompted(ctx: AlarmContext): Promise<SandboxAlarmResult> {
+    const outcome = (await this.shutdown.releaseUnprompted?.("unprompted_timeout")) ?? "unmanaged";
+    if (outcome === "unmanaged") return this.stopForInactivity(ctx);
+    if (outcome === "held") {
+      await this.alarmScheduler.schedule(ctx.now + this.config.inactivity.minCheckIntervalMs);
+      return "no_action";
+    }
+    this.log.info("Unprompted sandbox released", {
+      event: "sandbox.unprompted_released",
+      last_activity: ctx.sandbox.last_activity,
+      timeout_ms: this.config.inactivity.unpromptedTimeoutMs,
+    });
+    return "sandbox_terminated";
+  }
+
+  /** Whether the session is a warm draft: created, and never sent a prompt. */
+  private isUnprompted(): boolean {
+    const session = this.sessionContext.getSession();
+    // Automation-spawned sessions (workflow runs) work without any prompt;
+    // the short unprompted-draft release would kill them mid-run.
+    if (session?.spawn_source === "automation") return false;
+    return session?.status === "created";
+  }
+
   private isCurrentSandboxState(expected: SandboxRow): boolean {
     const current = this.storage.getSandbox();
     return (
@@ -2337,6 +2431,25 @@ export class SandboxLifecycleManager
     await this.shutdown.requestShutdown("session_archived");
   }
 
+  /**
+   * A draft that is archived — its author cleared the composer or left — never
+   * ran anything, so its sandbox is released without a save when it can be.
+   */
+  async releaseForArchivedDraft(): Promise<void> {
+    const outcome = (await this.shutdown.releaseUnprompted?.("draft_archived")) ?? "unmanaged";
+    if (outcome === "released") return;
+    const sandbox = this.storage.getSandbox();
+    if (outcome === "unmanaged" && sandbox?.status === "spawning" && !sandbox.modal_object_id) {
+      // Still being started: there is no provider handle to stop yet, and nothing of the author's
+      // in it to save. Saving would hold the generation, and a held generation keeps whatever
+      // the provider answers with, running, for a recovery with nothing to recover. Cancelling
+      // marks the row stopped, so the provider's answer arrives as a late result and is destroyed.
+      await this.cancelSandbox();
+      return;
+    }
+    await this.preserveForArchive();
+  }
+
   onRefusedReconnect(): "retry" | "exit" {
     return this.shutdown.onRefusedReconnect();
   }
@@ -2350,8 +2463,13 @@ export class SandboxLifecycleManager
    * Schedule an inactivity check alarm.
    */
   async scheduleInactivityCheck(): Promise<void> {
-    const alarmTime = Date.now() + this.config.inactivity.timeoutMs;
-    this.log.debug("Scheduling inactivity check", { timeout_ms: this.config.inactivity.timeoutMs });
+    // Earliest deadline that could apply; the alarm re-evaluates with live state.
+    const timeoutMs = effectiveInactivityTimeoutMs(
+      { unprompted: this.isUnprompted(), connectedClientCount: 0 },
+      this.config.inactivity
+    );
+    const alarmTime = Date.now() + timeoutMs;
+    this.log.debug("Scheduling inactivity check", { timeout_ms: timeoutMs });
     await this.alarmScheduler.schedule(alarmTime);
   }
 
@@ -2373,6 +2491,11 @@ export class SandboxLifecycleManager
    */
   private resolveProviderAndModel(session: SessionRow): { provider: string; model: string } {
     return extractProviderAndModel(getValidModelOrDefault(session.model || this.config.model));
+  }
+
+  /** The effort the agent is started at: the session's, never "auto" (prompts resolve that). */
+  private resolveDefaultReasoningEffort(session: SessionRow): string | undefined {
+    return baseReasoningEffort(session, getValidModelOrDefault(session.model || this.config.model));
   }
 
   /**

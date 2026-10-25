@@ -5,9 +5,11 @@
 import type { CacheStore } from "@open-inspect/shared/cache-store";
 import type { SqlDatabase } from "./db/sql-database";
 import type { Jobs } from "./jobs";
-import type { FetchClient, QueueMetricsSource } from "./platform-ports";
+import type { FetchClient } from "./platform-ports";
 import type { SessionRuntimeDispatch } from "./session/runtime-client";
+import type { LargeObjectTransfers } from "./storage/large-object-transfers";
 import type { ObjectStorage } from "./storage/object-storage";
+import type { DirectObjectTransfer } from "./storage/direct-transfer";
 
 /**
  * The deployment's configuration: variables and secrets, every one a string,
@@ -38,6 +40,7 @@ export interface EnvConfig {
   SERVICE_AUTH_SECRET_SLACK_BOT?: string;
   SERVICE_AUTH_SECRET_GITHUB_BOT?: string;
   SERVICE_AUTH_SECRET_LINEAR_BOT?: string;
+  SERVICE_AUTH_SECRET_APP?: string; // A product backend on the engine (relays `app:<id>` users)
   SLACK_BOT_TOKEN?: string; // Slack bot token for agent-initiated chat.postMessage calls
 
   // GitHub App secrets (for git operations)
@@ -83,9 +86,12 @@ export interface EnvConfig {
   VERCEL_TEAM_ID?: string; // Optional Vercel team ID used for Sandbox API scope
   VERCEL_BASE_SNAPSHOT_ID?: string; // Optional prebuilt base snapshot with sandbox runtime
   VERCEL_BASE_SNAPSHOT_NAME?: string; // Optional managed base snapshot sandbox name
-  VERCEL_RUNTIME?: string; // Vercel sandbox runtime (default: node24)
+  VERCEL_IMAGE?: string; // Vercel managed image (default: vercel/sandbox/node:24)
+  VERCEL_DEFAULT_VCPUS?: string; // vCPUs (1, 2, 4 or 8) when session settings request none; default: Vercel's 2
+  VERCEL_RUNTIME?: string; // Deprecated and ignored; Vercel sandboxes start from VERCEL_IMAGE
   VERCEL_SANDBOX_API_BASE_URL?: string; // Override for tests or non-default Vercel API base URL
   VERCEL_SNAPSHOT_EXPIRATION_MS?: string; // Snapshot expiration in ms; 0 means no expiration
+  VERCEL_MAX_SESSION_TIMEOUT_MS?: string; // Plan's max session duration in ms; defaults to the Hobby ceiling
 
   E2B_API_KEY?: string; // E2B REST API key (X-API-Key header + HMAC derivation)
   E2B_API_URL?: string; // E2B REST API base URL (default https://api.e2b.app)
@@ -95,13 +101,30 @@ export interface EnvConfig {
 
   // Sandbox lifecycle configuration
   SANDBOX_INACTIVITY_TIMEOUT_MS?: string; // Inactivity timeout in ms (default: 600000 = 10 min)
+  SANDBOX_LIFETIME_EXTENSION_MS?: string; // Step by which a sandbox in use is kept alive past its lifetime, up to the provider's ceiling; 0 disables (default: DEFAULT_SANDBOX_LIFETIME_EXTENSION_MS)
   SANDBOX_BOOT_TIMEOUT_MS?: string; // Longest a connected sandbox may boot before it is failed, in ms; defaults to DEFAULT_BOOT_BUDGET_CONFIG
   EXECUTION_TIMEOUT_MS?: string; // Max processing time for one message before auto-fail, for sessions and for the automation runs watching them; overridden per session by sandboxTimeoutMs, and falls back to DEFAULT_SANDBOX_TIMEOUT_SECONDS
   SECRETS_CAP_ENFORCEMENT?: string; // "enforce" (default) fails spawn/build on oversized secret payloads; set "warn" to only log
   TEAMS_ENFORCEMENT?: string; // "off" | "shadow" (default) | "on"
+  DEFAULT_SESSION_VISIBILITY?: string; // "workspace" | "private"; unset means workspace
+  DEFAULT_SESSION_HARNESS?: string; // Harness for a new session whose create request names none; unset means DEFAULT_HARNESS
 
   // Logging
   LOG_LEVEL?: string; // "debug" | "info" | "warn" | "error" (default: "info")
+
+  // The LLM gateway (see src/gateway/config.ts); both or neither
+  GATEWAY_URL?: string; // Gateway base URL handed to sandboxes
+  GATEWAY_SECRET?: string; // HS256 key for the per-session gateway token
+  JEV_API_KEY?: string; // OpenRouter key for Jev, which picks the effort of prompts that ask for "auto"
+  INLINE_LLM_BASE_URL?: string; // Messages API base for the inline runtime (e.g. https://openrouter.ai/api); unset turns it off
+  INLINE_LLM_API_KEY?: string; // Key for INLINE_LLM_BASE_URL
+  INLINE_MODEL?: string; // Model the inline runtime runs (e.g. anthropic/claude-sonnet-4.6)
+  MEMORY_MODEL?: string; // Model the memory jobs run on INLINE_LLM_BASE_URL when there is no gateway (default DEFAULT_DIRECT_MEMORY_MODEL)
+  APP_MCP_URL?: string; // The product's MCP server (its tools), for `app:<id>` users
+  APP_TOKEN_URL?: string; // Where the engine asks the product for a user's MCP token
+  APP_ENGINE_TOKEN?: string; // The engine's bearer at APP_TOKEN_URL
+  APP_MCP_NAME?: string; // The name the agent knows the product's MCP server by (its tools are mcp__<name>__<tool>); default "app"
+  USER_FILES_QUOTA_GB?: string; // Bytes (in GiB) one user may keep in uploads and their library; defaults to DEFAULT_USER_FILES_QUOTA_BYTES
 }
 
 /**
@@ -119,13 +142,24 @@ export interface Platform {
   REPOS_CACHE: CacheStore;
   /** Media artifacts: screenshots, uploads, session media. */
   MEDIA_BUCKET: ObjectStorage;
+  /**
+   * Signed transfers straight between clients and the media store (file artifacts, large videos,
+   * workspace copies); absent where the host cannot sign them or clients cannot reach the store.
+   */
+  MEDIA_DIRECT?: DirectObjectTransfer;
+  /** Client-side transfers of large media objects; absent where the store cannot presign. */
+  MEDIA_TRANSFERS?: LargeObjectTransfers;
   /** The slack-bot service, when deployed. */
   SLACK_BOT?: FetchClient;
   /** The linear-bot service, when deployed. */
   LINEAR_BOT?: FetchClient;
-  /** GitHub Autofix queues, read for health metrics only. */
-  AUTOFIX_QUEUE?: QueueMetricsSource;
-  AUTOFIX_DLQ?: QueueMetricsSource;
+  /**
+   * The LLM gateway, where it runs as a Worker of the same account. The engine's own calls
+   * (usage, admin, memory) go through it: a Worker cannot fetch another Worker by its public
+   * address (Cloudflare answers 404, error 1042). Sandboxes still reach the gateway at
+   * `GATEWAY_URL`.
+   */
+  GATEWAY?: FetchClient;
   /** Durable background work supplied by every host. */
   JOBS: Jobs;
 }
@@ -144,5 +178,7 @@ export interface ClientInfo {
   clientId: string;
   /** Wall-clock time when this connection's authorization lease expires. */
   authorizationExpiresAt: number;
+  /** A product user's connection: authorized only on sessions that user started. */
+  ownSessionsOnly?: boolean;
   lastFetchHistoryAtMs?: number;
 }

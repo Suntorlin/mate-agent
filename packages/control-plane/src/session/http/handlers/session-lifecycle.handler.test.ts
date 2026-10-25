@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createTestBackgroundTasks } from "../../../background-tasks.test-support";
 import type { SandboxRow, SessionRow } from "../../types";
 import { SessionLifecycleHandler } from "./session-lifecycle.handler";
 import type { SessionTitleService } from "../../title-service";
@@ -32,6 +33,7 @@ function createSession(overrides: Partial<SessionRow> = {}): SessionRow {
     vnc_enabled: 0,
     total_cost: 0,
     max_cost_usd: null,
+    permission_mode: "full_auto",
     budget_exhausted: 0,
     sandbox_settings: null,
     environment_id: null,
@@ -87,7 +89,7 @@ function createHandler() {
     getSandbox,
   } as unknown as SandboxRepository;
   const transition = vi.fn<(status: SessionRow["status"]) => Promise<boolean>>();
-  const confirmIndexStatus = vi.fn<() => Promise<void>>();
+  const confirmIndexStatus = vi.fn<(status: SessionRow["status"]) => Promise<void>>();
   const repairIndexStatus = vi.fn<() => Promise<void>>();
   const settleFromMessageState = vi.fn<() => Promise<SessionRow["status"]>>();
   const statusService = {
@@ -100,6 +102,8 @@ function createHandler() {
   const cancelSession = vi.fn();
   const cancelSandbox = vi.fn();
   const preserveForArchive = vi.fn(async () => undefined);
+  const releaseForArchivedDraft = vi.fn(async () => undefined);
+  const backgroundTasks = createTestBackgroundTasks();
 
   const lifecycleHandler = new SessionLifecycleHandler(
     repository as unknown as SessionCoreRepository,
@@ -107,9 +111,10 @@ function createHandler() {
     repository as unknown as MessageRepository,
     statusService,
     { applySessionTitleUpdate } as unknown as SessionTitleService,
-    { cancelSandbox, preserveForArchive },
+    { cancelSandbox, preserveForArchive, releaseForArchivedDraft },
     "session-do-id",
-    cancelSession
+    cancelSession,
+    backgroundTasks
   );
 
   const handler = {
@@ -135,6 +140,8 @@ function createHandler() {
     cancelSession,
     cancelSandbox,
     preserveForArchive,
+    releaseForArchivedDraft,
+    backgroundTasks,
   };
 }
 
@@ -302,6 +309,64 @@ describe("SessionLifecycleHandler", () => {
     );
   });
 
+  it("releases rather than saves the sandbox of an archived draft", async () => {
+    const {
+      handler,
+      repository,
+      getSession,
+      transition,
+      preserveForArchive,
+      releaseForArchivedDraft,
+    } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "created" }));
+    transition.mockResolvedValue(true);
+
+    const response = await handler.archive();
+
+    expect(response.status).toBe(200);
+    expect(releaseForArchivedDraft).toHaveBeenCalledOnce();
+    expect(preserveForArchive).not.toHaveBeenCalled();
+
+    // A `created` session holding messages is not a draft; its sandbox is saved.
+    releaseForArchivedDraft.mockClear();
+    repository.getMessageCount.mockReturnValue(1);
+    await handler.archive();
+    expect(preserveForArchive).toHaveBeenCalledOnce();
+    expect(releaseForArchivedDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not keep the author waiting for the draft's sandbox to be released", async () => {
+    const { handler, getSession, transition, releaseForArchivedDraft, backgroundTasks } =
+      createHandler();
+    getSession.mockReturnValue(createSession({ status: "created" }));
+    transition.mockResolvedValue(true);
+    // The provider call never answers: the archive still does.
+    releaseForArchivedDraft.mockReturnValue(new Promise<undefined>(() => {}));
+
+    const response = await handler.archive();
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "archived", outcome: "archived" });
+    expect(releaseForArchivedDraft).toHaveBeenCalledOnce();
+    expect(backgroundTasks.submissions.map((submission) => submission.name)).toEqual([
+      "sandbox.release_archived_draft",
+    ]);
+  });
+
+  it("archives a draft even when releasing its sandbox fails", async () => {
+    const { handler, getSession, transition, releaseForArchivedDraft, backgroundTasks } =
+      createHandler();
+    getSession.mockReturnValue(createSession({ status: "created" }));
+    transition.mockResolvedValue(true);
+    releaseForArchivedDraft.mockRejectedValue(new Error("provider stop failed"));
+
+    const response = await handler.archive();
+    await backgroundTasks.settle();
+
+    expect(response.status).toBe(200);
+    expect(backgroundTasks.failures).toHaveLength(1);
+  });
+
   it("archives a draft that was never prompted", async () => {
     const { handler, getSession, transition } = createHandler();
     getSession.mockReturnValue(createSession({ status: "created" }));
@@ -463,6 +528,29 @@ describe("SessionLifecycleHandler", () => {
     expect(await response.json()).toEqual({ status: "completed" });
     expect(settleFromMessageState).toHaveBeenCalled();
     expect(transition).not.toHaveBeenCalled();
+  });
+
+  it("confirms the restored status reached the index the lists read", async () => {
+    const { handler, getSession, settleFromMessageState, confirmIndexStatus } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "archived" }));
+    settleFromMessageState.mockResolvedValue("failed");
+
+    const response = await handler.unarchive();
+
+    expect(response.status).toBe(200);
+    expect(confirmIndexStatus).toHaveBeenCalledExactlyOnceWith("failed");
+  });
+
+  it("returns a retryable failure when the restore cannot be confirmed in the index", async () => {
+    const { handler, getSession, settleFromMessageState, confirmIndexStatus } = createHandler();
+    getSession.mockReturnValue(createSession({ status: "archived" }));
+    settleFromMessageState.mockResolvedValue("completed");
+    confirmIndexStatus.mockRejectedValue(new Error("projection conflict"));
+
+    const response = await handler.unarchive();
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Session unarchive projection unavailable" });
   });
 
   it("returns 409 when unarchiving a session that is not archived", async () => {

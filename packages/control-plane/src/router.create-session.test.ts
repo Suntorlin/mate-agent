@@ -479,7 +479,7 @@ describe("handleCreateSession D1 ordering", () => {
     expect(create.mock.invocationCallOrder[0]).toBeLessThan(initFetch.mock.invocationCallOrder[0]);
   });
 
-  it("resolves explicit provider selections for a user-created session", async () => {
+  it("resolves explicit provider selections on the deployment's default harness", async () => {
     const create = vi.fn().mockResolvedValue(undefined);
     vi.mocked(SessionIndexStore).mockImplementation(function () {
       return { create } as never;
@@ -489,10 +489,11 @@ describe("handleCreateSession D1 ordering", () => {
       openai: { mode: "provider_account" as const, accountId: "1".repeat(32) },
     };
 
-    const response = await createSessionRequestWithBody(createEnv(initFetch), {
-      title: "Explicit provider",
-      providerSelections: explicit,
-    });
+    // A request that names no harness runs on DEFAULT_SESSION_HARNESS.
+    const response = await createSessionRequestWithBody(
+      { ...createEnv(initFetch), DEFAULT_SESSION_HARNESS: "opencode" },
+      { title: "Explicit provider", providerSelections: explicit }
+    );
 
     expect(response.status).toBe(201);
     expect(resolveSessionProviderAuth).toHaveBeenCalledWith(expect.anything(), {
@@ -500,6 +501,70 @@ describe("handleCreateSession D1 ordering", () => {
       unattended: true,
       harness: "opencode",
     });
+  });
+
+  it("resolves skills with the keys the creator ticked, and as before without them", async () => {
+    vi.mocked(SessionIndexStore).mockImplementation(function () {
+      return { create: vi.fn().mockResolvedValue(undefined) } as never;
+    });
+    const initFetch = vi.fn(async () => Response.json({ status: "created" }));
+    const skillKeys = ["builtin:viral-remake", "skill_1"];
+
+    const picked = await createSessionRequestWithBody(createEnv(initFetch), {
+      title: "Picked skills",
+      skillKeys,
+    });
+    expect(picked.status).toBe(201);
+    expect(resolveManagedSkills).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { mode: "all" },
+      "user-1",
+      { skillKeys }
+    );
+
+    const unpicked = await createSessionRequestWithBody(createEnv(initFetch), {
+      title: "Account skills",
+    });
+    expect(unpicked.status).toBe(201);
+    expect(resolveManagedSkills).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { mode: "all" },
+      "user-1",
+      { skillKeys: undefined }
+    );
+  });
+
+  it("rejects more skill keys than a selection may name before resolving skills", async () => {
+    const initFetch = vi.fn(async () => Response.json({ status: "created" }));
+
+    const response = await createSessionRequestWithBody(createEnv(initFetch), {
+      title: "Too many skills",
+      skillKeys: Array.from({ length: 201 }, (_, index) => `skill_${index}`),
+    });
+
+    expect(response.status).toBe(400);
+    expect(resolveManagedSkills).not.toHaveBeenCalled();
+    expect(initFetch).not.toHaveBeenCalled();
+  });
+
+  it("gives a request that names no harness the Claude harness", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(SessionIndexStore).mockImplementation(function () {
+      return { create } as never;
+    });
+    const initFetch = vi.fn(async () => Response.json({ status: "created" }));
+
+    const response = await createSessionRequestWithBody(createEnv(initFetch), {
+      title: "Default harness",
+    });
+
+    expect(response.status).toBe(201);
+    expect(resolveSessionProviderAuth).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ harness: "claude" })
+    );
   });
 
   it.each([400, 404, 409] as const)(
@@ -603,6 +668,48 @@ describe("handleCreateSession D1 ordering", () => {
       avatarUrl: "https://avatars.example.com/ada.png",
     });
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1" }));
+    expect(initFetch).toHaveBeenCalledOnce();
+  });
+
+  it("JIT-enrolls an unseen product user the product asserts", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(SessionIndexStore).mockImplementation(function () {
+      return { create } as never;
+    });
+    const resolveOrCreateUser = vi.fn(async () => ({ id: "user-app-1" }));
+    vi.mocked(UserStore).mockImplementation(function () {
+      return {
+        getIdentity: async () => null,
+        resolveOrCreateUser,
+        getIdentitiesForUser: async () => [],
+      } as never;
+    });
+    const initFetch = vi.fn(async () => Response.json({ status: "created" }));
+
+    const response = await handleRequest(
+      await signedServiceRequest("https://test.local/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Product session",
+          model: "anthropic/claude-haiku-4-5",
+          actorDisplayName: "Product User",
+        }),
+        service: "app",
+        actor: "app:uid-42",
+      }),
+      createEnv(initFetch) as never,
+      TEST_BACKGROUND_TASK_CONTEXT
+    );
+
+    expect(response.status).toBe(201);
+    expect(resolveOrCreateUser).toHaveBeenCalledWith({
+      provider: "app",
+      providerUserId: "uid-42",
+      displayName: "Product User",
+      providerEmail: undefined,
+      avatarUrl: undefined,
+    });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-app-1" }));
     expect(initFetch).toHaveBeenCalledOnce();
   });
 

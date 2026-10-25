@@ -3,6 +3,9 @@ import { harnessIdSchema } from "../harnesses";
 import { sessionDiffBaselineRepositorySchema } from "./session-diffs";
 import { resolvedSessionAttachmentsSchema } from "./session-attachments";
 import { githubAutofixOriginSchema } from "./github-autofix";
+import { questionAnsweredEventSchema, questionEventSchema } from "./questions";
+import { cardDismissedEventSchema } from "./session-cards";
+import { mediaGenerationEventSchema } from "./media-generation";
 
 const recordSchema = z.record(z.string(), z.unknown());
 const gitSyncStatusSchema = z.enum(["pending", "in_progress", "completed", "failed"]);
@@ -94,6 +97,20 @@ export const sandboxGenerationSchema = z.object({
   createdAt: z.number().int().positive(),
 });
 
+/**
+ * Why a turn failed, in a form the web can word for the user, beside `error` (the provider's
+ * own words). Set by the runtime (sandbox_runtime/model_refusal.py) when the model gateway refused
+ * the turn's model call because a limit is spent, which no amount of waiting a moment or retrying
+ * fixes: `model_budget_user` (the user's own budget for the period), `model_budget_global` (the
+ * service-wide limit), `model_access_blocked` (an admin paused the account). A plain string, not
+ * an enum, so a code a newer runtime adds never gets the whole event rejected.
+ */
+const turnFailureReasonShape = {
+  errorCode: z.string().max(64).optional(),
+  /** When the spent budget starts over (ISO 8601), when the gateway knows. */
+  resetsAt: z.string().max(64).optional(),
+};
+
 // Sandbox events from Modal or synthesized by the control plane.
 export const sandboxEventSchema = z.discriminatedUnion("type", [
   sandboxEventBaseSchema.extend({
@@ -176,6 +193,7 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
   messageSandboxEventBaseSchema.extend({
     type: z.literal("error"),
     error: z.string(),
+    ...turnFailureReasonShape,
     isSubtask: z.boolean().optional(),
     childSessionId: z.string().optional(),
     taskCallId: z.string().optional(),
@@ -184,6 +202,12 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
     type: z.literal("execution_complete"),
     success: z.boolean(),
     error: z.string().optional(),
+    ...turnFailureReasonShape,
+    /**
+     * The turn ended because someone stopped it, not because it failed. Such a turn still reports
+     * `success: false` (with `error` saying why) for callers that only know success and failure.
+     */
+    stopped: z.literal(true).optional(),
     /** Final cumulative reported cost of the turn. */
     messageCostUsd: z.number().nonnegative().optional(),
   }),
@@ -227,7 +251,17 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
   // unknown union entries, so this entry must exist before runtimes emit it.
   z.object({
     type: z.literal("warning"),
-    scope: z.enum(["sync", "setup", "start", "assembly", "secrets", "media", "budget", "provider"]),
+    scope: z.enum([
+      "sync",
+      "setup",
+      "start",
+      "assembly",
+      "secrets",
+      "media",
+      "budget",
+      "provider",
+      "continuity",
+    ]),
     message: z.string(),
     repoOwner: z.string().optional(),
     repoName: z.string().optional(),
@@ -285,6 +319,19 @@ export const sandboxEventSchema = z.discriminatedUnion("type", [
     attachments: resolvedSessionAttachmentsSchema.optional(),
     origin: githubAutofixOriginSchema.optional(),
   }),
+  // Questions (see questions.ts). Written by the control plane only — when
+  // the agent's ask_user call reaches it and when the user answers — never
+  // accepted from a sandbox.
+  questionEventSchema,
+  questionAnsweredEventSchema,
+  // A card the session owner closed. Recorded by the control plane only (a
+  // sandbox has no say in what a person closed); in the union so the
+  // timeline, history pages and replays carry it like any other event.
+  cardDismissedEventSchema,
+  // A product's media generation (see media-generation.ts): one row per generation, merged
+  // from the reports by the control plane (POST /sessions/:id/media-generations). Never
+  // accepted over the sandbox socket, where it would skip that route's checks.
+  mediaGenerationEventSchema,
 ]);
 
 export type SandboxEvent = z.infer<typeof sandboxEventSchema>;

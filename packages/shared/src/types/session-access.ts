@@ -44,6 +44,11 @@ export type SessionViewer =
       permissions: readonly PermissionId[];
       suspended: boolean;
       memberships: ReadonlyMap<string, TeamRole>;
+      /**
+       * A user who works alone: only the sessions they started exist for them, whatever
+       * visibility, collaborators or role the rows carry.
+       */
+      ownSessionsOnly?: boolean;
     }
   /** An unbound bot (teamId null) reads every non-private session; private is always refused. */
   | { kind: "service"; teamId: string | null };
@@ -122,6 +127,7 @@ interface SessionFacts extends Facts {
   isAdmin: boolean;
   isWsOwner: boolean;
   breakGlass: boolean;
+  ownSessionsOnly: boolean;
 }
 
 function sessionFacts(viewer: UserViewer, row: SessionAccessRow): SessionFacts {
@@ -143,10 +149,12 @@ function sessionFacts(viewer: UserViewer, row: SessionAccessRow): SessionFacts {
     isAdmin,
     isWsOwner,
     breakGlass: isPrivate && isWsOwner && !isOwner && !isCollaborator,
+    ownSessionsOnly: viewer.ownSessionsOnly === true,
   };
 }
 
 function visible(facts: SessionFacts): boolean {
+  if (facts.ownSessionsOnly) return facts.isOwner;
   return (
     facts.visibility === "workspace" ||
     (facts.visibility === "team" && (facts.teamRole !== undefined || facts.isAdmin)) ||
@@ -156,7 +164,9 @@ function visible(facts: SessionFacts): boolean {
 
 function readGate(facts: SessionFacts): AccessDecision | null {
   if (facts.suspended) return deny("suspended");
-  if (!visible(facts)) return deny(facts.isPrivate ? "private" : "not_member");
+  if (!visible(facts)) {
+    return deny(facts.isPrivate || facts.ownSessionsOnly ? "private" : "not_member");
+  }
   if (!facts.has("sessions.read")) return deny("missing_permission");
   return null;
 }

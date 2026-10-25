@@ -1,0 +1,48 @@
+.markdown {
+  overflow-wrap: anywhere;
+}
+.markdown > :first-child {
+  margin-top: 0;
+}
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol {
+  margin: 0 0 12px;
+}
+
+.markdown h3,
+.markdown h4 {
+  margin: 16px 0 8px;
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+}
+
+.markdown code {
+  padding: 1px 6px;
+  border-radius: var(--radius-tag);
+  background: var(--social-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+
+.markdown pre {
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-field);
+  background: var(--social-muted);
+  overflow-x: auto;
+}
+.markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.markdown a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

@@ -1,0 +1,7 @@
+#!/bin/sh
+# The runtime's own interpreter: a bare python3 may be a project venv the agent made.
+python=/opt/openinspect/python/bin/python3
+[ -x "$python" ] || python=python3
+# The file itself, as bin/mem does: it runs before every prompt, so it imports no package, and
+# PYTHONSAFEPATH keeps the runtime's types.py from shadowing the stdlib's.
+exec env PYTHONSAFEPATH=1 "$python" /app/sandbox_runtime/language.py "$@"

@@ -1,0 +1,6 @@
+node_modules/
+.vercel-base.json
+setup-vercel.log
+run-*.log
+run-base-build.log
+.vercel-openinspect-base.txt

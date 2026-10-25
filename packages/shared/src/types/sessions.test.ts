@@ -6,6 +6,7 @@ import {
   sessionReadStateSchema,
 } from "./sessions";
 import { createSessionRequestSchema } from "./session-api";
+import { MAX_SESSION_SKILL_SELECTION_IDS } from "./skills";
 
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
 
@@ -87,6 +88,35 @@ describe("createSessionRequestSchema provider selections", () => {
     expect(
       createSessionRequestSchema.safeParse({
         providerSelections: { gemini: { mode: "api_key" } },
+      }).success
+    ).toBe(false);
+  });
+});
+
+describe("createSessionRequestSchema skill keys", () => {
+  it("keeps the keys the creator ticked, up to the selection limit", () => {
+    const keys = ["builtin:viral-remake", "skill_1"];
+    expect(createSessionRequestSchema.parse({ skillKeys: keys }).skillKeys).toEqual(keys);
+    expect(createSessionRequestSchema.parse({ skillKeys: [] }).skillKeys).toEqual([]);
+    expect(createSessionRequestSchema.parse({}).skillKeys).toBeUndefined();
+    const atLimit = Array.from(
+      { length: MAX_SESSION_SKILL_SELECTION_IDS },
+      (_, index) => `skill_${index}`
+    );
+    expect(createSessionRequestSchema.safeParse({ skillKeys: atLimit }).success).toBe(true);
+  });
+
+  it("rejects too many keys, empty keys, and keys alongside a skill selection", () => {
+    const overLimit = Array.from(
+      { length: MAX_SESSION_SKILL_SELECTION_IDS + 1 },
+      (_, index) => `skill_${index}`
+    );
+    expect(createSessionRequestSchema.safeParse({ skillKeys: overLimit }).success).toBe(false);
+    expect(createSessionRequestSchema.safeParse({ skillKeys: [""] }).success).toBe(false);
+    expect(
+      createSessionRequestSchema.safeParse({
+        skillKeys: ["skill_1"],
+        skillSelection: { mode: "all" },
       }).success
     ).toBe(false);
   });

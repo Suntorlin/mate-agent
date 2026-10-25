@@ -49,6 +49,11 @@ host would bring its own adapter rather than reinterpret this one. The check ski
 in exchange, store logic does not belong there — anything a Postgres deployment would also need
 lives in `src/db` or `src/session` and is checked.
 
+Files named `*.generated.ts` are skipped as well. They hold what a generator wrote from something
+that is not SQL (`builtin-skills.generated.ts` carries the built-in skills' documents as strings,
+and prose such as "JSON (see …)" reads as a SQL function to the check); a test holds each one equal
+to its generator's output, so SQL cannot be written into one by hand.
+
 Migrations already merged are grandfathered by number, not rewritten. Converting them is a separate
 piece of work; the baseline exists so the pile stops growing meanwhile.
 

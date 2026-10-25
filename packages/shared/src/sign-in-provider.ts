@@ -5,6 +5,7 @@ export const SIGN_IN_PROVIDERS = ["github", "google"] as const;
 
 export type SignInProvider = (typeof SIGN_IN_PROVIDERS)[number];
 
+/** Canonical issuers of the sign-in providers. */
 export const SIGN_IN_PROVIDER_ISSUERS = {
   github: "https://github.com",
   google: "https://accounts.google.com",
@@ -15,7 +16,7 @@ export function isSignInProvider(provider: string): provider is SignInProvider {
 }
 
 export function getSignInProviderIssuer(provider: string): string | null {
-  if (isSignInProvider(provider)) {
+  if (provider === "github" || provider === "google") {
     return SIGN_IN_PROVIDER_ISSUERS[provider];
   }
   return null;

@@ -39,6 +39,19 @@ def resolve_opencode_global_config_dir() -> Path:
     return base / "opencode"
 
 
+def _gateway_anthropic_base_url(environ: Mapping[str, str]) -> str | None:
+    """The gateway's Anthropic endpoint in the form OpenCode's provider expects, or None.
+
+    A gateway sandbox's ANTHROPIC_BASE_URL is Claude Code's form (``<gateway>/llm``, which
+    the client extends with ``/v1/messages``); OpenCode's Anthropic provider takes the base
+    up to and including ``/v1``. Outside a gateway sandbox OpenCode reads the variable as is.
+    """
+    base_url = environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")
+    if not environ.get("GATEWAY_URL") or not base_url:
+        return None
+    return f"{base_url}/v1"
+
+
 class OpenCodeServer:
     HEALTH_CHECK_TIMEOUT = 30.0
 
@@ -413,6 +426,10 @@ class OpenCodeServer:
                 }
             },
         }
+
+        gateway_base_url = _gateway_anthropic_base_url(os.environ)
+        if gateway_base_url:
+            opencode_config["provider"]["anthropic"]["options"] = {"baseURL": gateway_base_url}
 
         # Inject MCP servers
         mcp_servers = self._resolve_mcp_servers()

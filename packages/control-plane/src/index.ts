@@ -17,6 +17,7 @@ import { SessionIndexStore } from "./db/session-index";
 import type { SqlDatabase } from "./db/sql-database";
 import { createCloudflareBackgroundTasks } from "./cloudflare/background-tasks";
 import { createCloudflareEnv, type WorkerBindings } from "./cloudflare/platform";
+import { parseLocationHint, sessionObject } from "./cloudflare/session-runtime-dispatch";
 import { findScheduledJob } from "./scheduled-jobs";
 
 const logger = createLogger("worker");
@@ -130,8 +131,11 @@ async function handleWebSocket(
   // Forward the upgrade to the Durable Object directly rather than through
   // SessionRuntimeClient: the 101 must carry the object's own `webSocket`,
   // which only this Cloudflare-side hop can return. Stays here by design.
-  const doId = env.SESSION.idFromName(sessionId);
-  const stub = env.SESSION.get(doId);
+  const stub = sessionObject(
+    env.SESSION,
+    sessionId,
+    parseLocationHint(env.SESSION_DO_LOCATION_HINT)
+  );
 
   // Forward the WebSocket upgrade request to the DO
   const response = await stub.fetch(request);

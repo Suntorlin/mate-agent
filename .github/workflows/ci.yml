@@ -1,78 +1,24 @@
 name: CI (TypeScript)
 
+# The checks a change to Mate Agent has to pass: the control plane (a Cloudflare Worker with Durable
+# Objects and D1, and the Node host), the LLM gateway (Worker and Node host), the shared package, the
+# skills' scripts. `dev` is the trunk and `main` holds the released versions (docs/RELEASING.md); every
+# other branch is a feature branch, tried in a pull request into `dev`. There is no deploy workflow.
+#
+# There is no path filter on purpose. The checks span the whole tree (the root lint and format cover
+# skills/ and deploy/ as well as packages/), and a required check that a path filter
+# skips stays pending on the pull request forever.
+#
+# A push to `dev` does not start this workflow: a pull request into `dev` or `main` does, a push to
+# `main` (a release) does, and so does a manual run. Run `npm run verify` before pushing `dev`; it
+# runs what this workflow runs.
 on:
   push:
     branches: [main]
-    paths:
-      - ".env.example"
-      - ".github/workflows/ci.yml"
-      - ".nvmrc"
-      - ".prettierignore"
-      - ".prettierrc"
-      - "eslint.config.js"
-      - "knip.json"
-      - "package-lock.json"
-      - "package.json"
-      - "packages/control-plane/**"
-      - "packages/github-bot/**"
-      - "packages/linear-bot/**"
-      - "packages/opencomputer-infra/**"
-      - "packages/sandbox-runtime/**"
-      - "packages/sandbox-images/**"
-      - "packages/vercel-infra/**"
-      - "packages/shared/**"
-      - "packages/slack-bot/**"
-      - "packages/web/**"
-      - "scripts/**"
-      - "terraform/d1/migrations/**"
-      # Unit tests hold the Worker's cron triggers and queue consumers equal
-      # to what Terraform declares, so a Terraform-only change must run them.
-      - "terraform/environments/production/**"
-      - "vitest.workspace.ts"
-      - "!**/*.md"
-      - "packages/sandbox-runtime/src/**"
-      - "packages/sandbox-images/**"
-      # Re-included after the exclusion above, which later patterns override: a
-      # unit test holds this document's quick start to the required variables.
-      - "docs/CONTROL_PLANE_CONTAINER.md"
-      # Re-include docs content and its package README after the Markdown exclusion.
-      - "packages/docs/**"
   pull_request:
-    branches: [main]
-    paths:
-      - ".env.example"
-      - ".github/workflows/ci.yml"
-      - ".nvmrc"
-      - ".prettierignore"
-      - ".prettierrc"
-      - "eslint.config.js"
-      - "knip.json"
-      - "package-lock.json"
-      - "package.json"
-      - "packages/control-plane/**"
-      - "packages/github-bot/**"
-      - "packages/linear-bot/**"
-      - "packages/opencomputer-infra/**"
-      - "packages/sandbox-runtime/**"
-      - "packages/sandbox-images/**"
-      - "packages/vercel-infra/**"
-      - "packages/shared/**"
-      - "packages/slack-bot/**"
-      - "packages/web/**"
-      - "scripts/**"
-      - "terraform/d1/migrations/**"
-      # Unit tests hold the Worker's cron triggers and queue consumers equal
-      # to what Terraform declares, so a Terraform-only change must run them.
-      - "terraform/environments/production/**"
-      - "vitest.workspace.ts"
-      - "!**/*.md"
-      - "packages/sandbox-runtime/src/**"
-      - "packages/sandbox-images/**"
-      # Re-included after the exclusion above, which later patterns override: a
-      # unit test holds this document's quick start to the required variables.
-      - "docs/CONTROL_PLANE_CONTAINER.md"
-      # Re-include docs content and its package README after the Markdown exclusion.
-      - "packages/docs/**"
+    branches: [main, dev]
+  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -81,8 +27,10 @@ env:
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
 
+# A literal name, not github.workflow: when the deploy calls this workflow and ci-python.yml,
+# github.workflow is the deploy's name in both, and the two would cancel each other.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-typescript-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -95,6 +43,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+          # The migrations check compares with the branch the pull request targets.
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -110,6 +60,23 @@ jobs:
       - name: Run ESLint
         run: npm run lint
 
+      - name: Check the repository layout
+        run: node scripts/check-layout.mjs
+
+      - name: Check the version
+        run: node scripts/check-version.mjs
+
+      # The layout and migration checks, the git hooks, the agent guard and `npm run verify`.
+      - name: Test the harness
+        run: npm run test:harness
+
+      - name: Check the D1 migrations
+        run: node scripts/check-migrations.mjs
+
+      - name: Check the D1 migrations against the target branch
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-migrations.mjs --base origin/${{ github.base_ref }}
+
       - name: Test complexity reporter
         run: npm run test:lint-complexity
 
@@ -119,8 +86,8 @@ jobs:
       - name: Test SQL portability check
         run: npm run test:lint-sql-portability
 
-      - name: Test AWS deploy rollback
-        run: npm run test:deploy-aws
+      - name: Test sandbox boundary lint
+        run: npm run test:lint-sandbox-boundaries
 
       - name: Test Owner bootstrap CLI
         run: npm run test:rbac-bootstrap-owner
@@ -131,11 +98,13 @@ jobs:
       - name: Test Cloudflare logs CLI
         run: npm run test:cf-logs-cli
 
-      - name: Test Terraform workflow contract
-        run: npm run test:terraform-workflow-contract
-
       - name: Test Node version workflow contract
         run: npm run test:node-version-workflow-contract
+
+      # The environments' Worker configs (deploy/cloudflare) are copies of each other with their
+      # resource names changed; this keeps them the same shape and each to its own names.
+      - name: Check the Cloudflare configs agree
+        run: node --test deploy/cloudflare/configs.test.mjs
 
       - name: Check Prettier formatting
         run: npm run format:check
@@ -167,53 +136,6 @@ jobs:
 
       - name: TypeCheck all packages
         run: npm run typecheck
-
-  build-web:
-    name: Build (Web)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build shared package
-        run: npm run build -w @open-inspect/shared
-
-      - name: Build web package
-        run: npm run build -w @open-inspect/web
-
-  build-docs:
-    name: Build (Docs)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build docs package
-        run: npm run build -w @open-inspect/docs
 
   test-cp-unit:
     name: Test (control-plane unit)
@@ -248,10 +170,15 @@ jobs:
       - name: Run control-plane unit tests
         run: npm test -w @open-inspect/control-plane
 
+      - name: Run demo app tests
+        run: npm test -w @open-inspect/demo-app
+
   test-cp-integration:
     name: Test (control-plane integration ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A shard takes two to two and a half minutes on a laptop (workerd and the D1 simulator start for
+    # each of ~50 files); a two-core runner takes a few times that, after a dependency install.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -279,8 +206,11 @@ jobs:
       - name: Run control-plane integration tests
         run: npm run test:integration -w @open-inspect/control-plane -- --shard=${{ matrix.shard }}
 
-  test-web:
-    name: Test (web)
+  # The gateway's core and Worker tests run on workerd, its Node host's in Node; the gateway's types
+  # are checked with every workspace's in typecheck-typescript. The scripts the sandbox skills run
+  # (skills/tests) are in no npm workspace, so no other job reaches them.
+  test-gateway-and-skills:
+    name: Test (gateway, Docker data plane and skill scripts)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -295,64 +225,19 @@ jobs:
           node-version-file: .nvmrc
           cache: "npm"
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build shared package
-        run: npm run build -w @open-inspect/shared
-
-      - name: Run web tests
-        run: npm test -w @open-inspect/web
-
-  test-docs:
-    name: Test (docs)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: "npm"
+          python-version: "3.12"
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run docs tests
-        run: npm test -w @open-inspect/docs
+      - name: Test the gateway (workerd and Node)
+        run: npm test -w @open-inspect/gateway
 
-  test-bots:
-    name: Test (bots)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
+      - name: Test the Docker data plane
+        run: npm test -w @open-inspect/docker-dataplane
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version-file: .nvmrc
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build shared package
-        run: npm run build -w @open-inspect/shared
-
-      - name: Run github-bot tests
-        run: npm test -w @open-inspect/github-bot
-
-      - name: Run slack-bot tests
-        run: npm test -w @open-inspect/slack-bot
-
-      - name: Run linear-bot tests
-        run: npm test -w @open-inspect/linear-bot
+      - name: Test the skills' scripts
+        run: python3 -m unittest discover -s skills/tests -p 'test_*.py'

@@ -1,0 +1,10 @@
+{
+  "name": "sandbox-render-bench",
+  "private": true,
+  "type": "module",
+  "description": "E2B vs Vercel Sandbox comparison on the media render workload",
+  "dependencies": {
+    "@vercel/sandbox": "3.5.1",
+    "e2b": "2.51.0"
+  }
+}

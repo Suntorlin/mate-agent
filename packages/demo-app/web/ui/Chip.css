@@ -1,0 +1,39 @@
+.ui-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--chip-height);
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--social-muted);
+  color: var(--social-fg);
+  font-size: var(--text-small);
+  line-height: var(--leading-small);
+  text-align: left;
+  transition: background-color var(--motion-fast) var(--motion-ease);
+}
+
+/* The glyph is 32px; the tappable area is 44px. */
+button.ui-chip::after {
+  content: "";
+  position: absolute;
+  inset: -6px 0;
+}
+
+button.ui-chip:hover {
+  background: var(--social-border);
+}
+
+.ui-chip--selected {
+  background: var(--social-primary);
+  color: var(--social-primary-fg);
+}
+button.ui-chip--selected:hover {
+  background: var(--social-primary);
+  opacity: 0.9;
+}
+
+.ui-chip--static {
+  color: var(--social-fg-muted);
+}

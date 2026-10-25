@@ -1,6 +1,5 @@
 import { createExecutionContext, env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { TeamStore } from "../../src/db/teams";
 import { TeamMembershipStore } from "../../src/db/team-memberships";
 import { SessionCollaboratorStore } from "../../src/db/session-collaborators";
 import { cleanD1Tables } from "./cleanup";
@@ -15,6 +14,7 @@ import {
   seedMessage,
   serviceRequestHeaders,
   waitForSandboxStatus,
+  seedTeam,
 } from "./helpers";
 
 describe("session WebSocket D1 access", () => {
@@ -28,7 +28,7 @@ describe("session WebSocket D1 access", () => {
       mode ? (sessionStub) => setSessionTeamsEnforcementMode(sessionStub, mode) : undefined
     );
     await waitForSandboxStatus(stub, "failed");
-    const team = await new TeamStore(env.DB).create({
+    const team = await seedTeam({
       slug: `ws-${crypto.randomUUID()}`,
       name: "Socket team",
       joinPolicy: "invite_only",
@@ -104,7 +104,7 @@ describe("session WebSocket D1 access", () => {
 
   it("denies a member of another team at subscribe with enforcement on", async () => {
     const { name } = await scopedSession("team", "on");
-    const otherTeam = await new TeamStore(env.DB).create({
+    const otherTeam = await seedTeam({
       slug: `other-${crypto.randomUUID()}`,
       name: "Other team",
       joinPolicy: "invite_only",
@@ -200,7 +200,7 @@ describe("session WebSocket D1 access", () => {
     ws.send(JSON.stringify({ type: "subscribe", token, clientId: "member" }));
     expect((await subscribed).some((message) => message.type === "subscribed")).toBe(true);
 
-    const newTeam = await new TeamStore(env.DB).create({
+    const newTeam = await seedTeam({
       slug: `moved-${crypto.randomUUID()}`,
       name: "Destination team",
       joinPolicy: "invite_only",
@@ -298,7 +298,7 @@ describe("session WebSocket D1 access", () => {
         stub,
         "SELECT status FROM messages WHERE id = 'private-stop-message'"
       )
-    ).toMatchObject([{ status: "failed" }]);
+    ).toMatchObject([{ status: "stopped" }]);
 
     for (const userId of ["user-1", crypto.randomUUID().replaceAll("-", "")]) {
       const { token: ownToken } = await issueClientWsToken(name, {

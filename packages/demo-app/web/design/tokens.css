@@ -1,0 +1,148 @@
+/*
+ * Design tokens: the single source of every colour, shadow, radius, size and duration in this app.
+ * `--social-*` is the palette's name. Light is `:root`; dark is `[data-theme="dark"]`. Components read tokens
+ * through `var(--token)` and never write a colour literal: `design-rules.test.ts` enforces it.
+ * The rules and the component catalogue are in ../../DESIGN.md.
+ */
+
+:root {
+  /* colour */
+  --social-surface: #ffffff;
+  --social-muted: #f4f4f5;
+  --social-hover: #f8f8f9;
+  --social-border: #e4e4e7;
+  --social-divider: #f0f0f2;
+  --social-fg: #09090b;
+  --social-fg-muted: #71717a;
+  --social-fg-subtle: #a1a1aa;
+  --social-primary: #18181b;
+  --social-primary-fg: #fafafa;
+  --social-badge: #ff3040;
+  --social-danger: #e5484d;
+  --social-success: #10b981;
+  --social-warning: #f59e0b;
+  --social-on-accent: #ffffff;
+  --social-bar-bg: rgba(255, 255, 255, 0.86);
+  /* A page the agent made is drawn on white, whatever the theme: pages assume a white canvas. */
+  --canvas-page: #ffffff;
+
+  /* status tints (soft fill, text, border) */
+  --badge-info-bg: rgba(37, 99, 235, 0.12);
+  --badge-info-text: #2563eb;
+  --badge-success-bg: rgba(34, 197, 94, 0.2);
+  --badge-success-text: #15803d;
+  --badge-warning-bg: rgba(245, 158, 11, 0.2);
+  --badge-warning-text: #b45309;
+  --badge-error-bg: rgba(239, 68, 68, 0.18);
+  --badge-error-text: #b91c1c;
+
+  /* shadows: flat by default; only floating things get one */
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 24px rgba(0, 0, 0, 0.04);
+  --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.14);
+  --shadow-sheet: 0 -8px 40px rgba(0, 0, 0, 0.12);
+  --scrim: rgba(0, 0, 0, 0.45);
+
+  /* radius */
+  --radius-pill: 9999px;
+  --radius-card: 16px;
+  --radius-field: 12px;
+  --radius-tag: 8px;
+
+  /* type: sizes (px) and the line height that goes with each, weights 400 and 600 only */
+  --text-caption: 12px;
+  --leading-caption: 16px;
+  --text-small: 13px;
+  --leading-small: 18px;
+  --text-body: 15px;
+  --leading-body: 22px;
+  --text-title: 16px;
+  --leading-title: 24px;
+  --text-heading: 20px;
+  --leading-heading: 28px;
+  --text-display: 32px;
+  --leading-display: 40px;
+  --weight-regular: 400;
+  --weight-strong: 600;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* avatar orbs: six families of three colours, the same in both themes (a matte blend, not a UI colour) */
+  --orb-0-0: #5b8def;
+  --orb-0-1: #9b6bdf;
+  --orb-0-2: #6fd3e0;
+  --orb-1-0: #3fae8a;
+  --orb-1-1: #e3c35a;
+  --orb-1-2: #7cc9a8;
+  --orb-2-0: #e2735a;
+  --orb-2-1: #f0a95c;
+  --orb-2-2: #e98fa0;
+  --orb-3-0: #b86ad8;
+  --orb-3-1: #e870a6;
+  --orb-3-2: #7f7be0;
+  --orb-4-0: #4aa3c7;
+  --orb-4-1: #4cc3a0;
+  --orb-4-2: #8fd0e8;
+  --orb-5-0: #d9a441;
+  --orb-5-1: #e5785b;
+  --orb-5-2: #efcf7d;
+
+  /* app shell */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --tab-bar-height: 50px;
+  --page-header-height: 54px;
+  --nav-rail-width: 72px;
+  --list-column-width: 340px;
+  --content-max-width: 640px;
+
+  /* size and motion */
+  --touch-min: 44px;
+  --control-sm: 36px;
+  --control-md: 44px;
+  --control-lg: 48px;
+  --chip-height: 32px;
+  --badge-height: 24px;
+  --motion-fast: 150ms;
+  --motion-base: 200ms;
+  --motion-shimmer: 1600ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);
+
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --social-surface: #09090b;
+  --social-muted: #1c1c1f;
+  --social-hover: #141416;
+  --social-border: #27272a;
+  --social-divider: #1c1c1f;
+  --social-fg: #fafafa;
+  --social-fg-muted: #a1a1aa;
+  --social-fg-subtle: #71717a;
+  --social-primary: #fafafa;
+  --social-primary-fg: #09090b;
+  --social-danger: #ff6369;
+  --social-success: #34d399;
+  --social-warning: #fbbf24;
+  --social-bar-bg: rgba(9, 9, 11, 0.86);
+
+  --badge-info-bg: rgba(96, 165, 250, 0.2);
+  --badge-info-text: #60a5fa;
+  --badge-success-bg: rgba(74, 222, 128, 0.2);
+  --badge-success-text: #4ade80;
+  --badge-warning-bg: rgba(251, 191, 36, 0.2);
+  --badge-warning-text: #fbbf24;
+  --badge-error-bg: rgba(248, 113, 113, 0.2);
+  --badge-error-text: #fca5a5;
+
+  --shadow-raised: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 6px 24px rgba(0, 0, 0, 0.2);
+  --shadow-float: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --shadow-sheet: 0 -8px 40px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}

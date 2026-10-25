@@ -10,7 +10,10 @@ export interface RecordedMessageFailure {
   completion: RecordedMessageCompletion;
 }
 
-/** One failure policy for queued, timed-out, cancelled, and budget-stopped work. */
+/**
+ * One terminal policy for work that ends without the sandbox finishing it: queued, timed-out,
+ * cancelled and budget-stopped work fails; work a person stops is recorded as stopped.
+ */
 export class MessageFailureService {
   constructor(
     private readonly backgroundTasks: BackgroundTasks,
@@ -30,13 +33,15 @@ export class MessageFailureService {
     messageId: string,
     error: string,
     completedAt: number,
-    expectedStatus: "pending" | "processing"
+    expectedStatus: "pending" | "processing",
+    outcome: "failed" | "stopped" = "failed"
   ): RecordedMessageFailure | null {
     const event: RecordedMessageFailure["event"] = {
       type: "execution_complete",
       messageId,
       success: false,
       error,
+      ...(outcome === "stopped" ? { stopped: true as const } : {}),
       sandboxId: "",
       timestamp: completedAt / 1000,
     };

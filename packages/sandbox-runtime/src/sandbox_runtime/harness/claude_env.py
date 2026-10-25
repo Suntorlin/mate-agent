@@ -47,14 +47,47 @@ CONFIG_DIR_ENV_VAR: Final = "CLAUDE_CONFIG_DIR"
 
 WRAPPER_NAME: Final = "claude-clean-env"
 
-CLAUDE_POLICY_SETTINGS: Final = json.dumps(
-    {
-        "attribution": {"commit": "", "pr": "", "sessionUrl": False},
-        "feedbackDrafts": "off",
-        "feedbackSurveyRate": 0,
-    },
-    separators=(",", ":"),
-)
+_POLICY: Final = {
+    "attribution": {"commit": "", "pr": "", "sessionUrl": False},
+    "feedbackDrafts": "off",
+    "feedbackSurveyRate": 0,
+}
+CLAUDE_POLICY_SETTINGS: Final = json.dumps(_POLICY, separators=(",", ":"))
+
+# A gateway token lasts two hours (GATEWAY_TOKEN_TTL_SECONDS), far less than a session, so in
+# a session behind the LLM gateway (GATEWAY_URL) Claude Code asks this command for the token (``apiKeyHelper``) instead of reading it once from its
+# environment: at start, every KEY_HELPER_TTL_MS, and again when the gateway answers 401.
+GATEWAY_URL_ENV_VAR: Final = "GATEWAY_URL"
+GATEWAY_TOKEN_ENV_VAR: Final = "GATEWAY_TOKEN"
+GATEWAY_KEY_HELPER: Final = Path(__file__).resolve().parents[1] / "bin" / "gateway-key"
+KEY_HELPER_TTL_MS: Final = 30 * 60 * 1000
+
+# Claude Code cuts an MCP server's instructions and each tool description at 2,048 characters,
+# silently, unless this raises the cap (2.1.280 and later). A product gives the agent its
+# persona as its MCP server's instructions, and a real one runs longer than that.
+MCP_DESCRIPTION_MAX_CHARS: Final = 16_384
+
+
+def gateway_key_helper(environ: Mapping[str, str]) -> str | None:
+    """The ``apiKeyHelper`` command when the session uses the LLM gateway (``GATEWAY_URL``).
+
+    A user's own API key (a value other than the gateway token) is left as it is, and so is a
+    sandbox that cannot reach the control plane to renew the token.
+    """
+    token = environ.get(GATEWAY_TOKEN_ENV_VAR)
+    if not environ.get(GATEWAY_URL_ENV_VAR) or not token or environ.get(API_KEY_ENV_VAR) != token:
+        return None
+    if not environ.get("CONTROL_PLANE_URL") or not environ.get("SANDBOX_AUTH_TOKEN"):
+        return None
+    return str(GATEWAY_KEY_HELPER)
+
+
+def claude_policy_settings(key_helper: str | None = None) -> str:
+    """``ClaudeAgentOptions.settings``: the policy, and the key helper when there is one."""
+    if key_helper is None:
+        return CLAUDE_POLICY_SETTINGS
+    return json.dumps({**_POLICY, "apiKeyHelper": key_helper}, separators=(",", ":"))
+
 
 # How long the child may run one Bash call, and therefore how long the SDK
 # stream may legitimately say nothing: it carries no message between a tool
@@ -64,7 +97,12 @@ CLAUDE_POLICY_SETTINGS: Final = json.dumps(
 # second copy of the number that can disagree with it.
 BASH_MAX_TIMEOUT_ENV_VAR: Final = "BASH_MAX_TIMEOUT_MS"
 BASH_DEFAULT_TIMEOUT_ENV_VAR: Final = "BASH_DEFAULT_TIMEOUT_MS"
-# The CLI's built-ins, which apply while the environment overrides neither.
+# The runtime's own defaults, given to the child when the environment sets neither (a user
+# secret of the same name still wins): creative work runs renders and installs longer than the
+# CLI's built-ins allow.
+RUNTIME_BASH_DEFAULT_TIMEOUT_MS: Final = 10 * 60 * 1000
+RUNTIME_BASH_MAX_TIMEOUT_MS: Final = 60 * 60 * 1000
+# The CLI's built-ins, which apply to a value it cannot read.
 CLI_BASH_MAX_TIMEOUT_SECONDS: Final = 600.0
 CLI_BASH_DEFAULT_TIMEOUT_SECONDS: Final = 120.0
 # Slack over the ceiling, for delivering a large tool result and re-entering
@@ -72,13 +110,23 @@ CLI_BASH_DEFAULT_TIMEOUT_SECONDS: Final = 120.0
 STREAM_SILENCE_MARGIN_SECONDS: Final = 300.0
 
 
+def bash_timeout_defaults(environ: Mapping[str, str] = os.environ) -> dict[str, str]:
+    """The runtime's Bash timeouts for each variable the environment does not set."""
+    defaults = {
+        BASH_DEFAULT_TIMEOUT_ENV_VAR: str(RUNTIME_BASH_DEFAULT_TIMEOUT_MS),
+        BASH_MAX_TIMEOUT_ENV_VAR: str(RUNTIME_BASH_MAX_TIMEOUT_MS),
+    }
+    return {name: value for name, value in defaults.items() if not environ.get(name)}
+
+
 def bash_timeout_ceiling_seconds(environ: Mapping[str, str] = os.environ) -> float:
     """The longest single Bash call the child will allow, by the CLI's own rule.
 
     The CLI takes the larger of its max and default timeouts, each overridable
-    from the environment; a value that does not parse, or is not positive, is
-    ignored in favour of the built-in.
+    from the environment (the runtime's defaults fill an unset one); a value
+    that does not parse, or is not positive, is ignored in favour of the built-in.
     """
+    environ = {**environ, **bash_timeout_defaults(environ)}
     return max(
         _milliseconds_as_seconds(environ.get(BASH_MAX_TIMEOUT_ENV_VAR))
         or CLI_BASH_MAX_TIMEOUT_SECONDS,
@@ -205,8 +253,23 @@ def write_clean_env_wrapper(
     return wrapper
 
 
-def harness_env(config_dir: Path, credential: ClaudeCredential) -> dict[str, str]:
-    """``ClaudeAgentOptions.env``: config dir, policy, and the one credential."""
+def harness_env(
+    config_dir: Path,
+    credential: ClaudeCredential,
+    key_helper: str | None = None,
+    environ: Mapping[str, str] = os.environ,
+) -> dict[str, str]:
+    """``ClaudeAgentOptions.env``: config dir, policy, and the one credential.
+
+    With a key helper the API key is blanked: Claude Code sends an API key from its environment
+    in ``x-api-key`` ahead of the helper's, and the gateway reads that header first, so the
+    token taken at start would outlive its two hours.
+    """
+    helper_env = (
+        {API_KEY_ENV_VAR: "", "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": str(KEY_HELPER_TTL_MS)}
+        if key_helper
+        else {}
+    )
     return {
         CONFIG_DIR_ENV_VAR: str(config_dir),
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
@@ -215,6 +278,10 @@ def harness_env(config_dir: Path, credential: ClaudeCredential) -> dict[str, str
         # launched in one message still run concurrently, as OpenCode's task
         # tool does.
         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        # Claude Code's auto memory has the agent keep notes in local MEMORY.md files, which never
+        # reach the user's memory in the engine; with it off, `mem` is the only memory it is told of.
+        "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+        "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH": str(MCP_DESCRIPTION_MAX_CHARS),
         "DISABLE_AUTOUPDATER": "1",
         "DISABLE_ERROR_REPORTING": "1",
         "DISABLE_TELEMETRY": "1",
@@ -223,7 +290,9 @@ def harness_env(config_dir: Path, credential: ClaudeCredential) -> dict[str, str
         "OTEL_METRICS_EXPORTER": "none",
         "OTEL_LOGS_EXPORTER": "none",
         "OTEL_TRACES_EXPORTER": "none",
+        **bash_timeout_defaults(environ),
         **credential.env,
+        **helper_env,
     }
 
 

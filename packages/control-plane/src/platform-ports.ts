@@ -41,15 +41,3 @@ export interface AlarmScheduler {
   cancel(): Promise<void>;
   current(): Promise<number | null>;
 }
-
-/** A queue's backlog, as its host reports it. */
-export interface QueueMetrics {
-  backlogCount: number;
-  backlogBytes: number;
-  oldestMessageTimestamp?: Date;
-}
-
-/** A queue's backlog, read-only. */
-export interface QueueMetricsSource {
-  metrics(): Promise<QueueMetrics>;
-}

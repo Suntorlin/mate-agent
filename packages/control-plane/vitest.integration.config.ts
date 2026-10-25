@@ -4,7 +4,7 @@ import path from "path";
 import { webcrypto } from "node:crypto";
 import { createRequire } from "node:module";
 
-const migrationsPath = path.resolve(__dirname, "../../terraform/d1/migrations");
+const migrationsPath = path.resolve(__dirname, "../../deploy/d1/migrations");
 
 // Pin luxon to its CommonJS build. vite 8 resolves luxon via the "import"
 // condition to its ESM build, but cron-parser (a CJS transitive dep of
@@ -30,6 +30,9 @@ function generateTestEncryptionKey(): string {
 // in parallel without cross-file interference. Within a file, tests share one D1
 // instance and rely on explicit `cleanD1Tables()` cleanup (see
 // test/integration/cleanup.ts) for isolation.
+/** Where Better Auth throws a redirect or an invalid-token error as an APIError: its own routes. */
+const BETTER_AUTH_THROWING_ROUTES = ["/better-auth/dist/api/routes/"];
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -159,13 +162,13 @@ export default defineConfig({
             }
             throw new Error(`Unexpected outbound request: ${request.url}`);
           },
-          queueProducers: ["IMAGE_BUILD_FINALIZATION_QUEUE"],
           bindings: {
             IMAGE_CALLBACK_TOKEN_PEPPER: "test-callback-pepper",
             SERVICE_AUTH_SECRET_WEB: "test-service-secret-web",
             SERVICE_AUTH_SECRET_SLACK_BOT: "test-service-secret-slack-bot",
             SERVICE_AUTH_SECRET_GITHUB_BOT: "test-service-secret-github-bot",
             SERVICE_AUTH_SECRET_LINEAR_BOT: "test-service-secret-linear-bot",
+            SERVICE_AUTH_SECRET_APP: "test-service-secret-app",
             BROWSER_AUTH_SECRET: "test-browser-auth-secret-with-at-least-32-characters",
             GITHUB_CLIENT_ID: "github-app-client-id",
             GITHUB_CLIENT_SECRET: "github-app-client-secret",
@@ -215,7 +218,7 @@ export default defineConfig({
         typeof error.statusCode === "number" &&
         ((error.statusCode >= 300 && error.statusCode < 400) ||
           (error.statusCode === 401 && betterAuthErrorCode === "INVALID_TOKEN")) &&
-        betterAuthStack?.includes("/better-auth/dist/api/routes/")
+        BETTER_AUTH_THROWING_ROUTES.some((route) => betterAuthStack?.includes(route))
       ) {
         return false;
       }

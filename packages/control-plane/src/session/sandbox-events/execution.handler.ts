@@ -7,6 +7,7 @@ import type { SessionMessenger } from "../messenger";
 import type { SessionStatusService } from "../session-status-service";
 import type { SandboxEventContext } from "./context";
 import type { SessionBudgetService } from "../budget-service";
+import { isPlatformWrittenPrompt } from "../questions";
 import { deriveFallbackSessionTitle } from "../title";
 
 /**
@@ -42,19 +43,26 @@ export class SandboxExecutionEventHandler {
       "observeExecutionCost" | "deliverTransition"
     >,
     private readonly transaction: <T>(closure: () => T) => T,
-    private readonly offerFallbackTitle: (title: string) => void
+    private readonly offerFallbackTitle: (title: string) => void,
+    /**
+     * Hand a turn that finished well to whatever learns from it (the user
+     * memory extraction); runs in the background, after the turn.
+     */
+    private readonly rememberTurn?: (messageId: string) => Promise<void>
   ) {}
 
   /**
-   * A harness that never suggests a title (the Claude harness emits no
-   * `session_title`) leaves the session untitled forever. Once its first turn
-   * settles, offer the prompt text. The offer lands only while the title is
-   * still unset (null or blank): that one atomic write owns the rule, so a
-   * vendor suggestion that arrived mid-turn wins.
+   * Until the harness names the session (`session_title`: the vendor's own
+   * title, or the name the agent gives the project), a settled turn
+   * offers its prompt text, so the session is not untitled meanwhile. The
+   * offer lands only while the title is still unset (null or blank): that one
+   * atomic write owns the rule, so a suggestion that arrived mid-turn wins.
+   * A prompt the platform wrote (a card's answer) is not offered.
    */
   private applyFallbackTitle(messageId: string): void {
     const content = this.messageRepository.getMessageContent(messageId);
-    const title = content ? deriveFallbackSessionTitle(content) : null;
+    if (!content || isPlatformWrittenPrompt(content)) return;
+    const title = deriveFallbackSessionTitle(content);
     if (title) this.offerFallbackTitle(title);
   }
 
@@ -92,7 +100,9 @@ export class SandboxExecutionEventHandler {
       this.log.info("prompt.complete", {
         event: "prompt.complete",
         message_id: event.messageId,
-        outcome: event.success ? "success" : "failure",
+        outcome: event.success ? "success" : event.stopped ? "stopped" : "failure",
+        // A model call the gateway refused for a spent limit, as the runtime read it.
+        ...(event.errorCode ? { error_code: event.errorCode } : {}),
         message_status: completion.status,
         total_duration_ms: totalDurationMs,
         processing_duration_ms: processingDurationMs,
@@ -112,7 +122,14 @@ export class SandboxExecutionEventHandler {
           context: { message_id: event.messageId },
         }
       );
-      await this.statusService.reconcileAfterExecution(event.success);
+      const rememberTurn = this.rememberTurn;
+      if (rememberTurn && event.success && !event.stopped) {
+        this.backgroundTasks.submit(() => rememberTurn(completion.messageId), {
+          name: "turn.remember",
+          context: { message_id: completion.messageId },
+        });
+      }
+      await this.statusService.reconcileAfterExecution(completion.status);
     } else {
       this.log.info("prompt.complete", {
         event: "prompt.complete",

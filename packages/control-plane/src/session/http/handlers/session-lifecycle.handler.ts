@@ -1,4 +1,5 @@
 import type { SandboxCancellation } from "../../../sandbox/lifecycle/ports";
+import type { BackgroundTasks } from "../../../platform-ports";
 import type { SessionStatus } from "@open-inspect/shared/types/sessions";
 import {
   SESSION_ARCHIVE_HTTP_STATUS,
@@ -68,7 +69,8 @@ export class SessionLifecycleHandler {
     private readonly titleService: SessionTitleService,
     private readonly sandboxLifecycle: SandboxCancellation,
     private readonly durableObjectId: string,
-    private readonly cancelSession: () => Promise<void>
+    private readonly cancelSession: () => Promise<void>,
+    private readonly backgroundTasks: BackgroundTasks
   ) {}
 
   getState(): Response {
@@ -162,8 +164,17 @@ export class SessionLifecycleHandler {
       });
     }
 
+    const isDraft = session.status === "created" && this.messageRepository.getMessageCount() === 0;
     await this.statusService.transition("archived");
-    await this.sandboxLifecycle.preserveForArchive();
+    if (isDraft) {
+      // A draft's sandbox holds nothing to save, and stopping it is the provider's to do: it
+      // takes as long as the sandbox's own start when the draft is archived right after it was
+      // made (10+ s). The author is not kept waiting; a failure is logged by the task boundary
+      // and the idle sandbox is retired by its inactivity timeout like any other.
+      this.backgroundTasks.submit(() => this.sandboxLifecycle.releaseForArchivedDraft(), {
+        name: "sandbox.release_archived_draft",
+      });
+    } else await this.sandboxLifecycle.preserveForArchive();
     try {
       await this.statusService.confirmIndexStatus("archived");
     } catch {
@@ -244,6 +255,14 @@ export class SessionLifecycleHandler {
     // execution events, so an idle session sat in the in-progress group until
     // someone prompted it again.
     const settled = await this.statusService.settleFromMessageState();
+    // The session lists read the index, not this object: a restore whose
+    // projection was swallowed would answer 200 and stay out of the list
+    // until something else moved the session. Confirm it as archive does.
+    try {
+      await this.statusService.confirmIndexStatus(settled);
+    } catch {
+      return Response.json({ error: "Session unarchive projection unavailable" }, { status: 503 });
+    }
 
     return Response.json({ status: settled });
   }

@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 from sandbox_runtime.harness.opencode_client import SSEConnectionError
 from sandbox_runtime.harness.opencode_stream import (
     OpenCodePromptStream,
@@ -144,6 +145,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     bridge.harness.session_id = "oc-session-123"
     wire_opencode_transport(bridge, MockHttpClient())
@@ -929,6 +931,7 @@ class TestFetchFinalMessageState:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         wire_opencode_transport(bridge, AsyncMock())
@@ -1512,6 +1515,7 @@ class TestInactivityTimeout:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, inactivity_timeout_seconds=0.2)
@@ -1534,6 +1538,7 @@ class TestInactivityTimeout:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, inactivity_timeout_seconds=0.5)
@@ -1608,6 +1613,7 @@ class TestInactivityTimeout:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, inactivity_timeout_seconds=0.3)
@@ -1674,6 +1680,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
 
         assert bridge.prompt_limits.prompt_max_duration_seconds == 6300
@@ -1686,6 +1693,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
 
         assert bridge.prompt_limits.prompt_max_duration_seconds == 13500
@@ -1698,6 +1706,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
 
         assert bridge.prompt_limits.prompt_max_duration_seconds == 450
@@ -1710,6 +1719,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, prompt_max_duration_seconds=0.1)
@@ -1736,6 +1746,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, prompt_max_duration_seconds=30.0)
@@ -1761,6 +1772,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, inactivity_timeout_seconds=2.0)
@@ -1785,6 +1797,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, prompt_max_duration_seconds=0.1)
@@ -1812,6 +1825,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, prompt_max_duration_seconds=0.1)
@@ -1869,6 +1883,7 @@ class TestPromptMaxDuration:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         set_prompt_limits(bridge, inactivity_timeout_seconds=2.0)
@@ -3104,6 +3119,7 @@ class TestCompactionHandling:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         wire_opencode_transport(bridge, AsyncMock())
@@ -3162,6 +3178,7 @@ class TestCompactionHandling:
             session_id="test-session",
             control_plane_url="http://localhost:8787",
             auth_token="test-token",
+            harness_id=HarnessId.OPENCODE,
         )
         bridge.harness.session_id = "oc-session-123"
         wire_opencode_transport(bridge, AsyncMock())

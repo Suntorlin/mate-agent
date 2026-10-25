@@ -13,7 +13,7 @@ import { BUSY_TIMEOUT_MS } from "./sqlite-file";
 
 const MIGRATIONS_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../terraform/d1/migrations"
+  "../../../../deploy/d1/migrations"
 );
 
 describe("createNodeSqlDatabase", () => {

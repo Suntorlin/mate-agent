@@ -11,7 +11,7 @@ import {
   type JobStore,
 } from "./job-store";
 
-const KINDS = ["image_build.finalize", "github.autofix"] as const;
+const KINDS = ["user_memory.extract", "user_memory.consolidate"] as const;
 const LEASE_MS = 60_000;
 
 let dataDir: string;
@@ -40,12 +40,12 @@ describe("openJobStore", () => {
     it("parses the row fields needed to deliver a claimed job", () => {
       expect(
         parseClaimedJobRow(
-          { id: "job-1", kind: "image_build.finalize", payload: "{}", attempts: 1 },
+          { id: "job-1", kind: "user_memory.extract", payload: "{}", attempts: 1 },
           "token-1"
         )
       ).toEqual({
         id: "job-1",
-        kind: "image_build.finalize",
+        kind: "user_memory.extract",
         payload: "{}",
         attempts: 1,
         token: "token-1",
@@ -54,7 +54,7 @@ describe("openJobStore", () => {
 
     it("rejects malformed claimed job rows", () => {
       expect(() =>
-        parseClaimedJobRow({ id: "job-1", kind: "image_build.finalize", attempts: 1 }, "token-1")
+        parseClaimedJobRow({ id: "job-1", kind: "user_memory.extract", attempts: 1 }, "token-1")
       ).toThrow("Malformed claimed job row");
     });
   });

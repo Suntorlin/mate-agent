@@ -47,6 +47,7 @@ def _stager(tmp_path: Path, monkeypatch, **overrides) -> ClaudeStager:
         bundled_skills_path=skills,
         handoff_path=tmp_path / "handoff.json",
         mcp_packages=overrides.pop("mcp_packages", FakeMcpPackages()),
+        disabled_bundled_skills=overrides.pop("disabled_bundled_skills", None),
     )
 
 
@@ -74,6 +75,29 @@ async def test_start_stages_config_dir_skills_and_handoff(tmp_path: Path, monkey
     # Still no process: the SDK child belongs to the bridge.
     assert stager.exit_code() is None
     await stager.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_leaves_out_bundled_skills_the_owner_switched_off(
+    tmp_path: Path, monkeypatch
+) -> None:
+    disabled: set[str] = set()
+    stager = _stager(tmp_path, monkeypatch, disabled_bundled_skills=lambda: disabled)
+    (tmp_path / "bundled-skills" / "remake").mkdir()
+    (tmp_path / "bundled-skills" / "remake" / "SKILL.md").write_text("# remake")
+    workdir = tmp_path / "workspace"
+    workdir.mkdir()
+    skills = tmp_path / "claude-config" / "skills"
+
+    await stager.start((), workdir)
+    assert (skills / "remake").is_dir()
+
+    # Read at start: a restored sandbox learns the session's switches from
+    # managed skills first, and an earlier copy is removed.
+    disabled.add("remake")
+    await stager.start((), workdir)
+    assert not (skills / "remake").exists()
+    assert (skills / "review" / "SKILL.md").exists()
 
 
 @pytest.mark.asyncio

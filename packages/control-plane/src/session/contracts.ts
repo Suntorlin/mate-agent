@@ -100,6 +100,7 @@ export const SessionInternalPaths = {
   archive: "/internal/archive",
   unarchive: "/internal/unarchive",
   expireDraft: "/internal/expire-draft",
+  workflowActivity: "/internal/workflow-activity",
   verifySandboxToken: "/internal/verify-sandbox-token",
   openaiTokenRefresh: "/internal/openai-token-refresh",
   xaiTokenRefresh: "/internal/xai-token-refresh",
@@ -111,8 +112,21 @@ export const SessionInternalPaths = {
   parentPrompt: "/internal/parent-prompt",
   updateTitle: "/internal/update-title",
   budget: "/internal/budget",
+  permissionMode: "/internal/permission-mode",
+  // Body: a `cardDismissRequestSchema` request; the owner check is the router's.
+  dismissCard: "/internal/cards/dismiss",
+  spend: "/internal/spend",
   cancel: "/internal/cancel",
   childSessionUpdate: "/internal/child-session-update",
+  // Body: a `memory_updated` or `memory_loaded` server message to broadcast.
+  userMemoryEvent: "/internal/user-memory-event",
+  // Body: the agent's ask_user card (questions). 201 `{ questionId, messageId }`.
+  question: "/internal/question",
+  // Body: `internalQuestionAnswerRequestSchema`. 200 `{ questionId, messageId, status }`.
+  questionAnswer: "/internal/question-answer",
+  // Body: a `mediaGenerationReportSchema` report from the product or the sandbox.
+  // 201/200 `{ event, recorded }`.
+  mediaGeneration: "/internal/media-generation",
   diffState: "/internal/diff-state",
   diffStore: "/internal/diff-store",
   diffFailure: "/internal/diff-failure",

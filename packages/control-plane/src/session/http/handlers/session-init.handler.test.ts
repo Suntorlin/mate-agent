@@ -5,6 +5,7 @@ import type { ParticipantRepository } from "../../participant-repository";
 import type { SandboxRepository } from "../../sandbox-repository";
 import type { SessionCoreRepository } from "../../session-core-repository";
 import { getValidModelOrDefault } from "@open-inspect/shared/models";
+import { spawnSourceSchema } from "@open-inspect/shared/types/sessions";
 
 function createHandler() {
   const repository = {
@@ -163,7 +164,7 @@ describe("SessionInitHandler", () => {
     expect(await response.json()).toEqual({ sessionId: "session-do-id", status: "created" });
     expect(repository.upsertSession).toHaveBeenCalledWith({
       id: "session-do-id",
-      harness: "opencode",
+      harness: "claude",
       sessionName: "session-public-id",
       title: "Session title",
       repoOwner: "acme",
@@ -269,6 +270,34 @@ describe("SessionInitHandler", () => {
     expect(response.status).toBe(200);
     expect(repository.replaceSessionRepositories).toHaveBeenCalledWith([]);
   });
+
+  it.each(spawnSourceSchema.options)(
+    "accepts %s as the spawn source and stores the permission mode it is created with",
+    async (spawnSource) => {
+      const { handler, repository, generateId } = createHandler();
+      generateId.mockReturnValueOnce("sandbox-1").mockReturnValueOnce("participant-1");
+
+      const response = await handler.init(
+        new Request("http://internal/internal/init", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sessionName: "session-public-id",
+            repoOwner: null,
+            repoName: null,
+            userId: "user-1",
+            spawnSource,
+            permissionMode: "confirm_edits",
+          }),
+        })
+      );
+
+      expect(response.status).toBe(200);
+      expect(repository.upsertSession).toHaveBeenCalledWith(
+        expect.objectContaining({ spawnSource, permissionMode: "confirm_edits" })
+      );
+    }
+  );
 
   it("accepts nullable init fields and sandbox settings", async () => {
     const { handler, repository, generateId } = createHandler();

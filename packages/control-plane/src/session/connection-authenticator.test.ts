@@ -583,7 +583,12 @@ describe("client session access", () => {
     permissions: permissionsForBuiltInRole("owner"),
   };
 
-  function accessHarness(mode: "off" | "shadow" | "on", viewer: UserViewer, row: SessionAccessRow) {
+  function accessHarness(
+    mode: "off" | "shadow" | "on",
+    viewer: UserViewer,
+    row: SessionAccessRow,
+    participantRow?: { id: string; user_id: string }
+  ) {
     const authorization = {
       userId: viewer.userId,
       role: { key: viewer.roleKey },
@@ -593,6 +598,9 @@ describe("client session access", () => {
     const resolution = { kind: "valid" as const, mode, authorization, viewer, row };
     const close = vi.fn();
     const removeClient = vi.fn();
+    const activateClient = vi.fn(
+      async (_ws: WebSocket, _info: unknown, synchronize: () => boolean) => synchronize()
+    );
     const auditPrivateBreakGlass = vi.fn(async () => undefined);
     const send = vi.fn((_ws: WebSocket, _message: { type: string; session?: unknown }) => true);
     const snapshot = {
@@ -616,14 +624,12 @@ describe("client session access", () => {
         isClientAuthenticated: vi.fn(() => false),
         isClientSynchronizing: vi.fn(() => false),
         setClientSynchronizing: vi.fn(),
-        activateClient: vi.fn(async (_ws: WebSocket, _info: unknown, synchronize: () => boolean) =>
-          synchronize()
-        ),
+        activateClient,
       },
       participantService: {
         getByWsTokenHash: vi.fn(() => ({
-          id: "participant-1",
-          user_id: "member-user",
+          id: participantRow?.id ?? "participant-1",
+          user_id: participantRow?.user_id ?? "member-user",
           canonical_user_id: authorization.userId,
           ws_token_created_at: Date.now(),
           scm_login: null,
@@ -644,10 +650,89 @@ describe("client session access", () => {
       close,
       removeClient,
       send,
+      activateClient,
       auditPrivateBreakGlass,
       resolveSessionViewer: deps.resolveSessionViewer,
     };
   }
+
+  const appParticipant = { id: "participant-app", user_id: "app:uid-42" };
+  const appUser: UserViewer = { ...member, ownSessionsOnly: true };
+
+  it.each(["off", "shadow", "on"] as const)(
+    "admits an app participant to the session it started through its canonical user in %s",
+    async (mode) => {
+      // An app actor's ws-token participant keeps the namespaced `app:<uid>`
+      // row id while authorization and presence resolve through the canonical
+      // user, so read-state and "mine" attribution match HTTP list behavior.
+      const { authenticator, close, activateClient, resolveSessionViewer } = accessHarness(
+        mode,
+        appUser,
+        { ...teamRow, ownerUserId: member.userId, ownerTeamId: null, visibility: "workspace" },
+        appParticipant
+      );
+      await authenticator.handleSubscribe({} as WebSocket, {
+        token: "token",
+        clientId: "app-tab",
+      });
+
+      expect(close).not.toHaveBeenCalled();
+      expect(resolveSessionViewer).toHaveBeenCalledWith(member.userId, true);
+      expect(activateClient).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          participantId: "participant-app",
+          userId: member.userId,
+          ownSessionsOnly: true,
+        }),
+        expect.any(Function)
+      );
+    }
+  );
+
+  it.each(
+    (["off", "shadow", "on"] as const).flatMap((mode) =>
+      (["workspace", "team", "private"] as const).map((visibility) => ({ mode, visibility }))
+    )
+  )(
+    "refuses an app participant on someone else's $visibility session in $mode",
+    async ({ mode, visibility }) => {
+      // Not even a team membership, a collaborator entry or the Owner role opens it.
+      const { authenticator, close, resolveSessionViewer } = accessHarness(
+        mode,
+        {
+          ...appUser,
+          roleKey: "owner",
+          permissions: permissionsForBuiltInRole("owner"),
+          memberships: new Map([["team-b", "lead"]] as const),
+        },
+        { ...teamRow, visibility, collaboratorIds: [member.userId] },
+        appParticipant
+      );
+      await authenticator.handleSubscribe({} as WebSocket, { token: "token", clientId: "client" });
+
+      expect(close).toHaveBeenCalledWith({}, 4010, expect.any(String));
+      expect(
+        await authenticator.authorizeClientCommand(
+          {} as WebSocket,
+          { userId: member.userId, ownSessionsOnly: true },
+          "read"
+        )
+      ).toEqual({ kind: "revoked" });
+      expect(resolveSessionViewer).toHaveBeenLastCalledWith(member.userId, true);
+    }
+  );
+
+  it("keeps a non-app participant on the workspace rule", async () => {
+    const { authenticator, close, resolveSessionViewer } = accessHarness("shadow", member, {
+      ...teamRow,
+      visibility: "workspace",
+    });
+    await authenticator.handleSubscribe({} as WebSocket, { token: "token", clientId: "client" });
+
+    expect(close).not.toHaveBeenCalled();
+    expect(resolveSessionViewer).toHaveBeenCalledWith(member.userId, false);
+  });
 
   it.each(["off", "shadow", "on"] as const)(
     "uses the %s mode for the team rule at subscribe and on commands",
@@ -657,7 +742,7 @@ describe("client session access", () => {
       expect(close).toHaveBeenCalledTimes(mode === "on" ? 1 : 0);
       if (mode === "on") expect(close).toHaveBeenCalledWith({}, 4010, expect.any(String));
       expect(
-        await authenticator.authorizeClientCommand({} as WebSocket, member.userId, "collaborate")
+        await authenticator.authorizeClientCommand({} as WebSocket, member, "collaborate")
       ).toEqual(mode === "on" ? { kind: "revoked" } : { kind: "allowed" });
     }
   );
@@ -672,9 +757,7 @@ describe("client session access", () => {
     const socket = {} as WebSocket;
     await authenticator.handleSubscribe(socket, { token: "token", clientId: "read-only" });
 
-    expect(
-      await authenticator.authorizeClientCommand(socket, viewer.userId, "collaborate")
-    ).toEqual({
+    expect(await authenticator.authorizeClientCommand(socket, viewer, "collaborate")).toEqual({
       kind: "denied",
       reason: "missing_permission",
     });
@@ -695,16 +778,12 @@ describe("client session access", () => {
 
     await authenticator.handleSubscribe(socket, { token: "token", clientId: "member" });
     expect(close).not.toHaveBeenCalled();
-    expect(
-      await authenticator.authorizeClientCommand(socket, viewer.userId, "collaborate")
-    ).toEqual({
+    expect(await authenticator.authorizeClientCommand(socket, viewer, "collaborate")).toEqual({
       kind: "allowed",
     });
 
     memberships.delete("team-b");
-    expect(
-      await authenticator.authorizeClientCommand(socket, viewer.userId, "collaborate")
-    ).toEqual({
+    expect(await authenticator.authorizeClientCommand(socket, viewer, "collaborate")).toEqual({
       kind: "revoked",
     });
     expect(removeClient).toHaveBeenCalledWith(socket);
@@ -712,7 +791,7 @@ describe("client session access", () => {
 
     memberships.set("team-b", "member");
     row.ownerTeamId = "team-a";
-    expect(await authenticator.authorizeClientCommand(socket, viewer.userId, "read")).toEqual({
+    expect(await authenticator.authorizeClientCommand(socket, viewer, "read")).toEqual({
       kind: "revoked",
     });
     expect(resolveSessionViewer).toHaveBeenCalledTimes(4);
@@ -727,9 +806,7 @@ describe("client session access", () => {
       });
       await authenticator.handleSubscribe({} as WebSocket, { token: "token", clientId: "client" });
       expect(close).toHaveBeenCalledWith({}, 4010, expect.any(String));
-      expect(
-        await authenticator.authorizeClientCommand({} as WebSocket, member.userId, "read")
-      ).toEqual({
+      expect(await authenticator.authorizeClientCommand({} as WebSocket, member, "read")).toEqual({
         kind: "revoked",
       });
     }
@@ -757,10 +834,10 @@ describe("client session access", () => {
         expect.objectContaining({ id: "session", visibility: "private" })
       );
       expect(
-        await authenticator.authorizeClientCommand({} as WebSocket, owner.userId, "collaborate")
+        await authenticator.authorizeClientCommand({} as WebSocket, owner, "collaborate")
       ).toEqual({ kind: "denied", reason: "not_collaborator" });
       expect(
-        await authenticator.authorizeClientCommand({} as WebSocket, owner.userId, "lifecycle")
+        await authenticator.authorizeClientCommand({} as WebSocket, owner, "lifecycle")
       ).toEqual({ kind: "allowed" });
       expect(auditPrivateBreakGlass).toHaveBeenCalledOnce();
     }

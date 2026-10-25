@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""save-skill: save a skill directory to the session owner's skill library (stdlib only).
+
+  save-skill <skill-dir> [--cover <artifactId> [--cover-kind video|image]]
+
+<skill-dir> holds SKILL.md and any references/ or scripts/. Every file is sent as UTF-8 text to the
+control plane, which validates the frontmatter and stores the skill privately for the user who owns
+this session; a skill of the same name is replaced. Prints the control plane's JSON.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# The control plane's limits (packages/shared/src/types/skills.ts).
+MAX_FILES = 100
+MAX_FILE_BYTES = 256 * 1024
+MAX_TOTAL_BYTES = 1024 * 1024
+SKIPPED_NAMES = {".DS_Store", "__pycache__", ".git", "node_modules"}
+REQUEST_TIMEOUT_SECONDS = 60
+
+
+class SaveError(Exception):
+    pass
+
+
+def collect_files(root: Path) -> list[dict]:
+    if not (root / "SKILL.md").is_file():
+        raise SaveError(f"{root} has no SKILL.md")
+    files: list[dict] = []
+    total = 0
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if any(part in SKIPPED_NAMES or part.endswith(".pyc") for part in relative.parts):
+            continue
+        if path.is_symlink():
+            raise SaveError(f"{relative} is a symlink; copy the file in instead")
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        if len(data) > MAX_FILE_BYTES:
+            raise SaveError(
+                f"{relative} is {len(data)} bytes, over the {MAX_FILE_BYTES}-byte limit"
+            )
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise SaveError(f"{relative} is not UTF-8 text; skills hold text files only") from error
+        total += len(data)
+        posix = relative.as_posix()
+        files.append(
+            {
+                "path": posix,
+                "content": content,
+                "executable": posix.startswith("scripts/") and os.access(path, os.X_OK),
+            }
+        )
+    if len(files) > MAX_FILES:
+        raise SaveError(f"{len(files)} files, over the {MAX_FILES}-file limit")
+    if total > MAX_TOTAL_BYTES:
+        raise SaveError(f"{total} bytes in total, over the {MAX_TOTAL_BYTES}-byte limit")
+    return files
+
+
+def session_id() -> str:
+    try:
+        config = json.loads(os.environ.get("SESSION_CONFIG") or "{}")
+    except json.JSONDecodeError:
+        config = {}
+    value = config.get("sessionId") or config.get("session_id") or ""
+    if not value:
+        raise SaveError("no session id in SESSION_CONFIG")
+    return value
+
+
+def save(payload: dict) -> dict:
+    token = os.environ.get("SANDBOX_AUTH_TOKEN")
+    if not token:
+        raise SaveError("SANDBOX_AUTH_TOKEN is not set")
+    base = (os.environ.get("CONTROL_PLANE_URL") or "http://localhost:8787").rstrip("/")
+    request = urllib.request.Request(
+        f"{base}/sessions/{urllib.parse.quote(session_id(), safe='')}/saved-skills",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "save-skill",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", "replace")
+        try:
+            message = json.loads(body).get("error") or body
+        except json.JSONDecodeError:
+            message = body
+        raise SaveError(f"not saved ({error.code}): {message}") from error
+    except urllib.error.URLError as error:
+        raise SaveError(f"could not reach the control plane: {error.reason}") from error
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="save-skill")
+    parser.add_argument("skill_dir")
+    parser.add_argument("--cover", help="artifactId of this session's example output")
+    parser.add_argument("--cover-kind", choices=("video", "image"), default="video")
+    args = parser.parse_args(argv)
+    try:
+        payload: dict = {"files": collect_files(Path(args.skill_dir))}
+        if args.cover:
+            payload["coverArtifactId"] = args.cover
+            payload["coverKind"] = args.cover_kind
+        result = save(payload)
+    except (SaveError, OSError) as error:
+        print(f"save-skill: {error}", file=sys.stderr)
+        return 1
+    skill = result.get("skill") or {}
+    print(
+        json.dumps(
+            {
+                "name": skill.get("name"),
+                "displayName": skill.get("displayName"),
+                "created": result.get("created"),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -16,10 +16,15 @@
  *     a load-bearing sync contract, and is intentionally not covered by this
  *     port". Holding it to Postgres policy would be a category error — its
  *     PRAGMA introspection is adapter surface, not portability debt.
- *   - every terraform/d1/migrations/*.sql except the ones named in the
+ *   - every deploy/d1/migrations/*.sql except the ones named in the
  *     baseline's `grandfatheredMigrations`. Naming them rather than taking
  *     everything below a number is what stops a new migration from being
  *     written into the gap the numbering leaves.
+ *   - files named `*.generated.ts`. They hold data written by a generator
+ *     (builtin-skills.generated.ts carries the built-in skills' documents as
+ *     strings), and prose such as "JSON (see ...)" reads as a SQL function
+ *     to every rule here. A test holds each one equal to its generator's
+ *     output, so SQL cannot be written into one by hand.
  *
  * Occurrences that must stay are listed with a reason in
  * scripts/sql-portability-baseline.json, which lists the exact text of each
@@ -106,7 +111,9 @@ const SQL_PRAGMA = /^\s*PRAGMA\s+[a-z_]+\s*(?:[(=]|$)/i;
  * because SQL quoted in one is documentation and reporting it would make the
  * check reject its own explanations. A template yields one literal per chunk
  * between substitutions, and the substitutions themselves are scanned as the
- * code they are.
+ * code they are. A regular expression literal is skipped whole: one that
+ * holds a quote or a backtick (`/```(?:json)?/g`) would otherwise open a
+ * literal that never closes.
  */
 export function stringLiterals(source) {
   const literals = [];
@@ -134,6 +141,10 @@ function scanCode(source, start, literals, untilBrace) {
       i += 2;
       continue;
     }
+    if (c === "/" && startsRegex(source, i)) {
+      i = skipRegex(source, i);
+      continue;
+    }
     if (c === "'" || c === '"') {
       i = scanQuoted(source, i, literals);
       continue;
@@ -152,6 +163,64 @@ function scanCode(source, start, literals, untilBrace) {
     i++;
   }
   return i;
+}
+
+/** Keywords after which a `/` starts a regular expression rather than dividing. */
+const REGEX_AFTER_KEYWORD =
+  /(?:^|[^\w$.])(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await)$/;
+
+/**
+ * Whether the `/` at `at` (not a comment) begins a regular expression literal:
+ * it does where an expression may start, which is after an operator, an opening
+ * bracket, a comma, a statement boundary or one of the keywords above, and it
+ * divides after a name, a number, a closing bracket or a literal.
+ */
+function startsRegex(source, at) {
+  let i = at - 1;
+  while (
+    i >= 0 &&
+    (source[i] === " " || source[i] === "\t" || source[i] === "\n" || source[i] === "\r")
+  )
+    i--;
+  if (i < 0) return true;
+  const previous = source[i];
+  if (/[\w$]/.test(previous))
+    return REGEX_AFTER_KEYWORD.test(source.slice(Math.max(0, i - 12), i + 1));
+  if (
+    previous === ")" ||
+    previous === "]" ||
+    previous === "'" ||
+    previous === '"' ||
+    previous === "`"
+  ) {
+    return false;
+  }
+  // `}` ends a block (a regex may follow) or a value (a division may); a regex after a block is
+  // rare and a division after an object literal rarer still, so read it as the end of a block.
+  return true;
+}
+
+/** The index past the regular expression literal that opens at `start`; a `/` that closes no regular expression on its line is not one. */
+function skipRegex(source, start) {
+  let i = start + 1;
+  let inClass = false;
+  while (i < source.length) {
+    const c = source[i];
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (c === "\n") return start + 1;
+    if (inClass) {
+      if (c === "]") inClass = false;
+    } else if (c === "[") {
+      inClass = true;
+    } else if (c === "/") {
+      return i + 1;
+    }
+    i++;
+  }
+  return start + 1;
 }
 
 /** Read one `'`- or `"`-quoted literal; an unterminated one is not a literal. */
@@ -309,10 +378,16 @@ export function targetsSessionEngine(source) {
   return false;
 }
 
+/** A file written by a generator from something that is not SQL, named `*.generated.ts`. */
+export function isGeneratedFile(file) {
+  return file.endsWith(".generated.ts");
+}
+
 function controlPlaneSources() {
   const root = join(repoRoot, "packages/control-plane/src");
   return walk(root)
     .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+    .filter((file) => !isGeneratedFile(file))
     .filter((file) => !relative(root, file).split(sep).includes("node"))
     .filter((file) => !targetsSessionEngine(readFileSync(file, "utf8")))
     .sort();
@@ -361,7 +436,7 @@ export function maskSqlComments(sql) {
 }
 
 function newMigrations() {
-  const root = join(repoRoot, "terraform/d1/migrations");
+  const root = join(repoRoot, "deploy/d1/migrations");
   return readdirSync(root)
     .filter((name) => name.endsWith(".sql"))
     .filter((name) => !baseline.grandfatheredMigrations.includes(name))

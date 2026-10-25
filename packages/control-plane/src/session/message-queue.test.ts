@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestBackgroundTasks } from "../background-tasks.test-support";
 import { fingerprintWebPrompt, SessionMessageQueue } from "./message-queue";
 import { AttachmentClaimConflictError } from "./session-attachment-repository";
+import type { InlineDispatch } from "../inline/dispatch";
+import type { ChooseAutoEffort } from "./auto-reasoning-effort";
 import type { SessionAttachmentRepository } from "./session-attachment-repository";
 import {
   serverMessageSchema,
@@ -13,7 +15,7 @@ import type { MessageStatus } from "@open-inspect/shared/types/sessions";
 import type { MessageRow, ParticipantRow, SessionRow, SessionAttachmentRow } from "./types";
 import type { SessionCoreRepository } from "./session-core-repository";
 import type { ParticipantRepository } from "./participant-repository";
-import type { MessageRepository } from "./message-repository";
+import type { MessageRepository, TerminalMessageStatus } from "./message-repository";
 import type { SandboxCommandTarget, SessionWebSocketManager } from "./websocket-manager";
 import type { ParticipantService } from "./participant-service";
 import type { CallbackNotificationService } from "./callback-notification-service";
@@ -69,6 +71,7 @@ function createSession(overrides: Partial<SessionRow> = {}): SessionRow {
     vnc_enabled: 0,
     total_cost: 0,
     max_cost_usd: null,
+    permission_mode: "full_auto",
     budget_exhausted: 0,
     sandbox_settings: null,
     environment_id: null,
@@ -138,7 +141,9 @@ it("creates a canonical SHA-256 web prompt fingerprint", async () => {
 
 function buildQueue(
   mayDispatch: () => boolean = () => true,
-  getSandboxPromptBlockReason: () => string | null = () => null
+  getSandboxPromptBlockReason: () => string | null = () => null,
+  chooseAutoEffort?: ChooseAutoEffort,
+  inline?: InlineDispatch
 ) {
   // Mutable so tests can pin that the deadline honors the value current at
   // dispatch time — the thunk exists because settings can be persisted after
@@ -163,12 +168,14 @@ function buildQueue(
       return { kind: "enqueued", messageId: "msg-autofix" };
     }),
     getAutofixMessageId: vi.fn(() => null as string | null),
+    getLatestTerminalMessage: vi.fn(() => null as MessageRow | null),
     getMessageStatus: vi.fn((_messageId: string): MessageStatus | null => "pending"),
     cancelPendingMessage: vi.fn(() => false),
     getUnfinishedMessagePosition: vi.fn((): number | null => 1),
     listUnfinishedMessages: vi.fn((): MessageRow[] => []),
     listPromptQueue: vi.fn(() => []),
     getProcessingMessage: vi.fn(() => null as { id: string } | null),
+    getProcessingSandboxMessage: vi.fn(() => null as { id: string } | null),
     getMessageContent: vi.fn(() => null as string | null),
     getMessageAwaitingStopConfirmation: vi.fn(() => awaitingStop),
     clearMessageAwaitingStopConfirmation: vi.fn((messageId: string) => {
@@ -180,22 +187,29 @@ function buildQueue(
     getNextPendingMessage: vi.fn(() => null as MessageRow | null),
     getMessageById: vi.fn(() => null as MessageRow | null),
     startMessageProcessing: vi.fn<MessageRepository["startMessageProcessing"]>(() => true),
+    listCardDismissalsSinceLastPrompt: vi.fn<
+      MessageRepository["listCardDismissalsSinceLastPrompt"]
+    >(() => []),
     updateMessageToProcessing: vi.fn(),
     updateMessageToPending: vi.fn(),
     getParticipantById: vi.fn(() => createParticipant()),
     getSession: vi.fn(() => createSession()),
     updateParticipantCoalesce: vi.fn(),
-    recordMessageCompletion: vi.fn((event: { messageId: string }, completedAt: number) => ({
-      messageId: event.messageId,
-      messageCreatedAt: 1000,
-      messageStartedAt: 1100,
-      completedAt,
-      status: "failed" as const,
-    })),
+    recordMessageCompletion: vi.fn(
+      (event: { messageId: string; stopped?: true }, completedAt: number) => ({
+        messageId: event.messageId,
+        messageCreatedAt: 1000,
+        messageStartedAt: 1100,
+        completedAt,
+        status: event.stopped ? ("stopped" as const) : ("failed" as const),
+      })
+    ),
     markMessageAwaitingStopConfirmation: vi.fn((id: string, deadline: number) => {
       awaitingStop = { id, deadline };
     }),
     listPendingMessagesWithCreatedAt: vi.fn((): Array<{ id: string; created_at: number }> => []),
+    setMessageRuntime: vi.fn(),
+    listInlineTurnsSinceSandbox: vi.fn((): Array<{ content: string; reply: string | null }> => []),
   };
 
   const attachmentRepository = {
@@ -227,7 +241,7 @@ function buildQueue(
   const messenger = { broadcast, sendToSandbox: vi.fn(async () => {}) };
   const sessionStatus = {
     transition: vi.fn(async (_status: string) => true),
-    reconcileAfterExecution: vi.fn(async (_success: boolean) => {}),
+    reconcileAfterExecution: vi.fn(async (_outcome: TerminalMessageStatus) => {}),
     reconcileAfterQueueRemoval: vi.fn(async () => {}),
   };
   const sandboxLifecycle = {
@@ -303,7 +317,9 @@ function buildQueue(
     executionStop,
     () => executionTimeoutMs,
     mayDispatch,
-    getSandboxPromptBlockReason
+    getSandboxPromptBlockReason,
+    chooseAutoEffort,
+    inline
   );
 
   return {
@@ -696,6 +712,82 @@ describe("SessionMessageQueue", () => {
     expect(h.repository.updateMessageToProcessing).not.toHaveBeenCalled();
     expect(h.repository.startMessageProcessing).not.toHaveBeenCalled();
     expect(h.callbackService.notifyStarted).not.toHaveBeenCalled();
+  });
+
+  describe("inline runtime", () => {
+    function inlineDispatch(runtime: "inline" | "sandbox", outcome: "done" | "escalate" = "done") {
+      return {
+        chooseRuntime: vi.fn(async () => runtime),
+        run: vi.fn(async () => outcome),
+      };
+    }
+
+    it("runs a conversational prompt in the control plane without a sandbox", async () => {
+      const inline = inlineDispatch("inline");
+      const h = buildQueue(undefined, undefined, undefined, inline);
+      h.repository.getNextPendingMessage.mockReturnValue(createMessage());
+
+      await h.queue.processMessageQueue();
+      await h.backgroundTasks.settle();
+
+      expect(inline.chooseRuntime).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: "msg-1", hasAttachments: false })
+      );
+      expect(h.repository.startMessageProcessing).toHaveBeenCalledOnce();
+      expect(h.repository.setMessageRuntime).toHaveBeenCalledWith("msg-1", "inline");
+      expect(inline.run).toHaveBeenCalledWith({
+        messageId: "msg-1",
+        content: expect.any(String),
+        userId: expect.any(String),
+      });
+      expect(h.broadcast).toHaveBeenCalledWith({ type: "processing_status", isProcessing: true });
+      expect(h.sandboxLifecycle.spawnSandbox).not.toHaveBeenCalled();
+      expect(h.broadcast).not.toHaveBeenCalledWith({ type: "sandbox_spawning" });
+    });
+
+    it("spawns a sandbox when the router says the prompt needs a computer", async () => {
+      const inline = inlineDispatch("sandbox");
+      const h = buildQueue(undefined, undefined, undefined, inline);
+      h.repository.getNextPendingMessage.mockReturnValue(createMessage());
+
+      await h.queue.processMessageQueue();
+
+      expect(inline.run).not.toHaveBeenCalled();
+      expect(h.repository.startMessageProcessing).not.toHaveBeenCalled();
+      expect(h.sandboxLifecycle.spawnSandbox).toHaveBeenCalledOnce();
+    });
+
+    it("hands an escalated turn back to pending and spawns without asking again", async () => {
+      const inline = inlineDispatch("inline", "escalate");
+      const h = buildQueue(undefined, undefined, undefined, inline);
+      h.repository.getNextPendingMessage.mockReturnValue(createMessage());
+
+      await h.queue.processMessageQueue();
+      await h.backgroundTasks.settle();
+
+      expect(h.repository.updateMessageToPending).toHaveBeenCalledWith("msg-1");
+      expect(inline.chooseRuntime).toHaveBeenCalledOnce();
+      expect(h.sandboxLifecycle.spawnSandbox).toHaveBeenCalledOnce();
+    });
+
+    it("never asks the router while a sandbox is attached, and tells it the inline turns", async () => {
+      const inline = inlineDispatch("inline");
+      const h = buildQueue(undefined, undefined, undefined, inline);
+      const socket = {} as WebSocket;
+      h.wsManager.getSandboxSocket.mockReturnValue(socket);
+      h.repository.getNextPendingMessage.mockReturnValue(createMessage({ content: "整理成文档" }));
+      h.repository.listInlineTurnsSinceSandbox.mockReturnValue([
+        { content: "下周去大阪看心脏科", reply: "好的，记下了" },
+      ]);
+
+      await h.queue.processMessageQueue();
+
+      expect(inline.chooseRuntime).not.toHaveBeenCalled();
+      const command = h.wsManager.send.mock.calls[0][1] as unknown as { content: string };
+      expect(command.content).toContain("User: 下周去大阪看心脏科\nAssistant: 好的，记下了");
+      expect(command.content.endsWith("整理成文档")).toBe(true);
+      expect(h.repository.setMessageRuntime).toHaveBeenCalledWith("msg-1", "sandbox");
+    });
   });
 
   it("does not spawn or dispatch while the session budget is exhausted", async () => {
@@ -1415,6 +1507,232 @@ describe("SessionMessageQueue", () => {
     });
   });
 
+  it("sends the session's current permission mode with each prompt", async () => {
+    const h = buildQueue();
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.repository.getNextPendingMessage.mockReturnValue(createMessage({ id: "msg-42" }));
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+
+    await h.queue.processMessageQueue();
+    expect(h.wsManager.send).toHaveBeenLastCalledWith(
+      sandboxWs,
+      expect.objectContaining({ type: "prompt", permissionMode: "full_auto" })
+    );
+
+    h.repository.getSession.mockReturnValue(createSession({ permission_mode: "confirm_edits" }));
+    h.repository.getNextPendingMessage.mockReturnValue(createMessage({ id: "msg-43" }));
+    await h.queue.processMessageQueue();
+    expect(h.wsManager.send).toHaveBeenLastCalledWith(
+      sandboxWs,
+      expect.objectContaining({ messageId: "msg-43", permissionMode: "confirm_edits" })
+    );
+  });
+
+  it("runs each prompt on the model the session is on when the prompt is dispatched", async () => {
+    const h = buildQueue();
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+    h.repository.getSession.mockReturnValue(
+      createSession({
+        harness: "claude",
+        model: "anthropic/claude-opus-5-5",
+      })
+    );
+    h.repository.getNextPendingMessage.mockReturnValue(createMessage({ id: "msg-1", model: null }));
+
+    await h.queue.processMessageQueue();
+    expect(h.wsManager.send).toHaveBeenLastCalledWith(
+      sandboxWs,
+      expect.objectContaining({ messageId: "msg-1", model: "anthropic/claude-opus-5-5" })
+    );
+
+    // The session changed model while msg-2 waited: msg-2 runs on the new one.
+    h.repository.getSession.mockReturnValue(
+      createSession({
+        harness: "claude",
+        model: "anthropic/claude-sonnet-5-5",
+      })
+    );
+    h.repository.getNextPendingMessage.mockReturnValue(createMessage({ id: "msg-2", model: null }));
+    await h.queue.processMessageQueue();
+    expect(h.wsManager.send).toHaveBeenLastCalledWith(
+      sandboxWs,
+      expect.objectContaining({ messageId: "msg-2", model: "anthropic/claude-sonnet-5-5" })
+    );
+  });
+
+  it("runs a session at the model's default effort unless the session or the prompt names one", async () => {
+    const h = buildQueue();
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+    const flagship = { harness: "claude", model: "anthropic/claude-opus-5-5" } as const;
+    const dispatch = async (
+      session: Parameters<typeof createSession>[0],
+      message: Parameters<typeof createMessage>[0]
+    ) => {
+      h.repository.getSession.mockReturnValue(createSession(session));
+      h.repository.getNextPendingMessage.mockReturnValue(createMessage(message));
+      await h.queue.processMessageQueue();
+      return h.wsManager.send.mock.lastCall?.[1] as { reasoningEffort?: string };
+    };
+
+    expect((await dispatch(flagship, { id: "m1", model: null })).reasoningEffort).toBe("high");
+    expect(
+      (await dispatch({ ...flagship, reasoning_effort: "max" }, { id: "m2", model: null }))
+        .reasoningEffort
+    ).toBe("max");
+    expect(
+      (
+        await dispatch(
+          { ...flagship, reasoning_effort: "max" },
+          { id: "m3", model: null, reasoning_effort: "low" }
+        )
+      ).reasoningEffort
+    ).toBe("low");
+  });
+
+  it("lets the chooser pick the effort of an auto prompt, from the session's base", async () => {
+    const choose = vi.fn<ChooseAutoEffort>(async (input) =>
+      input.content.includes(" new ") ? input.baseEffort : "low"
+    );
+    const h = buildQueue(undefined, undefined, choose);
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+    h.repository.getLatestTerminalMessage.mockReturnValue(
+      createMessage({ id: "m0", content: "make a launch video" })
+    );
+    const flagship = { harness: "claude", model: "anthropic/claude-opus-5-5" } as const;
+    const dispatch = async (
+      session: Parameters<typeof createSession>[0],
+      message: Parameters<typeof createMessage>[0]
+    ) => {
+      h.repository.getSession.mockReturnValue(createSession(session));
+      h.repository.getNextPendingMessage.mockReturnValue(createMessage(message));
+      await h.queue.processMessageQueue();
+      return (h.wsManager.send.mock.lastCall?.[1] as { reasoningEffort?: string }).reasoningEffort;
+    };
+
+    // A prompt that asks for auto: low for a tweak, the model's default for new work.
+    expect(
+      await dispatch(flagship, {
+        id: "m1",
+        model: null,
+        content: "make the captions bigger",
+        reasoning_effort: "auto",
+      })
+    ).toBe("low");
+    expect(choose).toHaveBeenLastCalledWith({
+      messageId: "m1",
+      content: "make the captions bigger",
+      previousContent: "make a launch video",
+      baseEffort: "high",
+    });
+    expect(
+      await dispatch(flagship, {
+        id: "m2",
+        model: null,
+        content: "make a new poster",
+        reasoning_effort: "auto",
+      })
+    ).toBe("high");
+    // A session set to auto: every prompt without its own effort goes through the chooser,
+    // whose base is the model's default, never "auto".
+    expect(
+      await dispatch(
+        { ...flagship, reasoning_effort: "auto" },
+        { id: "m3", model: null, content: "thanks!" }
+      )
+    ).toBe("low");
+    expect(choose.mock.lastCall?.[0].baseEffort).toBe("high");
+    // A prompt that names an effort skips it.
+    choose.mockClear();
+    expect(
+      await dispatch(
+        { ...flagship, reasoning_effort: "auto" },
+        { id: "m4", model: null, content: "thanks!", reasoning_effort: "high" }
+      )
+    ).toBe("high");
+    expect(choose).not.toHaveBeenCalled();
+  });
+
+  it("runs an auto prompt at the base effort when no chooser is configured", async () => {
+    const h = buildQueue();
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+    h.repository.getSession.mockReturnValue(
+      createSession({
+        harness: "claude",
+        model: "anthropic/claude-opus-5-5",
+      })
+    );
+    h.repository.getNextPendingMessage.mockReturnValue(
+      createMessage({ id: "m1", model: null, reasoning_effort: "auto" })
+    );
+    await h.queue.processMessageQueue();
+    expect(h.wsManager.send).toHaveBeenLastCalledWith(
+      sandboxWs,
+      expect.objectContaining({ reasoningEffort: "high" })
+    );
+  });
+
+  it("tells the agent about cards closed since the last prompt, after the message", async () => {
+    const h = buildQueue();
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.repository.getNextPendingMessage.mockReturnValue(
+      createMessage({ id: "msg-42", content: "把第 2 版再剪短一点" })
+    );
+    h.repository.listCardDismissalsSinceLastPrompt.mockReturnValue([
+      {
+        type: "card_dismissed",
+        target: { kind: "artifact", artifactId: "art-3" },
+        label: "推广片 · 第 3 版",
+        dismissedAt: 900,
+      },
+      {
+        type: "card_dismissed",
+        target: { kind: "event", eventId: "evt-err" },
+        dismissedAt: 950,
+      },
+    ]);
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+
+    await h.queue.processMessageQueue();
+
+    expect(h.wsManager.send).toHaveBeenCalledWith(
+      sandboxWs,
+      expect.objectContaining({
+        type: "prompt",
+        messageId: "msg-42",
+        content:
+          "把第 2 版再剪短一点\n\n[用户关闭了卡片「推广片 · 第 3 版」]\n[用户关闭了卡片（事件 evt-err）]",
+      })
+    );
+    // The timeline keeps what the person wrote; only the agent gets the notes.
+    expect(h.repository.startMessageProcessing).toHaveBeenCalledWith(
+      "msg-42",
+      expect.any(Number),
+      expect.objectContaining({ type: "user_message", content: "把第 2 版再剪短一点" })
+    );
+    // Read once, right before the claim that marks them told.
+    expect(h.repository.listCardDismissalsSinceLastPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a message unchanged when no card was closed", async () => {
+    const h = buildQueue();
+    const sandboxWs = { readyState: 1 } as WebSocket;
+    h.repository.getNextPendingMessage.mockReturnValue(
+      createMessage({ id: "msg-42", content: "继续" })
+    );
+    h.wsManager.getSandboxSocket.mockReturnValue(sandboxWs);
+
+    await h.queue.processMessageQueue();
+
+    expect(h.wsManager.send).toHaveBeenCalledWith(
+      sandboxWs,
+      expect.objectContaining({ type: "prompt", content: "继续" })
+    );
+  });
+
   it("tells the sandbox lifecycle a prompt was dispatched only once the send succeeds", async () => {
     const h = buildQueue();
     h.repository.getNextPendingMessage.mockReturnValue(createMessage({ id: "msg-42" }));
@@ -1720,6 +2038,9 @@ describe("SessionMessageQueue", () => {
       expect.any(Number),
       "processing"
     );
+    // A spent budget is a genuine failure, unlike a person's stop.
+    expect(h.repository.recordMessageCompletion.mock.calls[0][0]).not.toHaveProperty("stopped");
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith("failed");
     expect(h.repository.markMessageAwaitingStopConfirmation).toHaveBeenCalledWith(
       "msg-budget",
       expect.any(Number)
@@ -1743,7 +2064,7 @@ describe("SessionMessageQueue", () => {
     if (!preparation) throw new Error("Expected a prepared stop");
     await expect(h.executionStop.deliver(preparation)).resolves.toBeUndefined();
 
-    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith(false);
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith("failed");
     expect(h.wsManager.send).toHaveBeenCalledWith(sandboxWs, { type: "stop" });
     expect(h.sandboxLifecycle.terminateUnresponsiveSandbox).toHaveBeenCalledWith(
       "stop_alarm_failed"
@@ -1853,10 +2174,13 @@ describe("SessionMessageQueue", () => {
         messageId: "msg-9",
         success: false,
         error: "Execution was stopped",
+        stopped: true,
       }),
       expect.any(Number),
       "processing"
     );
+    // A stop is not a failure: the session settles as it would after a finished turn.
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith("stopped");
     expect(h.repository.markMessageAwaitingStopConfirmation).toHaveBeenCalledWith(
       "msg-9",
       expect.any(Number)
@@ -2058,6 +2382,32 @@ describe("SessionMessageQueue", () => {
     expect(h.wsManager.send).not.toHaveBeenCalled();
   });
 
+  it("asks the bridge about the processing message a sandbox runs", () => {
+    const h = buildQueue();
+    const socket = { readyState: 1 } as WebSocket;
+    h.wsManager.getSandboxSocket.mockReturnValue(socket);
+    h.repository.getProcessingSandboxMessage.mockReturnValue({ id: "msg-running" });
+
+    h.queue.reconcileProcessingMessage();
+
+    expect(h.wsManager.send).toHaveBeenCalledExactlyOnceWith(socket, {
+      type: "reconcile_prompt",
+      messageId: "msg-running",
+    });
+  });
+
+  it("asks nothing without a sandbox turn in flight or a bridge to ask", () => {
+    const h = buildQueue();
+    h.wsManager.getSandboxSocket.mockReturnValue({ readyState: 1 } as WebSocket);
+    h.queue.reconcileProcessingMessage();
+
+    h.wsManager.getSandboxSocket.mockReturnValue(null);
+    h.repository.getProcessingSandboxMessage.mockReturnValue({ id: "msg-running" });
+    h.queue.reconcileProcessingMessage();
+
+    expect(h.wsManager.send).not.toHaveBeenCalled();
+  });
+
   it("does not finalize or stop when no message is processing", async () => {
     const h = buildQueue();
 
@@ -2128,7 +2478,7 @@ describe("SessionMessageQueue", () => {
     expect(h.broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: "prompt_queue_updated" })
     );
-    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith(false);
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith("failed");
     expect(h.sandboxLifecycle.spawnSandbox).not.toHaveBeenCalled();
   });
 
@@ -2172,7 +2522,7 @@ describe("SessionMessageQueue", () => {
       expect.any(Number),
       "processing"
     );
-    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith(false);
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith("failed");
   });
 
   it("uses a fatal sandbox reason for completion and callback notification", async () => {
@@ -2198,7 +2548,7 @@ describe("SessionMessageQueue", () => {
       false,
       "OpenCode repeatedly crashed"
     );
-    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith(false);
+    expect(h.sessionStatus.reconcileAfterExecution).toHaveBeenCalledWith("failed");
   });
 
   it("redrives a pending prompt after fatal sandbox termination completes", async () => {

@@ -406,10 +406,17 @@ export const listSkillProfilesResponseSchema = z.strictObject({
 });
 export const skillProfileResponseSchema = z.strictObject({ profile: skillProfileSchema });
 
+/** Most skills an explicit `ids` selection may name. */
+export const MAX_SESSION_SKILL_SELECTION_IDS = 200;
+
 export const sessionSkillSelectionSchema = z.discriminatedUnion("mode", [
   z.strictObject({ mode: z.literal("all") }),
   z.strictObject({ mode: z.literal("none") }),
   z.strictObject({ mode: z.literal("profile"), profileId: z.string().min(1) }),
+  z.strictObject({
+    mode: z.literal("ids"),
+    skillIds: z.array(z.string().min(1)).min(1).max(MAX_SESSION_SKILL_SELECTION_IDS),
+  }),
 ]);
 
 export const skillResolutionPreviewInputSchema = z
@@ -467,6 +474,11 @@ const sessionSkillManifestSelectionSchema = z.union([
     profileId: z.string(),
     profileName: z.string(),
   }),
+  z.strictObject({
+    mode: z.literal("ids"),
+    // Deduplicated and sorted at resolution, so the manifest hash is stable.
+    skillIds: z.array(z.string()),
+  }),
 ]);
 
 export const sessionSkillsViewSchema = z.strictObject({
@@ -495,10 +507,269 @@ export const sandboxSkillInstallationSchema = z.object({
     })
   ),
   nextCursor: z.string().nullable().default(null),
+  /**
+   * Skills baked into the sandbox image that the session owner switched off.
+   * Older control planes omit it, which means none.
+   */
+  disabledBundledSkills: z.array(skillNameSchema).default([]),
 });
 
 /** Bounds on the page size a sandbox may request from the installation endpoint. */
 export const MAX_SANDBOX_SKILL_PAGE_SIZE = 200;
+
+// ---------------------------------------------------------------------------
+// Personal skills: each user's private library, plus their on/off choices for
+// the skills everyone gets. Stored as managed skills with an owner.
+// ---------------------------------------------------------------------------
+
+/** Words a skill name may not contain (Agent Skills naming rules). */
+export const RESERVED_SKILL_NAME_WORDS = ["anthropic", "claude"] as const;
+
+/** Key prefix for a skill baked into the sandbox image. */
+export const BUILTIN_SKILL_KEY_PREFIX = "builtin:";
+
+/** One file of an uploaded or saved skill directory, `SKILL.md` included. */
+export const personalSkillFileInputSchema = z.strictObject({
+  path: wellFormedString.refine(isSafeSkillPath, "must be a safe relative POSIX path"),
+  content: wellFormedString.refine(
+    (value) => utf8.encode(value).byteLength <= MAX_SKILL_FILE_BYTES,
+    { message: `must be at most ${MAX_SKILL_FILE_BYTES} UTF-8 bytes` }
+  ),
+  executable: z.boolean().optional().default(false),
+});
+
+const personalSkillFilesSchema = z.array(personalSkillFileInputSchema).min(1).max(MAX_SKILL_FILES);
+
+/** Save an uploaded skill directory (a SKILL.md, or the files of a zip). */
+export const savePersonalSkillInputSchema = z.strictObject({
+  files: personalSkillFilesSchema,
+  /** Overwrite the caller's own skill of the same name instead of failing. */
+  replace: z.boolean().optional().default(false),
+});
+
+/** Import a public SKILL.md or skill folder by link. */
+export const importPersonalSkillUrlInputSchema = z.strictObject({
+  url: z.string().trim().min(1).max(2048),
+  replace: z.boolean().optional().default(false),
+});
+
+export const skillCoverKindSchema = z.enum(["video", "image"]);
+
+/** The agent saving what a session did as the session owner's skill. */
+export const sandboxSavePersonalSkillInputSchema = z.strictObject({
+  files: personalSkillFilesSchema,
+  /** Artifact of this session to show as the skill's example output. */
+  coverArtifactId: z.string().trim().min(1).max(200).nullish(),
+  coverKind: skillCoverKindSchema.nullish(),
+});
+
+/**
+ * Example output shown with a skill: an image or video of one of its owner's
+ * sessions (the one that made it, or one they picked), or one from their
+ * file library (an image they uploaded for it).
+ */
+export const skillCoverSchema = z.union([
+  z.strictObject({
+    sessionId: z.string().min(1),
+    artifactId: z.string().min(1),
+    kind: skillCoverKindSchema,
+  }),
+  z.strictObject({
+    fileId: z.string().min(1),
+    kind: skillCoverKindSchema,
+  }),
+]);
+
+/**
+ * The cover an owner picks for their skill: an image or video of one of their
+ * sessions, or a file in their library. The engine checks it is theirs and
+ * that it is an image or a video, and works out which.
+ */
+export const skillCoverChoiceSchema = z.union([
+  z.strictObject({
+    sessionId: z.string().trim().min(1).max(200),
+    artifactId: z.string().trim().min(1).max(200),
+  }),
+  z.strictObject({ fileId: z.string().trim().min(1).max(200) }),
+]);
+
+/** Longest gesture word a stored cover choice may name. */
+export const MAX_SKILL_ART_GESTURE_LENGTH = 32;
+/** Highest arrangement number a stored cover choice may name. */
+export const MAX_SKILL_ART_SEED = 99999;
+
+/**
+ * The drawn cover chosen for a skill that has no example output. Only the
+ * choice is stored, never an image; the client draws it.
+ */
+export const skillArtSchema = z.strictObject({
+  /** The client owns the vocabulary and ignores a word it does not know. */
+  gesture: z.string().min(1).max(MAX_SKILL_ART_GESTURE_LENGTH),
+  base: z.enum(["raked", "half", "flat"]).optional(),
+  seed: z.number().int().min(1).max(MAX_SKILL_ART_SEED).optional(),
+});
+
+export const mySkillKindSchema = z.enum(["builtin", "shared", "own"]);
+
+/**
+ * SKILL.md `metadata` key for the name people see. `name` stays the ASCII slug
+ * Claude Code loads the skill by; this one is what the creator called it, in any
+ * language ("口播一键出片"), and travels with the skill's files.
+ */
+export const SKILL_DISPLAY_NAME_METADATA_KEY = "display_name";
+/** Longest display name, in characters. */
+export const MAX_SKILL_DISPLAY_NAME_LENGTH = 64;
+
+/** A skill's display name from its metadata, or null when it has none. */
+export function skillDisplayName(metadata: Record<string, string>): string | null {
+  return metadata[SKILL_DISPLAY_NAME_METADATA_KEY]?.trim() || null;
+}
+
+/**
+ * SKILL.md `metadata` key prefixes for a skill's name and its one line in
+ * another language: `display_name.zh-CN`, `summary.zh-CN`.
+ */
+const SKILL_LOCALE_NAME_METADATA_PREFIX = `${SKILL_DISPLAY_NAME_METADATA_KEY}.`;
+const SKILL_LOCALE_DESCRIPTION_METADATA_PREFIX = "summary.";
+/** Most languages a skill may carry a name or a line in. */
+export const MAX_SKILL_LOCALES = 20;
+/** Longest one-line description in a language, in characters. */
+export const MAX_SKILL_LOCALE_DESCRIPTION_LENGTH = 300;
+
+/** The shape of a locale tag only; the client owns the list of languages. */
+const skillLocalePattern = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
+
+function localeString(maxCharacters: number) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => Array.from(value).length <= maxCharacters, {
+      message: `must be at most ${maxCharacters} characters`,
+    });
+}
+
+const skillLocaleStringsSchema = z.strictObject({
+  name: localeString(MAX_SKILL_DISPLAY_NAME_LENGTH).optional(),
+  description: localeString(MAX_SKILL_LOCALE_DESCRIPTION_LENGTH).optional(),
+});
+
+/**
+ * What people call a skill, and one line about it, by language. The reader
+ * falls back to `displayName` / `name` and `description` for a language or a
+ * field that is missing.
+ */
+export const skillLocalesSchema = z
+  .record(z.string().regex(skillLocalePattern), skillLocaleStringsSchema)
+  .refine((locales) => Object.keys(locales).length <= MAX_SKILL_LOCALES, {
+    message: `must name at most ${MAX_SKILL_LOCALES} languages`,
+  });
+
+/**
+ * A skill's names and one-liners by language from its metadata. An entry that
+ * does not fit (an odd locale tag, a blank or over-long string, a language
+ * past the limit) is left out; it is never a reason to refuse the skill.
+ */
+export function skillLocalesFromMetadata(metadata: Record<string, string>): SkillLocales {
+  const locales: SkillLocales = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    const field = key.startsWith(SKILL_LOCALE_NAME_METADATA_PREFIX)
+      ? "name"
+      : key.startsWith(SKILL_LOCALE_DESCRIPTION_METADATA_PREFIX)
+        ? "description"
+        : null;
+    if (!field) continue;
+    const locale = key.slice(key.indexOf(".") + 1);
+    if (!skillLocalePattern.test(locale)) continue;
+    const parsed = skillLocaleStringsSchema.shape[field].safeParse(value);
+    if (!parsed.success) continue;
+    if (!(locale in locales) && Object.keys(locales).length >= MAX_SKILL_LOCALES) continue;
+    locales[locale] = { ...locales[locale], [field]: parsed.data };
+  }
+  return locales;
+}
+
+/**
+ * `over` laid on `base`, per language and per field: what an admin typed for
+ * an official skill wins over what its SKILL.md carries. A language left with
+ * neither field is dropped, and past the limit `over`'s languages are the
+ * ones kept.
+ */
+export function layerSkillLocales(base: SkillLocales, over: SkillLocales): SkillLocales {
+  const layered: SkillLocales = {};
+  for (const locale of new Set([...Object.keys(over), ...Object.keys(base)])) {
+    const strings = { ...base[locale], ...over[locale] };
+    if (Object.keys(strings).length === 0) continue;
+    if (Object.keys(layered).length >= MAX_SKILL_LOCALES) break;
+    layered[locale] = strings;
+  }
+  return layered;
+}
+
+/** A skill as the signed-in user sees it in their library. */
+export const mySkillSchema = z.strictObject({
+  /** `builtin:<name>` for image skills; the skill id otherwise. */
+  key: z.string(),
+  kind: mySkillKindSchema,
+  name: skillNameSchema,
+  /**
+   * What people call it (SKILL.md `metadata.display_name`); null shows `name`.
+   * Built-ins have none: the web names them from its locale files.
+   */
+  displayName: z.string().nullable(),
+  description: z.string(),
+  /** Its name and one line in other languages; empty when it carries none. */
+  locales: skillLocalesSchema,
+  /** Whether new sessions of this user get the skill. */
+  enabled: z.boolean(),
+  /** False for built-ins every session needs. */
+  toggleable: z.boolean(),
+  cover: skillCoverSchema.nullable(),
+  /** The owner's choice for an own skill, the publisher's for an official one. */
+  art: skillArtSchema.nullable(),
+  updatedAt: z.number().nullable(),
+});
+
+/**
+ * Switch a skill on or off, or, for an own skill, set (null clears) its drawn
+ * cover or its example output. While it has an example output that is what
+ * shows; clearing it brings the drawn cover back.
+ */
+export const updateMySkillInputSchema = z.union([
+  z.strictObject({ enabled: z.boolean() }),
+  z.strictObject({ art: skillArtSchema.nullable() }),
+  z.strictObject({ cover: skillCoverChoiceSchema.nullable() }),
+]);
+
+export const mySkillsResponseSchema = z.strictObject({ skills: z.array(mySkillSchema) });
+
+export const mySkillDetailSchema = mySkillSchema.extend({
+  /** The complete SKILL.md, frontmatter included. */
+  markdown: z.string(),
+  /** Every other file of the skill. */
+  files: z.array(z.strictObject({ path: z.string(), sizeBytes: z.number().int().nonnegative() })),
+});
+
+export const mySkillResponseSchema = z.strictObject({ skill: mySkillDetailSchema });
+
+export const savePersonalSkillResponseSchema = z.strictObject({
+  skill: mySkillSchema,
+  /** False when an existing skill of the same name was updated. */
+  created: z.boolean(),
+});
+
+export type PersonalSkillFileInput = z.infer<typeof personalSkillFileInputSchema>;
+export type SavePersonalSkillInput = z.infer<typeof savePersonalSkillInputSchema>;
+export type SandboxSavePersonalSkillInput = z.infer<typeof sandboxSavePersonalSkillInputSchema>;
+export type SkillCover = z.infer<typeof skillCoverSchema>;
+export type SkillCoverChoice = z.infer<typeof skillCoverChoiceSchema>;
+export type SkillArt = z.infer<typeof skillArtSchema>;
+export type SkillLocales = z.infer<typeof skillLocalesSchema>;
+export type MySkill = z.infer<typeof mySkillSchema>;
+export type UpdateMySkillInput = z.infer<typeof updateMySkillInputSchema>;
+export type MySkillDetail = z.infer<typeof mySkillDetailSchema>;
+export type MySkillsResponse = z.infer<typeof mySkillsResponseSchema>;
+export type SavePersonalSkillResponse = z.infer<typeof savePersonalSkillResponseSchema>;
 
 export type SkillFileInput = z.infer<typeof skillFileInputSchema>;
 export type SkillContentInput = z.infer<typeof skillContentInputSchema>;

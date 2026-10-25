@@ -5,7 +5,7 @@ import { runInSessionDO } from "./session-do-access";
 import type { SandboxSettings } from "@open-inspect/shared/types/integrations";
 import { buildServiceAuthHeaders, type ServiceName } from "@open-inspect/shared/service-auth";
 import { BUILT_IN_ROLE_REGISTRY, type BuiltInRoleKey } from "@open-inspect/shared/rbac";
-import type { SandboxStatus } from "@open-inspect/shared/types/sessions";
+import type { SandboxStatus, SessionPermissionMode } from "@open-inspect/shared/types/sessions";
 import type { SessionDO } from "../../src/cloudflare/durable-object";
 import { hashToken } from "../../src/auth/crypto";
 import type { SqlDatabase } from "../../src/db/sql-database";
@@ -53,6 +53,21 @@ export async function seedActiveUser(userId: string): Promise<void> {
 }
 
 const DEFAULT_WAIT_FOR_SANDBOX_STATUS_TIMEOUT_MS = 3000;
+/** Insert a team row for session ownership and visibility tests. */
+export async function seedTeam(input: {
+  slug: string;
+  name: string;
+  joinPolicy: "open" | "invite_only";
+}): Promise<{ id: string }> {
+  const id = `team_${crypto.randomUUID().replaceAll("-", "")}`;
+  await env.DB.prepare(
+    "INSERT INTO teams (id, slug, name, join_policy, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  )
+    .bind(id, input.slug, input.name, input.joinPolicy, Date.now(), Date.now())
+    .run();
+  return { id };
+}
+
 export const INTEGRATION_WEBSOCKET_TIMEOUT_MS = 2000;
 const TEST_BROWSER_USER_ID = "11111111111111111111111111111111";
 const TEST_BROWSER_ACCOUNT_ID = "test-browser-account";
@@ -396,6 +411,7 @@ export async function initNamedSession(
     title?: string;
     model?: string;
     reasoningEffort?: string;
+    permissionMode?: SessionPermissionMode;
     userId?: string;
     canonicalUserId?: string;
     scmLogin?: string;

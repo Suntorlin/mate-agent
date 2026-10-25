@@ -13,14 +13,15 @@ import type {
 } from "@open-inspect/shared";
 import { githubAutofixOriginSchema } from "@open-inspect/shared";
 import {
+  AUTO_REASONING_EFFORT,
   DEFAULT_MODEL,
-  getDefaultReasoningEffort,
   getValidModelOrDefault,
   isValidModel,
 } from "@open-inspect/shared/models";
 import type { SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
 import { isSessionPromptable } from "@open-inspect/shared/types/session-activity";
 import { MAX_UNFINISHED_PROMPTS } from "@open-inspect/shared/types/prompts";
+import { DEFAULT_SESSION_PERMISSION_MODE } from "@open-inspect/shared/types/sessions";
 import type { ClientInfo } from "../types";
 import type { SourceControlProviderName } from "../source-control";
 import type { SandboxLifecycle } from "../sandbox/lifecycle/manager";
@@ -45,7 +46,14 @@ import type { ExecutionStopCoordinator } from "./execution-stop-coordinator";
 import type { MessageFailureService } from "./message-failure-service";
 import { sandboxBootPhaseLogFields } from "../sandbox/boot-phase";
 import { resolveGitAuthorIdentity } from "./identity";
-import { validateReasoningEffort } from "./reasoning-effort";
+import {
+  baseReasoningEffort,
+  sessionDefaultReasoningEffort,
+  validateReasoningEffort,
+} from "./reasoning-effort";
+import type { ChooseAutoEffort } from "./auto-reasoning-effort";
+import { INLINE_TURNS_FOR_SANDBOX, withInlineTurns, type InlineDispatch } from "../inline/dispatch";
+import { withCardDismissalNotes } from "./card-dismissals";
 import {
   parseStoredSessionAttachments,
   SessionAttachmentError,
@@ -172,8 +180,14 @@ export class SessionMessageQueue {
     /** Resolved per use so it honors settings persisted after construction. */
     private readonly getExecutionTimeoutMs: () => number,
     private readonly mayDispatch: () => boolean,
-    private readonly getSandboxPromptBlockReason: () => string | null
+    private readonly getSandboxPromptBlockReason: () => string | null,
+    /** Resolves a prompt's "auto" effort; without one "auto" runs at the session's base effort. */
+    private readonly chooseAutoEffort?: ChooseAutoEffort,
+    private readonly inline?: InlineDispatch
   ) {}
+
+  /** Messages the inline runtime handed back: they run in a sandbox, without asking again. */
+  private readonly sandboxRequired = new Set<string>();
 
   async enqueueAutofix(
     command: Extract<GitHubAutofixSessionCommand, { type: "enqueue_feedback" }>
@@ -416,12 +430,10 @@ export class SessionMessageQueue {
     const now = Date.now();
     const session = this.repository.getSession();
     const resolvedModel = getValidModelOrDefault(message.model || session?.model);
+    const harness = getValidHarnessOrDefault(session?.harness);
     // The same rule as admission, applied at dispatch: the harness is fixed
     // at create, so nothing may reach the sandbox on a model it cannot run.
-    const harnessIncompatibility = checkHarnessCompatibility(
-      getValidHarnessOrDefault(session?.harness),
-      resolvedModel
-    );
+    const harnessIncompatibility = checkHarnessCompatibility(harness, resolvedModel);
     const authenticationError =
       harnessIncompatibility?.message ?? (await this.getProviderAuthenticationError(resolvedModel));
     if (!this.mayDispatch()) return;
@@ -433,7 +445,7 @@ export class SessionMessageQueue {
       });
       if (this.failMessage(message, authenticationError, now, "pending")) {
         this.broadcastPromptQueue();
-        await this.sessionStatus.reconcileAfterExecution(false);
+        await this.sessionStatus.reconcileAfterExecution("failed");
         await this.processMessageQueue();
       }
       return;
@@ -471,6 +483,19 @@ export class SessionMessageQueue {
         });
         await this.processMessageQueue();
         return;
+      }
+      if (this.inline && !this.sandboxRequired.has(message.id)) {
+        const runtime = await this.inline.chooseRuntime({
+          messageId: message.id,
+          content: message.content,
+          previousContent: this.messageRepository.getLatestTerminalMessage()?.content ?? null,
+          // The inline runtime sends text only for now.
+          hasAttachments: (parseStoredSessionAttachments(message.attachments) ?? []).length > 0,
+        });
+        if (runtime === "inline") {
+          await this.dispatchInline(message, now);
+          return;
+        }
       }
       this.log.info("prompt.dispatch", {
         event: "prompt.dispatch",
@@ -519,19 +544,39 @@ export class SessionMessageQueue {
       message.origin_context
     );
     const gitIdentity = resolveParticipantGitIdentity(author, this.scmProvider);
-    const requestedEffort =
-      message.reasoning_effort ??
-      session?.reasoning_effort ??
-      getDefaultReasoningEffort(resolvedModel);
+    let requestedEffort =
+      message.reasoning_effort ?? sessionDefaultReasoningEffort(session, resolvedModel);
+    if (requestedEffort === AUTO_REASONING_EFFORT) {
+      const baseEffort = baseReasoningEffort(session, resolvedModel);
+      requestedEffort = this.chooseAutoEffort
+        ? await this.chooseAutoEffort({
+            messageId: message.id,
+            content: message.content,
+            previousContent: this.messageRepository.getLatestTerminalMessage()?.content ?? null,
+            baseEffort,
+          })
+        : baseEffort;
+    }
     const resolvedEffort =
       validateReasoningEffort(resolvedModel, requestedEffort ?? undefined, this.log) ?? undefined;
 
+    // Cards the owner closed since the last prompt ride with this one; the
+    // claim below records this prompt's `user_message`, marking them told.
     const command: SandboxCommand = {
       type: "prompt",
       messageId: message.id,
-      content: message.content,
+      content: withInlineTurns(
+        withCardDismissalNotes(
+          message.content,
+          this.messageRepository.listCardDismissalsSinceLastPrompt()
+        ),
+        this.inline
+          ? this.messageRepository.listInlineTurnsSinceSandbox(INLINE_TURNS_FOR_SANDBOX)
+          : []
+      ),
       model: resolvedModel,
       reasoningEffort: resolvedEffort,
+      permissionMode: session?.permission_mode ?? DEFAULT_SESSION_PERMISSION_MODE,
       author: {
         userId: author?.user_id ?? "unknown",
         gitIdentity,
@@ -559,6 +604,8 @@ export class SessionMessageQueue {
       await this.sandboxLifecycle.terminateUnresponsiveSandbox("prompt_dispatch_send_failed");
       await this.executionStop.resumeAfterSandboxTermination();
     } else {
+      this.sandboxRequired.delete(message.id);
+      if (this.inline) this.messageRepository.setMessageRuntime(message.id, "sandbox");
       this.messenger.broadcast({ type: "sandbox_event", event: userMessageEvent });
       this.messenger.broadcast({ type: "processing_status", isProcessing: true });
       this.broadcastPromptQueue();
@@ -589,6 +636,69 @@ export class SessionMessageQueue {
       queue_wait_ms: now - message.created_at,
       has_attachments: !!message.attachments,
     });
+  }
+
+  /**
+   * Run a prompt in the control plane (no sandbox). The claim, broadcasts and execution deadline
+   * are the socket path's; the turn's events arrive through the sandbox-event processor, whose
+   * `execution_complete` finishes the message and pumps the queue. A turn the model hands back
+   * returns to pending and goes to a sandbox.
+   */
+  private async dispatchInline(
+    message: NonNullable<ReturnType<MessageRepository["getNextPendingMessage"]>>,
+    now: number
+  ): Promise<void> {
+    const inline = this.inline;
+    if (!inline) return;
+    const author = this.participantRepository.getParticipantById(message.author_id);
+    if (!author) throw new Error(`Missing prompt author ${message.author_id}`);
+    const userMessageEvent = this.createUserMessageEvent(
+      author,
+      message.content,
+      message.id,
+      now,
+      parseStoredSessionAttachments(message.attachments, () =>
+        this.log.error("prompt.invalid_stored_attachments")
+      ),
+      message.origin_context
+    );
+    if (!this.mayDispatch()) return;
+    if (!this.messageRepository.startMessageProcessing(message.id, now, userMessageEvent)) {
+      this.log.debug("processMessageQueue: prompt claim lost", { message_id: message.id });
+      return;
+    }
+    this.messageRepository.setMessageRuntime(message.id, "inline");
+    this.messenger.broadcast({ type: "sandbox_event", event: userMessageEvent });
+    this.messenger.broadcast({ type: "processing_status", isProcessing: true });
+    this.broadcastPromptQueue();
+    await this.alarmScheduler.schedule(now + this.getExecutionTimeoutMs());
+    this.backgroundTasks.submit(() => this.callbackService.notifyStarted(message.id), {
+      name: "callback.notify_started",
+      context: { message_id: message.id },
+    });
+    this.log.info("prompt.dispatch", {
+      event: "prompt.dispatch",
+      message_id: message.id,
+      outcome: "inline",
+      author_id: message.author_id,
+      queue_wait_ms: now - message.created_at,
+    });
+
+    this.backgroundTasks.submit(
+      async () => {
+        const outcome = await inline.run({
+          messageId: message.id,
+          content: message.content,
+          userId: author.user_id,
+        });
+        if (outcome !== "escalate") return;
+        this.sandboxRequired.add(message.id);
+        this.messageRepository.updateMessageToPending(message.id);
+        this.broadcastPromptQueue();
+        await this.processMessageQueue();
+      },
+      { name: "inline.turn", context: { message_id: message.id } }
+    );
   }
 
   async handleFatalSandboxFailure(reason: string): Promise<void> {
@@ -629,7 +739,26 @@ export class SessionMessageQueue {
     if (!message || message.status !== "pending") return;
     if (!this.failMessage(message, error, Date.now(), "pending")) return;
     this.broadcastPromptQueue();
-    await this.sessionStatus.reconcileAfterExecution(false);
+    await this.sessionStatus.reconcileAfterExecution("failed");
+  }
+
+  /**
+   * Ask the bridge that has just said `ready` whether it holds the processing
+   * message. A bridge process that restarted after the dispatch lost the turn
+   * and answers with a failed `execution_complete`, so the message does not
+   * wait for the execution timeout; one that only reconnected ignores it.
+   */
+  reconcileProcessingMessage(): void {
+    const message = this.messageRepository.getProcessingSandboxMessage();
+    if (!message) return;
+    const ws = this.wsManager.getSandboxSocket();
+    if (!ws) return;
+    const sent = this.wsManager.send(ws, { type: "reconcile_prompt", messageId: message.id });
+    this.log.info("prompt.reconcile", {
+      event: "prompt.reconcile",
+      message_id: message.id,
+      outcome: sent ? "sent" : "send_failed",
+    });
   }
 
   /**
@@ -649,7 +778,7 @@ export class SessionMessageQueue {
     }
     this.messenger.broadcast({ type: "processing_status", isProcessing: false });
     this.broadcastPromptQueue();
-    await this.sessionStatus.reconcileAfterExecution(false);
+    await this.sessionStatus.reconcileAfterExecution("failed");
   }
 
   private failMessage(

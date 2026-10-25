@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 from tests.conftest import ScriptedHarness
 
 
@@ -16,6 +17,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     b.harness.session_id = "oc-session-123"
     b._configure_git_identity = AsyncMock()
@@ -66,6 +68,7 @@ class TestExecutionCompleteCostReport:
                 "success": False,
                 "error": "Task was cancelled",
                 "messageCostUsd": 0.5,
+                "stopped": True,
             }
         ]
 
@@ -108,3 +111,16 @@ class TestExecutionCompleteCostReport:
         completion = await bridge._handle_prompt(_prompt_command())
 
         assert "messageCostUsd" not in completion
+
+
+@pytest.mark.asyncio
+async def test_a_finished_turn_asks_for_a_workspace_copy(bridge: AgentBridge):
+    async def stream(*_args, **_kwargs):
+        yield {"type": "step_finish", "messageId": "msg-1", "cost": 0.1, "messageCostUsd": 0.1}
+
+    bridge.boot_attach.harness = ScriptedHarness(stream)
+    bridge.workspace_copy = Mock()
+
+    await bridge._handle_prompt(_prompt_command())
+
+    bridge.workspace_copy.turn_ended.assert_called_once_with()

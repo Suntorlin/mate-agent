@@ -14,6 +14,7 @@ import pytest
 from websockets import State
 
 from sandbox_runtime.bridge import AgentBridge
+from sandbox_runtime.harness import HarnessId
 
 
 @pytest.fixture
@@ -24,6 +25,7 @@ def bridge() -> AgentBridge:
         session_id="test-session",
         control_plane_url="http://localhost:8787",
         auth_token="test-token",
+        harness_id=HarnessId.OPENCODE,
     )
     b.harness.session_id = "oc-session-123"
     return b

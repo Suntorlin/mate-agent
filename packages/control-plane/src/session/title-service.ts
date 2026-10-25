@@ -5,6 +5,7 @@ import type { SessionCoreRepository } from "./session-core-repository";
 import type { SessionStatusService } from "./session-status-service";
 import { resolvePublicSessionId } from "./public-session-id";
 import {
+  isFallbackSessionTitle,
   normalizeSessionTitle,
   type SessionTitleUpdateOptions,
   type SessionTitleUpdateResult,
@@ -16,6 +17,8 @@ export interface SessionTitleServiceDeps {
   statusService: Pick<SessionStatusService, "notifyParentOfChildUpdate">;
   backgroundTasks: BackgroundTasks;
   sessionIndexStore: Pick<SessionIndexStore, "updateTitle">;
+  /** The session's earliest prompts, which a fallback title was derived from. */
+  earliestPrompts: () => string[];
   durableObjectId: string;
   now: () => number;
 }
@@ -49,7 +52,12 @@ export class SessionTitleService {
     }
 
     const updatedAt = Math.max(now(), session.updated_at + 1);
-    if (options.onlyIfUnset) {
+    const replacesFallback =
+      options.onlyIfUnset === true &&
+      options.replaceFallback === true &&
+      Boolean(session.title?.trim()) &&
+      isFallbackSessionTitle(session.title ?? "", this.deps.earliestPrompts());
+    if (options.onlyIfUnset && !replacesFallback) {
       const didUpdate = sessionCoreRepository.updateSessionTitleIfUnset(
         session.id,
         titleText,

@@ -78,7 +78,7 @@ not pass through Hono.
 | `/sessions/:id/events`          | GET       | Paginated events                     |
 | `/sessions/:id/artifacts`       | GET       | List artifacts                       |
 | `/sessions/:id/participants`    | GET       | List runtime participants            |
-| `/sessions/:id/messages`        | GET       | List messages                        |
+| `/sessions/:id/messages`        | GET       | List messages and each turn's cost   |
 | `/sessions/:id/pr`              | POST      | Create pull request                  |
 | `/sessions/:id/scm-credentials` | POST      | Broker sandbox git credentials       |
 | `/sessions/:id/ws-token`        | POST      | Generate WebSocket token             |
@@ -316,10 +316,10 @@ the image build.
 
 ### Deploy
 
-Deployment is managed via Terraform. See [terraform/README.md](../../terraform/README.md) for
-details.
-
-All secrets and environment variables are configured through Terraform's `terraform.tfvars` file.
+The Worker is deployed with Wrangler: see
+[deploy/cloudflare/README.md](../../deploy/cloudflare/README.md) for the environments, the secrets
+and the deploy and verify scripts. The Node container is described in
+[docs/CONTROL_PLANE_CONTAINER.md](../../docs/CONTROL_PLANE_CONTAINER.md).
 
 ## SQLite Schema
 
@@ -337,8 +337,8 @@ See `src/session/schema.ts` for full schema.
 
 ## D1 Schema (sessions, environments, automations)
 
-Shared state lives in the D1 database (migrations in `terraform/d1/migrations/`). Beyond the
-sessions index, repo metadata, and encrypted secrets:
+Shared state lives in the D1 database (migrations in `deploy/d1/migrations/`). Beyond the sessions
+index, repo metadata, and encrypted secrets:
 
 - `session_repositories`: a session's ordered repository list (position 0 = primary; single-repo
   sessions also mirror the primary onto the session row's scalar columns).
@@ -548,9 +548,7 @@ Optional variables:
 - `GITLAB_NAMESPACE` - GitLab group namespace to scope repository listing (optional). When set,
   `GET /repos` lists projects within the group instead of all projects the token has access to.
 
-See
-[terraform/environments/production/terraform.tfvars.example](../../terraform/environments/production/terraform.tfvars.example)
-for the complete list.
+See [deploy/compose/.env.example](../../deploy/compose/.env.example) for the complete list.
 
 ### Deployment Recommendations
 

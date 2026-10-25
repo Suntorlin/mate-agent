@@ -1,0 +1,32 @@
+# Overlay that runs sessions on Vercel Sandbox instead of E2B. The token comes from the process
+# environment only (export it in the shell, e.g. from the macOS Keychain); the IDs are not
+# secret. Sessions keep one filesystem snapshot that never expires, and may run for Pro's 24 h session
+# ceiling. As a safety net each sandbox also keeps copies of its project files in the object store;
+# a session whose snapshot is gone is rebuilt from the newest copy instead of starting empty.
+#
+# One public object-store address serves every signed URL: the tunnel (WORKER_URL), which
+# deploy/edge/Caddyfile splits by path. /media/sessions/* (file artifacts, large videos, workspace
+# copies from sandboxes) and /media/users/* (composer and library files from browsers, read by
+# sandboxes into /workspace/inputs) go to SeaweedFS with Host unchanged; the rest goes to the
+# control plane. Sandboxes reach it over https, so they transfer directly rather than through the
+# control plane's relay. The bucket's CORS rule, applied at boot, admits the web app's origin
+# (http://localhost:3000 by default; set OBJECT_STORE_CORS_ORIGINS in .env to change it).
+services:
+  app:
+    environment:
+      SANDBOX_PROVIDER: vercel
+      VERCEL_TOKEN: ${VERCEL_TOKEN:?export VERCEL_TOKEN in the shell}
+      VERCEL_TEAM_ID: ${VERCEL_TEAM_ID:?}
+      VERCEL_PROJECT_ID: ${VERCEL_PROJECT_ID:?}
+      VERCEL_BASE_SNAPSHOT_ID: ${VERCEL_BASE_SNAPSHOT_ID:?}
+      VERCEL_MAX_SESSION_TIMEOUT_MS: "86400000"
+      # Renders use every core; 8 vCPUs cut a 64 s render from 110 s (4) to 69 s for about the
+      # same active-CPU bill, since Vercel charges CPU by active time.
+      VERCEL_DEFAULT_VCPUS: "8"
+      # 0 = never expire (Vercel accepts 0 or at least one day).
+      VERCEL_SNAPSHOT_EXPIRATION_MS: "0"
+      OBJECT_STORE_PUBLIC_ENDPOINT: ${WORKER_URL:?}
+      OBJECT_STORE_CORS_ORIGINS: ${OBJECT_STORE_CORS_ORIGINS:-http://localhost:3000}
+      OBJECT_STORE_SANDBOX_ACCESS: direct
+      WORKER_URL: ${WORKER_URL:?set WORKER_URL to the public tunnel URL}
+      GATEWAY_URL: ${WORKER_URL:?}

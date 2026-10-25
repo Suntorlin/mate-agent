@@ -119,6 +119,9 @@ export const TEST_SESSION_ROW: SessionRow = {
   active_duration_ms: 0,
   message_count: 0,
   pr_count: 0,
+  cover_artifact_id: null,
+  cover_artifact_type: null,
+  media_count: 0,
   input_tokens: 0,
   output_tokens: 0,
   reasoning_tokens: 0,
@@ -275,6 +278,7 @@ export const TEST_SERVICE_SECRETS = {
   SERVICE_AUTH_SECRET_SLACK_BOT: "test-service-secret-slack-bot",
   SERVICE_AUTH_SECRET_GITHUB_BOT: "test-service-secret-github-bot",
   SERVICE_AUTH_SECRET_LINEAR_BOT: "test-service-secret-linear-bot",
+  SERVICE_AUTH_SECRET_APP: "test-service-secret-app",
 } as const;
 
 export async function signedServiceRequest(

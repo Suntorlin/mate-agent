@@ -40,13 +40,18 @@ def _freeze_json(value: Any) -> Any:
     return value
 
 
+# Plain http is allowed only to the machine itself; host.docker.internal is that machine as a
+# local Docker sandbox (packages/docker-dataplane) reaches it.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+
+
 def _validate_control_plane_url(url: str) -> None:
     if not url:
         return
     parsed = urlsplit(url)
     if parsed.scheme == "https" and parsed.hostname:
         return
-    if parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}:
+    if parsed.scheme == "http" and parsed.hostname in _LOOPBACK_HOSTS:
         return
     raise ValueError("CONTROL_PLANE_URL must use HTTPS except for loopback development URLs")
 
@@ -158,7 +163,7 @@ class RuntimeConfig:
 
     @property
     def harness(self) -> HarnessId:
-        """Which agent runs this session; absent means the built-in OpenCode harness."""
+        """Which agent runs this session; absent means the default (Claude) harness."""
         return parse_harness_id(self.session_config.get("harness"))
 
     @property

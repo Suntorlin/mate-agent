@@ -9,7 +9,8 @@ import { SandboxRuntimeEventHandler } from "./runtime.handler";
 import { SandboxPushService } from "../sandbox-push-service";
 import { SandboxStreamingEventHandler } from "./streaming.handler";
 import type { GitPushSpec } from "../../source-control";
-import type { SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
+import { sandboxEventSchema, type SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
+import type { TurnCostSource } from "../turn-cost";
 import type { ServerMessage } from "@open-inspect/shared/types/server-messages";
 import type { CallbackNotificationService } from "../callback-notification-service";
 import type { SessionDiffService } from "../diffs/service";
@@ -17,7 +18,7 @@ import type { SessionCoreRepository } from "../session-core-repository";
 import type { SandboxRepository } from "../sandbox-repository";
 import type { ArtifactRepository } from "../artifact-repository";
 import type { EventRepository } from "../event-repository";
-import type { MessageRepository } from "../message-repository";
+import type { MessageRepository, TerminalMessageStatus } from "../message-repository";
 import type { SessionStatusService } from "../session-status-service";
 import type { SandboxCommandTarget, SessionWebSocketManager } from "../websocket-manager";
 import type { SessionBudgetService } from "../budget-service";
@@ -41,10 +42,14 @@ function createProcessor(
     generationReady(event: Extract<SandboxEvent, { type: "sandbox_generation_ready" }>): void;
     prepared(event: Extract<SandboxEvent, { type: "preservation_prepared" }>): void;
   },
-  persistedUsage?: UsageRepository
+  persistedUsage?: UsageRepository,
+  turnCosts?: TurnCostSource,
+  runningTurnBudget?: { observe(now: number): void }
 ) {
   const getProcessingMessage = vi.fn(() => null as { id: string } | null);
+  const getMessageById = vi.fn((_id: string) => null as { started_at: number | null } | null);
   const repository = {
+    getMessageById,
     updateSandboxHeartbeat: vi.fn(),
     recordReportedSandboxRuntimeVersion: vi.fn(),
     recordBootProgress: vi.fn(() => true),
@@ -68,6 +73,11 @@ function createProcessor(
   };
   const eventRepository = {
     upsertTokenEvent: vi.fn(),
+    listTurnText: vi.fn(() => ({
+      text: null as string | null,
+      parts: [] as Array<{ partId: string; content: string }>,
+      compactions: 0,
+    })),
     createContextCompactionEvent: vi.fn(),
     upsertToolCallEvent: vi.fn(),
     createEvent: vi.fn(),
@@ -94,7 +104,9 @@ function createProcessor(
   const diffService = { pinBaselines: vi.fn() };
   const triggerSnapshot = vi.fn(async (_reason: string) => {});
   const projectTerminalMessage = vi.fn(async () => {});
-  const statusService = { reconcileAfterExecution: vi.fn(async (_success: boolean) => {}) };
+  const statusService = {
+    reconcileAfterExecution: vi.fn(async (_outcome: TerminalMessageStatus) => {}),
+  };
   const scheduleInactivityCheck = vi.fn(async () => {});
   const processMessageQueue = vi.fn(async () => {});
   const broadcastPromptQueue = vi.fn();
@@ -102,6 +114,7 @@ function createProcessor(
   const refreshSlackActivity = vi.fn();
   const applySessionTitleUpdate = vi.fn((title: string) => ({ ok: true as const, title }));
   const offerFallbackTitle = vi.fn((_title: string) => {});
+  const rememberTurn = vi.fn(async (_messageId: string) => {});
   const log = {
     debug: vi.fn(),
     info: vi.fn(),
@@ -160,7 +173,8 @@ function createProcessor(
       broadcastPromptQueue,
       budgetService,
       (closure) => closure(),
-      offerFallbackTitle
+      offerFallbackTitle,
+      rememberTurn
     ),
     new SandboxRuntimeEventHandler(
       repository as unknown as SessionCoreRepository,
@@ -173,18 +187,21 @@ function createProcessor(
       refreshSlackActivity,
       scheduleInactivityCheck,
       backgroundTasks,
-      { processMessageQueue },
+      { processMessageQueue, reconcileProcessingMessage: vi.fn() },
       log,
       { onRuntimeReady: vi.fn(() => false) }
     ),
     pushService,
-    shutdown
+    shutdown,
+    turnCosts,
+    runningTurnBudget
   );
 
   return {
     processor,
     pushService,
     offerFallbackTitle,
+    rememberTurn,
     artifactRepository,
     repository,
     eventRepository,
@@ -224,6 +241,44 @@ describe("SessionSandboxEventProcessor", () => {
 
     expect(h.processMessageQueue).toHaveBeenCalledOnce();
     expect(h.repository.recordMessageCompletion).toHaveBeenCalledOnce();
+  });
+
+  it("hands a turn that finished well to memory, and no other", async () => {
+    const h = createProcessor();
+    h.repository.getProcessingMessage.mockReturnValue({ id: "msg-1" });
+    await h.processor.processSandboxEvent({
+      type: "execution_complete",
+      messageId: "msg-1",
+      success: true,
+      sandboxId: "sb-1",
+      timestamp: 2000,
+    });
+    await h.backgroundTasks.settle();
+    expect(h.rememberTurn).toHaveBeenCalledExactlyOnceWith("msg-1");
+
+    for (const outcome of [
+      { success: false, error: "boom" },
+      { success: false, error: "Task was cancelled", stopped: true as const },
+    ]) {
+      h.repository.getProcessingMessage.mockReturnValue({ id: "msg-2" });
+      await h.processor.processSandboxEvent({
+        type: "execution_complete",
+        messageId: "msg-2",
+        sandboxId: "sb-1",
+        timestamp: 3000,
+        ...outcome,
+      });
+    }
+    // A completion for a message that is no longer processing settles nothing.
+    await h.processor.processSandboxEvent({
+      type: "execution_complete",
+      messageId: "msg-3",
+      success: true,
+      sandboxId: "sb-1",
+      timestamp: 4000,
+    });
+    await h.backgroundTasks.settle();
+    expect(h.rememberTurn).toHaveBeenCalledOnce();
   });
 
   it("logs when the post-completion snapshot fails", async () => {
@@ -271,10 +326,25 @@ describe("SessionSandboxEventProcessor", () => {
 
     expect(h.applySessionTitleUpdate).toHaveBeenCalledWith("Generated title", {
       onlyIfUnset: true,
+      replaceFallback: true,
     });
     expect(h.eventRepository.createEvent).not.toHaveBeenCalled();
     expect(h.broadcast).not.toHaveBeenCalled();
     expect(h.updateLastActivity).not.toHaveBeenCalled();
+  });
+
+  it("ignores a card dismissal claimed by the sandbox", async () => {
+    const h = createProcessor();
+    const event: SandboxEvent = {
+      type: "card_dismissed",
+      target: { kind: "artifact", artifactId: "art-1" },
+      dismissedAt: 1000,
+    };
+
+    await h.processor.processSandboxEvent(event);
+
+    expect(h.eventRepository.createEvent).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalled();
   });
 
   it("pins diff baselines on ready", async () => {
@@ -339,6 +409,111 @@ describe("SessionSandboxEventProcessor", () => {
       expect.any(Number)
     );
     expect(h.broadcast).toHaveBeenCalledWith({ type: "sandbox_event", event });
+  });
+
+  describe("a turn's cumulative text", () => {
+    const token = (content: string, extra: Partial<SandboxEvent> = {}): SandboxEvent =>
+      ({
+        type: "token",
+        content,
+        messageId: "msg-1",
+        sandboxId: "sb-1",
+        timestamp: 1000,
+        ...extra,
+      }) as SandboxEvent;
+    const toolCall = (callId: string): SandboxEvent =>
+      ({
+        type: "tool_call",
+        tool: "Bash",
+        args: {},
+        callId,
+        status: "running",
+        messageId: "msg-1",
+        sandboxId: "sb-1",
+        timestamp: 1000,
+      }) as SandboxEvent;
+    const stored = (h: ReturnType<typeof createProcessor>) =>
+      vi
+        .mocked(h.eventRepository.upsertTokenEvent)
+        .mock.calls.map(([, event]) => [
+          (event as { partId?: string }).partId,
+          (event as { content: string }).content,
+        ]);
+
+    it("is cut at each tool call, so what was said before a tool stays before it", async () => {
+      const h = createProcessor();
+      await h.processor.processSandboxEvent(token("先查余额。"));
+      await h.processor.processSandboxEvent(toolCall("call-1"));
+      await h.processor.processSandboxEvent(toolCall("call-1")); // its completion update
+      await h.processor.processSandboxEvent(token("先查余额。\n\n最便宜的是 mini"));
+      await h.processor.processSandboxEvent(token("先查余额。\n\n最便宜的是 mini。"));
+      await h.processor.processSandboxEvent(toolCall("call-2"));
+      await h.processor.processSandboxEvent(token("先查余额。\n\n最便宜的是 mini。\n\n完成。"));
+
+      expect(stored(h)).toEqual([
+        [undefined, "先查余额。"],
+        ["text-0-1", "最便宜的是 mini"],
+        ["text-0-1", "最便宜的是 mini。"],
+        ["text-0-2", "完成。"],
+      ]);
+    });
+
+    it("sends nothing for a token that adds no text after a cut", async () => {
+      const h = createProcessor();
+      await h.processor.processSandboxEvent(token("一段话"));
+      await h.processor.processSandboxEvent(toolCall("call-1"));
+      await h.processor.processSandboxEvent(token("一段话\n\n"));
+
+      expect(stored(h)).toEqual([[undefined, "一段话"]]);
+    });
+
+    it("leaves tokens that already name their part alone", async () => {
+      const h = createProcessor();
+      const event = token("opencode part", { partId: "part-9" } as Partial<SandboxEvent>);
+      await h.processor.processSandboxEvent(event);
+      await h.processor.processSandboxEvent(toolCall("call-1"));
+
+      expect(h.eventRepository.upsertTokenEvent).toHaveBeenCalledWith(
+        "msg-1",
+        event,
+        expect.any(Number)
+      );
+    });
+
+    it("picks up after a restart from the text already stored", async () => {
+      const h = createProcessor();
+      vi.mocked(h.eventRepository.listTurnText).mockReturnValue({
+        text: "先查余额。",
+        parts: [{ partId: "text-0-1", content: "最便宜的是 mini。" }],
+        compactions: 0,
+      });
+      await h.processor.processSandboxEvent(token("先查余额。\n\n最便宜的是 mini。\n\n完成。"));
+
+      expect(stored(h)).toEqual([["text-0-2", "完成。"]]);
+    });
+
+    it("starts over as an ordinary token after compaction, with parts that cannot collide", async () => {
+      const h = createProcessor();
+      await h.processor.processSandboxEvent(token("压缩前"));
+      await h.processor.processSandboxEvent(toolCall("call-1"));
+      await h.processor.processSandboxEvent(token("压缩前\n\n第二段"));
+      await h.processor.processSandboxEvent({
+        type: "context_compacted",
+        messageId: "msg-1",
+        sandboxId: "sb-1",
+        timestamp: 1000,
+      } as SandboxEvent);
+      await h.processor.processSandboxEvent(token("压缩后"));
+      await h.processor.processSandboxEvent(toolCall("call-2"));
+      await h.processor.processSandboxEvent(token("压缩后\n\n再一段"));
+
+      expect(stored(h)).toEqual([
+        [undefined, "压缩前"],
+        ["text-0-1", "第二段"],
+        [undefined, "压缩后"],
+        ["text-1-1", "再一段"],
+      ]);
+    });
   });
 
   it("persists each context compaction marker and broadcasts it", async () => {
@@ -436,6 +611,161 @@ describe("SessionSandboxEventProcessor", () => {
         sandboxId: "sb-1",
         url: "sessions/session-1/media/artifact-1.png",
       }),
+    });
+  });
+
+  describe("a turn's cost from the gateway's ledger", () => {
+    const stepFinish = (): SandboxEvent => ({
+      type: "step_finish",
+      messageId: "msg-1",
+      sandboxId: "sb-1",
+      timestamp: 2000,
+      cost: 0.16,
+      messageCostUsd: 0.16,
+    });
+    const completion = (): SandboxEvent => ({
+      type: "execution_complete",
+      messageId: "msg-1",
+      success: true,
+      sandboxId: "sb-1",
+      timestamp: 2001,
+      messageCostUsd: 0.16,
+    });
+    const withLedger = (turnCost: TurnCostSource["turnCost"]) => {
+      const h = createProcessor(undefined, undefined, { turnCost });
+      h.repository.getMessageById.mockReturnValue({ started_at: 1_000 });
+      h.repository.getProcessingMessage.mockReturnValue({ id: "msg-1" });
+      return h;
+    };
+
+    it("replaces the runtime's estimate before the budget and the timeline read it", async () => {
+      const turnCost = vi.fn(async () => 0.0099);
+      const h = withLedger(turnCost);
+
+      await h.processor.processSandboxEvent(stepFinish());
+
+      expect(turnCost).toHaveBeenCalledWith({ sinceMs: 1_000, untilMs: expect.any(Number) });
+      const corrected = expect.objectContaining({ cost: 0.0099, messageCostUsd: 0.0099 });
+      expect(h.budgetService.ingestStepFinish).toHaveBeenCalledWith(
+        corrected,
+        "msg-1",
+        expect.any(Number)
+      );
+      expect(h.usageRepository.recordStepUsage).toHaveBeenCalledWith(
+        corrected,
+        "msg-1",
+        expect.any(Number)
+      );
+      expect(h.broadcast).toHaveBeenCalledWith({ type: "sandbox_event", event: corrected });
+    });
+
+    it("corrects the completion's cost the same way", async () => {
+      const h = withLedger(async () => 0.0099);
+
+      await h.processor.processSandboxEvent(completion());
+
+      expect(h.budgetService.observeExecutionCost).toHaveBeenCalledWith(
+        expect.objectContaining({ messageCostUsd: 0.0099 }),
+        expect.any(Number)
+      );
+    });
+
+    it("keeps the runtime's figure when the ledger has none", async () => {
+      const h = withLedger(async () => null);
+
+      await h.processor.processSandboxEvent(stepFinish());
+      await h.processor.processSandboxEvent(completion());
+
+      expect(h.budgetService.ingestStepFinish).toHaveBeenCalledWith(
+        expect.objectContaining({ cost: 0.16, messageCostUsd: 0.16 }),
+        "msg-1",
+        expect.any(Number)
+      );
+      expect(h.budgetService.observeExecutionCost).toHaveBeenCalledWith(
+        expect.objectContaining({ messageCostUsd: 0.16 }),
+        expect.any(Number)
+      );
+    });
+
+    it("leaves other events, and events that carry no cost, alone and unasked", async () => {
+      const turnCost = vi.fn(async () => 0.0099);
+      const h = withLedger(turnCost);
+
+      await h.processor.processSandboxEvent({
+        type: "heartbeat",
+        sandboxId: "sb-1",
+        timestamp: 1500,
+      });
+      await h.processor.processSandboxEvent({
+        type: "step_finish",
+        messageId: "msg-1",
+        sandboxId: "sb-1",
+        timestamp: 2000,
+        cost: 0.5,
+      });
+      h.repository.getMessageById.mockReturnValue({ started_at: null });
+      await h.processor.processSandboxEvent(stepFinish());
+
+      expect(
+        turnCost,
+        "no cumulative cost, or no start of the turn, no question"
+      ).not.toHaveBeenCalled();
+      expect(h.budgetService.ingestStepFinish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ cost: 0.16 }),
+        "msg-1",
+        expect.any(Number)
+      );
+    });
+
+    it("handles the step before the completion even when the step's answer is slower", async () => {
+      const answers = [
+        new Promise<number>((resolve) => setTimeout(() => resolve(0.01), 20)),
+        Promise.resolve(0.02),
+      ];
+      const h = withLedger(async () => answers.shift() ?? null);
+
+      await Promise.all([
+        h.processor.processSandboxEvent(stepFinish()),
+        h.processor.processSandboxEvent(completion()),
+      ]);
+
+      const [step] = h.budgetService.ingestStepFinish.mock.invocationCallOrder;
+      const [complete] = h.budgetService.observeExecutionCost.mock.invocationCallOrder;
+      expect(step).toBeLessThan(complete);
+      expect(h.budgetService.ingestStepFinish).toHaveBeenCalledWith(
+        expect.objectContaining({ messageCostUsd: 0.01 }),
+        "msg-1",
+        expect.any(Number)
+      );
+      expect(h.budgetService.observeExecutionCost).toHaveBeenCalledWith(
+        expect.objectContaining({ messageCostUsd: 0.02 }),
+        expect.any(Number)
+      );
+    });
+
+    it("handles the event with the runtime's figure when the lookup itself throws", async () => {
+      const turnCost = vi
+        .fn<TurnCostSource["turnCost"]>()
+        .mockRejectedValueOnce(new Error("lookup blew up"))
+        .mockResolvedValueOnce(0.02);
+      const h = withLedger(turnCost);
+
+      await h.processor.processSandboxEvent(stepFinish());
+      await h.processor.processSandboxEvent(completion());
+
+      expect(h.budgetService.ingestStepFinish).toHaveBeenCalledWith(
+        expect.objectContaining({ cost: 0.16, messageCostUsd: 0.16 }),
+        "msg-1",
+        expect.any(Number)
+      );
+      expect(h.budgetService.observeExecutionCost).toHaveBeenCalledWith(
+        expect.objectContaining({ messageCostUsd: 0.02 }),
+        expect.any(Number)
+      );
+      expect(h.log.warn).toHaveBeenCalledWith(
+        "Turn cost lookup failed",
+        expect.objectContaining({ event_type: "step_finish" })
+      );
     });
   });
 
@@ -656,7 +986,7 @@ describe("SessionSandboxEventProcessor", () => {
     expect(h.broadcast).toHaveBeenCalledWith({ type: "processing_status", isProcessing: false });
     expect(h.broadcastPromptQueue).toHaveBeenCalledOnce();
     expect(h.callbackService.notifyComplete).toHaveBeenCalledWith("msg-1", true, undefined);
-    expect(h.statusService.reconcileAfterExecution).toHaveBeenCalledWith(true);
+    expect(h.statusService.reconcileAfterExecution).toHaveBeenCalledWith("completed");
     expect(h.repository.recordMessageCompletion.mock.invocationCallOrder[0]).toBeLessThan(
       h.projectTerminalMessage.mock.invocationCallOrder[0]
     );
@@ -708,6 +1038,27 @@ describe("SessionSandboxEventProcessor", () => {
     });
 
     expect(h.offerFallbackTitle).not.toHaveBeenCalled();
+  });
+
+  it("offers no title from a link or from a card's answer", async () => {
+    for (const content of [
+      "https://www.instagram.com/reel/Dc_RhWSB-Qg/?utm_source=ig_web_copy_link",
+      "[回答 q_e91f「想做哪种版本？」] 选了：制作拆解版（breakdown）",
+    ]) {
+      const h = createProcessor();
+      h.repository.getProcessingMessage.mockReturnValue({ id: "msg-1" });
+      h.repository.getMessageContent.mockReturnValue(content);
+
+      await h.processor.processSandboxEvent({
+        type: "execution_complete",
+        messageId: "msg-1",
+        success: true,
+        sandboxId: "sb-1",
+        timestamp: 2000,
+      });
+
+      expect(h.offerFallbackTitle).not.toHaveBeenCalled();
+    }
   });
 
   it("offers no title for a completion with no processing owner", async () => {
@@ -792,6 +1143,39 @@ describe("SessionSandboxEventProcessor", () => {
       expect.objectContaining({ messageId: "msg-failed", success: false }),
       expect.any(Number),
       "processing"
+    );
+  });
+
+  it("keeps a refused turn's reason on its record and broadcast, and logs it", async () => {
+    const h = createProcessor();
+    h.repository.getProcessingMessage.mockReturnValue({ id: "msg-refused" });
+    const event = sandboxEventSchema.parse({
+      type: "execution_complete",
+      messageId: "msg-refused",
+      success: false,
+      error:
+        "API Error: Request rejected (429) · You've used this month's AI budget ($20.13 of $20.00). [llm_budget=user resets_at=2026-11-01T00:00:00.000Z]",
+      errorCode: "model_budget_user",
+      resetsAt: "2026-11-01T00:00:00.000Z",
+      sandboxId: "sb-1",
+      timestamp: 2_000,
+    });
+
+    await h.processor.processSandboxEvent(event);
+
+    const reason = { errorCode: "model_budget_user", resetsAt: "2026-11-01T00:00:00.000Z" };
+    expect(h.repository.recordMessageCompletion).toHaveBeenCalledWith(
+      expect.objectContaining(reason),
+      expect.any(Number),
+      "processing"
+    );
+    expect(h.broadcast).toHaveBeenCalledWith({
+      type: "sandbox_event",
+      event: expect.objectContaining(reason),
+    });
+    expect(h.log.info).toHaveBeenCalledWith(
+      "prompt.complete",
+      expect.objectContaining({ outcome: "failure", error_code: "model_budget_user" })
     );
   });
 
@@ -973,6 +1357,85 @@ describe("SessionSandboxEventProcessor", () => {
       });
 
       expect(h.updateLastActivity).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("the running turn's budget", () => {
+    it("is prompted by every event while a turn runs, and by none between turns", async () => {
+      const observe = vi.fn();
+      const h = createProcessor(undefined, undefined, undefined, { observe });
+
+      await h.processor.processSandboxEvent({
+        type: "heartbeat",
+        sandboxId: "sb-1",
+        timestamp: 1000,
+      });
+      expect(observe).not.toHaveBeenCalled();
+
+      h.repository.getProcessingMessage.mockReturnValue({ id: "msg-1" });
+      await h.processor.processSandboxEvent({
+        type: "heartbeat",
+        sandboxId: "sb-1",
+        timestamp: 1000,
+      });
+      await h.processor.processSandboxEvent({
+        type: "token",
+        messageId: "msg-1",
+        content: "working",
+        sandboxId: "sb-1",
+        timestamp: 1001,
+      });
+      expect(observe).toHaveBeenCalledTimes(2);
+      expect(typeof observe.mock.calls[0][0]).toBe("number");
+    });
+
+    it("does not let a failing look at the budget fail the event", async () => {
+      const h = createProcessor(undefined, undefined, undefined, {
+        observe: () => {
+          throw new Error("storage busy");
+        },
+      });
+      h.repository.getProcessingMessage.mockReturnValue({ id: "msg-1" });
+
+      await expect(
+        h.processor.processSandboxEvent({
+          type: "heartbeat",
+          sandboxId: "sb-1",
+          timestamp: 1000,
+        })
+      ).resolves.toBeUndefined();
+      expect(h.log.warn).toHaveBeenCalledWith(
+        "budget.running_turn_observe_failed",
+        expect.objectContaining({ event_type: "heartbeat" })
+      );
+    });
+
+    it("is prompted after a step's cost from the ledger has been counted", async () => {
+      const order: string[] = [];
+      const turnCost = vi.fn(async () => {
+        order.push("ledger");
+        return 0.0099;
+      });
+      const observe = vi.fn(() => order.push("observe"));
+      const h = createProcessor(undefined, undefined, { turnCost }, { observe });
+      h.repository.getMessageById.mockReturnValue({ started_at: 1_000 });
+      h.repository.getProcessingMessage.mockReturnValue({ id: "msg-1" });
+
+      await h.processor.processSandboxEvent({
+        type: "step_finish",
+        messageId: "msg-1",
+        sandboxId: "sb-1",
+        timestamp: 2000,
+        cost: 0.16,
+        messageCostUsd: 0.16,
+      });
+
+      expect(h.budgetService.ingestStepFinish).toHaveBeenCalledWith(
+        expect.objectContaining({ messageCostUsd: 0.0099 }),
+        "msg-1",
+        expect.any(Number)
+      );
+      expect(order).toEqual(["ledger", "observe"]);
     });
   });
 

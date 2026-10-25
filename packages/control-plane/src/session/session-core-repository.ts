@@ -1,5 +1,10 @@
 import { DEFAULT_HARNESS, type HarnessId } from "@open-inspect/shared/harnesses";
-import type { SessionStatus, SpawnSource } from "@open-inspect/shared/types/sessions";
+import {
+  DEFAULT_SESSION_PERMISSION_MODE,
+  type SessionPermissionMode,
+  type SessionStatus,
+  type SpawnSource,
+} from "@open-inspect/shared/types/sessions";
 import { buildSessionRepositories, type SessionRepositoryEntry } from "./repository-target";
 import type { SqlStorage, TransactionSync } from "./sql-storage";
 import {
@@ -34,6 +39,8 @@ export interface UpsertSessionData {
   vncEnabled?: boolean;
   sandboxSettings?: string | null;
   maxCostUsd?: number | null;
+  /** When the agent asks before acting. Absent means DEFAULT_SESSION_PERMISSION_MODE. */
+  permissionMode?: SessionPermissionMode;
   /** Launch environment provenance; null for repo-launched/ad-hoc sessions. */
   environmentId?: string | null;
   createdAt: number;
@@ -86,11 +93,12 @@ export class SessionCoreRepository {
     }
 
     this.sql.exec(
-      // max_cost_usd is seeded on insert but absent from the update clause: once
-      // setSessionBudget has written a live limit, it is working state like
-      // branch_name and total_cost, and a repeated init must not reset it.
-      `INSERT INTO session (id, session_name, title, repo_owner, repo_name, repo_id, base_branch, harness, model, reasoning_effort, status, parent_session_id, spawn_source, spawn_depth, code_server_enabled, vnc_enabled, sandbox_settings, environment_id, max_cost_usd, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      // max_cost_usd and permission_mode are seeded on insert but absent from
+      // the update clause: once setSessionBudget or setPermissionMode has
+      // written a live value, it is working state like branch_name and
+      // total_cost, and a repeated init must not reset it.
+      `INSERT INTO session (id, session_name, title, repo_owner, repo_name, repo_id, base_branch, harness, model, reasoning_effort, status, parent_session_id, spawn_source, spawn_depth, code_server_enabled, vnc_enabled, sandbox_settings, environment_id, max_cost_usd, permission_mode, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (id) DO UPDATE SET
          session_name = excluded.session_name,
          title = excluded.title,
@@ -130,6 +138,7 @@ export class SessionCoreRepository {
       data.sandboxSettings ?? null,
       data.environmentId ?? null,
       data.maxCostUsd ?? null,
+      data.permissionMode ?? DEFAULT_SESSION_PERMISSION_MODE,
       data.createdAt,
       data.updatedAt
     );
@@ -201,6 +210,16 @@ export class SessionCoreRepository {
     if (!parsed.success)
       throw new SessionStorageIntegrityError("Malformed persisted session cost row");
     return parsed.data.total_cost;
+  }
+
+  setPermissionMode(permissionMode: SessionPermissionMode, updatedAt: number): void {
+    this.sql.exec(
+      `UPDATE session
+       SET permission_mode = ?, updated_at = ?
+       WHERE id = (SELECT id FROM session LIMIT 1)`,
+      permissionMode,
+      updatedAt
+    );
   }
 
   setSessionBudget(maxCostUsd: number | null, exhausted: boolean, updatedAt: number): void {

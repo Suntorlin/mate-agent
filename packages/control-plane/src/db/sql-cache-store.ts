@@ -8,7 +8,7 @@
  * when they move off KV.
  *
  * The table is not part of the global store's schema. Nothing on Cloudflare
- * reads or writes it, so it is not in `terraform/d1/migrations`, where every
+ * reads or writes it, so it is not in `deploy/d1/migrations`, where every
  * table lands on D1 as well; the Node host keeps it in a file of its own
  * (`src/node/cache-database.ts`), the way the host alarm index does. A caller
  * that needs this table on D1 adds the migration then.

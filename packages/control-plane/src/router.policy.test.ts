@@ -14,21 +14,178 @@ function routeFor(method: string, path: string) {
   return matchRoute(routes, method, path)?.route;
 }
 
+// A person's own library: theirs in the browser, or through the product acting for them.
+const APP_USER_SELF = { kind: "active-self", actingServices: ["app"] };
+
 describe("route policy table", () => {
   it("publishes the complete canonical route catalog", () => {
-    expect(routes).toHaveLength(193);
+    expect(routes).toHaveLength(154);
 
     const paths = routes.map((route) => route.path);
-    expect(new Set(paths).size).toBe(147);
-    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(193);
+    expect(new Set(paths).size).toBe(131);
+    expect(new Set(routes.map((route) => `${route.method}:${route.path}`)).size).toBe(
+      routes.length
+    );
   });
 
-  it("gates run analytics with analytics.read", () => {
-    const route = routeFor("GET", "/analytics/runs");
+  it("lets the session owner's product or the session's own sandbox report a media generation", () => {
+    const route = routeFor("POST", "/sessions/session-1/media-generations");
+    expect(route?.authentication).toMatchObject({ kind: "user-or-service-with-sandbox-fallback" });
+    expect(route?.authorization).toMatchObject({ kind: "active-user" });
+  });
+
+  it("lets a signed-in user read only their own LLM usage", () => {
+    const route = routeFor("GET", "/me/llm-usage");
+    expect(route?.authentication).toMatchObject({ kind: "user" });
+    expect(route?.authorization).toMatchObject({ kind: "active-self" });
+  });
+
+  it.each([
+    ["GET", "/my-skills"],
+    ["POST", "/my-skills"],
+    ["POST", "/my-skills/import-url"],
+    ["GET", "/my-skills/skill-1"],
+    ["PATCH", "/my-skills/skill-1"],
+    ["DELETE", "/my-skills/skill-1"],
+  ])("keeps personal skills to their signed-in owner: %s %s", (method, path) => {
+    const route = routeFor(method, path);
+    expect(route?.authentication).toMatchObject({ kind: "user-or-service" });
+    expect(route?.authorization).toMatchObject(APP_USER_SELF);
+  });
+
+  it.each([
+    ["GET", "/sessions/session-1", "read"],
+    ["PATCH", "/sessions/session-1/budget", "lifecycle"],
+    ["PATCH", "/sessions/session-1/permission-mode", "lifecycle"],
+    ["POST", "/sessions/session-1/cards/dismiss", "lifecycle"],
+    ["POST", "/sessions/session-1/inputs", "collaborate"],
+    ["POST", "/sessions/session-1/questions/q_1/answer", "collaborate"],
+    ["POST", "/sessions/session-1/archive", "lifecycle"],
+    ["POST", "/sessions/session-1/unarchive", "lifecycle"],
+  ])("opens %s %s to a service acting for a user with %s access", (method, path, action) => {
+    const route = routeFor(method, path);
+    expect(route?.authentication).toMatchObject({ kind: "user-or-service" });
     expect(route?.authorization).toMatchObject({
       kind: "active-user",
-      allOf: [{ permission: "analytics.read" }],
+      allOf: [{ kind: "session", action }],
+      service: { kind: "actor" },
     });
+  });
+
+  it("admits an undo of archive exactly as it admits the archive", () => {
+    // A product archives with an undo toast; the undo must reach the engine
+    // whenever the archive did, and no further.
+    const archive = routeFor("POST", "/sessions/session-1/archive");
+    const unarchive = routeFor("POST", "/sessions/session-1/unarchive");
+    expect(unarchive?.authentication).toEqual(archive?.authentication);
+    expect(unarchive?.authorization).toEqual(archive?.authorization);
+    expect(unarchive?.supportedScmProviders).toEqual(archive?.supportedScmProviders);
+    expect(serviceAllowsPermission("app", "sessions.lifecycle")).toBe(true);
+  });
+
+  it("lets only workspace admins read and change everyone's LLM spend and budgets", () => {
+    for (const path of ["/admin/llm-usage", "/admin/llm-usage/users/user-1"]) {
+      const route = routeFor("GET", path);
+      expect(route?.authentication).toMatchObject({ kind: "user" });
+      expect(route?.authorization).toMatchObject({
+        kind: "active-user",
+        allOf: [{ kind: "permission", permission: "workspace.members.read" }],
+      });
+    }
+    expect(routeFor("PATCH", "/admin/llm-usage/users/user-1")?.authorization).toMatchObject({
+      kind: "active-user",
+      allOf: [{ kind: "permission", permission: "workspace.members.manage" }],
+    });
+  });
+
+  it("lets only the session's own sandbox keep copies of its workspace", () => {
+    for (const path of [
+      "/sessions/session-1/workspace-copies",
+      "/sessions/session-1/workspace-copies/complete",
+    ]) {
+      expect(routeFor("POST", path)?.authentication).toMatchObject({ kind: "sandbox" });
+    }
+  });
+
+  it("lets only the session's own sandbox renew its credentials", () => {
+    for (const path of ["/sessions/session-1/credentials", "/sessions/session-1/app-token"]) {
+      expect(routeFor("POST", path)?.authentication).toMatchObject({ kind: "sandbox" });
+    }
+  });
+
+  it("lets only the session's own sandbox ask the user a question", () => {
+    expect(routeFor("POST", "/sessions/session-1/questions")?.authentication).toMatchObject({
+      kind: "sandbox",
+    });
+  });
+
+  it("lets only the session's own sandbox read its spend", () => {
+    expect(routeFor("GET", "/sessions/session-1/spend")?.authentication).toMatchObject({
+      kind: "sandbox",
+    });
+  });
+
+  it.each([
+    ["GET", "/files"],
+    ["POST", "/files/uploads"],
+    ["POST", "/files/file-1/upload/parts"],
+    ["POST", "/files/file-1/upload/complete"],
+    ["GET", "/files/file-1/url"],
+    ["PATCH", "/files/file-1"],
+    ["DELETE", "/files/file-1"],
+  ])("keeps user files to their signed-in owner: %s %s", (method, path) => {
+    const route = routeFor(method, path);
+    expect(route?.authentication).toMatchObject({ kind: "user-or-service" });
+    expect(route?.authorization).toMatchObject(APP_USER_SELF);
+  });
+
+  it("attaches inputs only with collaborate access to the session", () => {
+    expect(routeFor("POST", "/sessions/session-1/inputs")?.authorization).toMatchObject({
+      kind: "active-user",
+      allOf: [{ kind: "session", action: "collaborate" }],
+    });
+    expect(routeFor("GET", "/sessions/session-1/inputs")?.authorization).toMatchObject({
+      kind: "active-user",
+      allOf: [{ kind: "session", action: "read" }],
+    });
+  });
+
+  it.each([
+    ["GET", "/sessions/session-1/files"],
+    ["GET", "/sessions/session-1/files/file-1/download"],
+    ["GET", "/sessions/session-1/files/file-1/content"],
+    ["POST", "/sessions/session-1/files/uploads"],
+    ["PUT", "/sessions/session-1/files/file-1/upload/parts/3"],
+  ])("serves the sandbox file routes only to the session's sandbox: %s %s", (method, path) => {
+    expect(routeFor(method, path)?.authentication).toMatchObject({ kind: "sandbox" });
+  });
+
+  it.each([
+    ["GET", "/memory"],
+    ["POST", "/memory/entries"],
+    ["PATCH", "/memory/entries/entry-1"],
+    ["DELETE", "/memory/entries/entry-1"],
+    ["POST", "/memory/entries/entry-1/approve"],
+    ["POST", "/memory/entries/entry-1/decline"],
+    ["POST", "/memory/batches/agent:1/undo"],
+    ["POST", "/memory/forget-preview"],
+    ["POST", "/memory/forget"],
+    ["POST", "/memory/clear"],
+    ["GET", "/memory/export"],
+    ["PUT", "/memory/settings"],
+  ])("keeps user memory to its signed-in owner: %s %s", (method, path) => {
+    const route = routeFor(method, path);
+    expect(route?.authentication).toMatchObject({ kind: "user-or-service" });
+    expect(route?.authorization).toMatchObject(APP_USER_SELF);
+  });
+
+  it.each([
+    ["GET", "/sessions/session-1/memory"],
+    ["GET", "/sessions/session-1/memory/context"],
+    ["GET", "/sessions/session-1/memory/search"],
+    ["POST", "/sessions/session-1/memory/ops"],
+  ])("serves mem only to the session's sandbox: %s %s", (method, path) => {
+    expect(routeFor(method, path)?.authentication).toMatchObject({ kind: "sandbox" });
   });
 
   it("gates a single-session export with session read and sessions.export", () => {
@@ -50,7 +207,6 @@ describe("route policy table", () => {
   it.each([
     ["GET", "/sessions/inbox", "/sessions/:id"],
     ["GET", "/sessions/export", "/sessions/:id"],
-    ["GET", "/model-provider-accounts/legacy-credentials", "/model-provider-accounts/:id"],
   ])("orders the static overlap %s %s before %s", (method, staticPath, dynamicPath) => {
     const staticIndex = routes.findIndex(
       (route) => route.method === method && route.path === staticPath
@@ -89,8 +245,13 @@ describe("route policy table", () => {
         expect(["public", "handler-authenticated", "web-service", "sandbox"]).toContain(
           authentication
         );
-      } else if (authorization.kind === "authenticated" || authorization.kind === "active-self") {
+      } else if (authorization.kind === "authenticated") {
         expect(authentication).toBe("user");
+      } else if (authorization.kind === "active-self") {
+        // A person's own account opens to a service only where the route names which.
+        expect(authentication).toBe(
+          authorization.actingServices.length > 0 ? "user-or-service" : "user"
+        );
       } else if (authorization.kind === "service") {
         expect(authentication).toBe("service");
         expect(authorization.services.length).toBeGreaterThan(0);
@@ -101,11 +262,6 @@ describe("route policy table", () => {
           authentication
         );
         expect(authorization.allOf.length).toBeGreaterThan(0);
-        for (const requirement of authorization.allOf) {
-          if (requirement.kind === "automation") {
-            expect(route.path.split("/")).toContain(`:${requirement.automationIdParam}`);
-          }
-        }
         if (authorization.service.kind === "actor") {
           for (const grant of authorization.service.actorlessGrants ?? []) {
             for (const pathParam of Object.keys(grant.pathParams ?? {})) {
@@ -142,21 +298,6 @@ describe("route policy table", () => {
   });
 
   it.each([
-    ["GET", "/repos", [{ service: "slack-bot" }, { service: "linear-bot" }]],
-    ["GET", "/repos/acme/widgets/metadata", [{ service: "github-bot" }]],
-    ["GET", "/environments", [{ service: "slack-bot" }, { service: "linear-bot" }]],
-    ["GET", "/environments/env-1", [{ service: "github-bot" }]],
-    ["GET", "/integration-settings/slack", [{ service: "slack-bot", pathParams: { id: "slack" } }]],
-    [
-      "GET",
-      "/integration-settings/github/resolved/acme/widgets",
-      [
-        { service: "github-bot", pathParams: { id: "github" } },
-        { service: "linear-bot", pathParams: { id: "linear" } },
-      ],
-    ],
-    ["GET", "/integration-settings/slack/watched-channels", [{ service: "slack-bot" }]],
-    ["GET", "/model-preferences", [{ service: "slack-bot" }]],
     ["GET", "/sessions/session-1/events", [{ service: "slack-bot" }, { service: "linear-bot" }]],
     ["GET", "/sessions/session-1/artifacts", [{ service: "slack-bot" }, { service: "linear-bot" }]],
   ])("declares the exact actorless grants for %s %s", (method, path, expected) => {
@@ -172,14 +313,6 @@ describe("route policy table", () => {
 
   it("does not declare actorless grants on other routes", () => {
     const expected = new Set([
-      routeFor("GET", "/repos"),
-      routeFor("GET", "/repos/acme/widgets/metadata"),
-      routeFor("GET", "/environments"),
-      routeFor("GET", "/environments/env-1"),
-      routeFor("GET", "/integration-settings/slack"),
-      routeFor("GET", "/integration-settings/github/resolved/acme/widgets"),
-      routeFor("GET", "/integration-settings/slack/watched-channels"),
-      routeFor("GET", "/model-preferences"),
       routeFor("GET", "/sessions/session-1/events"),
       routeFor("GET", "/sessions/session-1/artifacts"),
       routeFor("POST", "/sessions/session-1/stop"),
@@ -214,18 +347,6 @@ describe("route policy table", () => {
   });
 
   it("keeps contextual route requirements explicit", () => {
-    expect(routeFor("GET", "/keyboard-shortcuts")?.authorization).toEqual({
-      kind: "active-self",
-      auditAllowed: false,
-    });
-    expect(routeFor("PUT", "/keyboard-shortcuts")?.authorization).toEqual({
-      kind: "active-self",
-      auditAllowed: true,
-    });
-    expect(routeFor("GET", "/model-preferences")?.authorization).toMatchObject({
-      kind: "active-global",
-      service: { kind: "actor", actorlessGrants: [{ service: "slack-bot" }] },
-    });
     expect(routeFor("GET", "/sessions")?.authorization).toMatchObject({
       kind: "active-user",
       allOf: [{ kind: "permission", permission: "sessions.read" }],
@@ -235,16 +356,6 @@ describe("route policy table", () => {
       kind: "active-user",
       allOf: [{ kind: "permission", permission: "sessions.read" }],
       service: { kind: "deny" },
-    });
-    expect(routeFor("GET", "/audit-events")).toMatchObject({
-      authentication: { kind: "user" },
-      authorization: {
-        kind: "active-user",
-        allOf: [{ kind: "permission", permission: "workspace.audit.read" }],
-        service: { kind: "deny" },
-        auditAllowed: false,
-      },
-      cacheControl: "private, no-store",
     });
     expect(routeFor("POST", "/sessions/batch-archive")).toMatchObject({
       authentication: { kind: "user" },
@@ -289,16 +400,6 @@ describe("route policy table", () => {
         ],
       }
     );
-    expect(routeFor("POST", "/internal/github-event")?.authorization).toMatchObject({
-      kind: "service",
-      services: ["github-bot"],
-    });
-    expect(routeFor("POST", "/internal/github-event")?.authentication).toEqual({
-      kind: "service",
-    });
-    expect(routeFor("POST", "/internal/slack-event")?.authentication).toEqual({
-      kind: "service",
-    });
   });
 
   it("refuses a malformed percent-encoded role ID before authentication or D1", async () => {
@@ -319,48 +420,9 @@ describe("route policy table", () => {
   });
 
   it.each([
-    ["PUT", "/automations/automation-1", "manage"],
-    ["DELETE", "/automations/automation-1", "manage"],
-    ["POST", "/automations/automation-1/pause", "manage"],
-    ["POST", "/automations/automation-1/resume", "manage"],
-    ["POST", "/automations/automation-1/trigger", "trigger"],
-    ["POST", "/automations/automation-1/regenerate-key", "manage"],
-  ])("declares automation ownership authorization for %s %s", (method, path, operation) => {
-    expect(routeFor(method, path)?.authorization).toMatchObject({
-      kind: "active-user",
-      allOf: [{ kind: "automation", operation, automationIdParam: "id" }],
-      service: { kind: "deny" },
-    });
-  });
-
-  it.each([
     ["GET", "/health", "public"],
-    ["POST", "/webhooks/sentry/automation-1", "handler-authenticated"],
-    ["POST", "/webhooks/automation/automation-1", "handler-authenticated"],
-    ["POST", "/image-builds/build-complete", "handler-authenticated"],
-    ["POST", "/image-builds/build-failed", "handler-authenticated"],
     ["GET", "/api/auth/get-session", "web-service"],
     ["GET", "/internal/auth/sign-in-providers", "web-service"],
-    ["GET", "/model-provider-accounts", "user"],
-    ["POST", "/model-provider-accounts", "user"],
-    ["POST", "/model-provider-accounts/openai/device-authorizations", "user"],
-    [
-      "POST",
-      `/model-provider-accounts/openai/device-authorizations/${"0".repeat(64)}/poll`,
-      "user",
-    ],
-    ["DELETE", `/model-provider-accounts/openai/device-authorizations/${"0".repeat(64)}`, "user"],
-    ["POST", "/model-provider-accounts/anthropic/authorization-codes", "user"],
-    ["GET", `/model-provider-accounts/anthropic/authorization-codes/${"0".repeat(64)}`, "user"],
-    [
-      "POST",
-      `/model-provider-accounts/anthropic/authorization-codes/${"0".repeat(64)}/complete`,
-      "user",
-    ],
-    ["DELETE", `/model-provider-accounts/anthropic/authorization-codes/${"0".repeat(64)}`, "user"],
-    ["GET", "/model-provider-accounts/legacy-credentials", "user"],
-    ["GET", "/model-provider-account-defaults", "user"],
-    ["PUT", "/model-provider-account-defaults/openai", "user"],
   ])("owns the auth policy for %s %s", (method, path, expectedKind) => {
     expect(routeFor(method, path)?.authentication.kind).toBe(expectedKind);
   });
@@ -369,6 +431,9 @@ describe("route policy table", () => {
     ["POST", "/sessions/session-1/pr"],
     ["GET", "/sessions/session-1/tunnel-urls"],
     ["POST", "/sessions/session-1/media"],
+    ["POST", "/sessions/session-1/uploads"],
+    ["POST", "/sessions/session-1/uploads/artifact-1/complete"],
+    ["POST", "/sessions/session-1/uploads/artifact-1/abort"],
     ["GET", "/sessions/session-1/attachments/attachment-1"],
     ["GET", "/sessions/session-1/children"],
     ["POST", "/sessions/session-1/children"],
@@ -407,7 +472,6 @@ describe("route policy table", () => {
   });
 
   it.each([
-    ["GET", "/sessions/session-1"],
     ["GET", "/sessions/inbox"],
     ["POST", "/sessions/batch-archive"],
     ["GET", "/sessions/session-1/sandbox-access"],
@@ -439,14 +503,7 @@ describe("route policy table", () => {
     );
   });
 
-  it("marks management and broker routes as non-cacheable", () => {
-    expect(routeFor("GET", "/model-provider-accounts")?.cacheControl).toBe("private, no-store");
-    expect(
-      routeFor("POST", "/model-provider-accounts/openai/device-authorizations")?.cacheControl
-    ).toBe("private, no-store");
-    expect(
-      routeFor("POST", "/model-provider-accounts/anthropic/authorization-codes")?.cacheControl
-    ).toBe("private, no-store");
+  it("marks broker routes as non-cacheable", () => {
     expect(
       routeFor("POST", "/sessions/session-1/provider-auth/openai/access-token")?.cacheControl
     ).toBe("no-store");
@@ -457,9 +514,6 @@ describe("route policy table", () => {
   });
 
   it.each([
-    ["GET", "/scm-settings"],
-    ["GET", "/analytics/summary"],
-    ["GET", "/analytics/dashboard"],
     ["GET", "/skills"],
     ["GET", "/skill-profiles"],
     ["GET", "/sessions/session-1"],
@@ -525,7 +579,7 @@ describe("route policy dispatch ordering", () => {
 
   it("authenticates before rejecting an unsupported provider", async () => {
     const response = await handleRequest(
-      new Request("https://test.local/repos"),
+      new Request("https://test.local/sessions"),
       env("gitlab") as never,
       TEST_BACKGROUND_TASK_CONTEXT
     );

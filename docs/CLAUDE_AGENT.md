@@ -1,9 +1,9 @@
 # Using the Claude Agent Harness with a Claude Subscription
 
-Open-Inspect can run a session on one of two agent harnesses. **OpenCode** is the built-in harness
-and runs every model in the catalog. **Claude Agent** runs Anthropic models through the Claude Agent
-SDK inside the sandbox, and it is the harness that can use a connected Claude subscription instead
-of an API key.
+The engine can run a session on one of two agent harnesses. **Claude Agent**, the default, runs
+Anthropic models through the Claude Agent SDK inside the sandbox, and it is the harness that can use
+a connected Claude subscription instead of an API key. **OpenCode** runs every model in the catalog,
+and is the one OpenAI, xAI and the other non-Anthropic models need.
 
 This deployment uses a connected Claude account as first-party use of the deployment owner's own
 subscription by the owner's own authorised users. The platform holds the credential; users never
@@ -18,12 +18,13 @@ sign in inside a sandbox.
 
 Every session runs on exactly one harness, chosen when the session is created and fixed for its
 lifetime (like the base branch). Child sessions inherit their parent's harness. Automations carry a
-harness for the sessions they create. Bots and integrations create OpenCode sessions.
+harness for the sessions they create. A create request that names no harness (bots, integrations,
+API callers) gets the deployment's `DEFAULT_SESSION_HARNESS`, else Claude Agent.
 
-| Harness          | Models                | Anthropic authentication                   | Notes                                 |
-| ---------------- | --------------------- | ------------------------------------------ | ------------------------------------- |
-| **OpenCode**     | Every catalog model   | `ANTHROPIC_API_KEY` only                   | Built-in; the default                 |
-| **Claude Agent** | Anthropic models only | `ANTHROPIC_API_KEY` or a connected account | Reads repository `CLAUDE.md` natively |
+| Harness          | Models                | Anthropic authentication                   | Notes                           |
+| ---------------- | --------------------- | ------------------------------------------ | ------------------------------- |
+| **OpenCode**     | Every catalog model   | `ANTHROPIC_API_KEY` only                   | Runs OpenAI, xAI and the others |
+| **Claude Agent** | Anthropic models only | `ANTHROPIC_API_KEY` or a connected account | The default; reads `CLAUDE.md`  |
 
 The composer shows a harness menu beside the model picker; the model list is filtered to what the
 chosen harness can run. A per-message model override that the session's harness cannot run is

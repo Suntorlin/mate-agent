@@ -6,6 +6,10 @@ the durable OAuth refresh token and gives each sandbox only a short-lived access
 > **Note**: SuperGrok availability and model entitlement are controlled by xAI. Confirm that the
 > account you authenticate can use the selected model before rolling it out broadly.
 
+xAI models run on the OpenCode harness: create the session with `"harness": "opencode"`, or set
+`DEFAULT_SESSION_HARNESS=opencode` for callers that name no harness. The default Claude Agent
+harness runs Anthropic models only.
+
 ---
 
 ## Supported Models

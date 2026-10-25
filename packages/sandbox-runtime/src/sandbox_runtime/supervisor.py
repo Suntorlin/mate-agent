@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -20,6 +21,12 @@ from .docker_control import DockerControl
 from .harness.base import DETERMINISTIC_FAILURE_EXIT_CODE
 from .repo_image_callback import RepoImageBuildCallback
 from .runtime_config import BootMode, RuntimeConfig
+from .workspace_copy import (
+    WORKSPACE_RESTORE_URL_ENV_VAR,
+    default_roots,
+    restore_from_url,
+    restore_url_from_env,
+)
 
 if TYPE_CHECKING:
     import signal
@@ -641,6 +648,55 @@ class SandboxSupervisor:
         with self.boot_events.phase_scope("harness"):
             await self.harness_process.start(boot_result.repositories, boot_result.workdir)
 
+        self._maybe_start_workflow(boot_result.workdir)
+
+    def _maybe_start_workflow(self, workdir: Path) -> None:
+        """A dispatched workflow run executes beside the idle harness.
+
+        The control plane answers 404 for ordinary sessions, so this is one
+        cheap request per boot. The thread outlives boot cancellation; the
+        sandbox's own shutdown is what ends an abandoned run.
+        """
+        if self.managed_skills is None:
+            return
+        skills = self.config.managed_skills_config()
+        if not skills.control_plane_url or not skills.session_id or not skills.sandbox_token:
+            return
+        from .workflow_executor import WorkflowExecutor
+
+        executor = WorkflowExecutor(
+            skills.control_plane_url,
+            skills.session_id,
+            skills.sandbox_token,
+            self.config.sandbox_id,
+            self.managed_skills.destination,
+            workdir,
+            self.log,
+        )
+
+        async def run_in_thread() -> None:
+            try:
+                await asyncio.to_thread(executor.run_pending)
+            except Exception as error:
+                self.log.warn("workflow.executor_failed", exc=error)
+
+        self._workflow_task = asyncio.create_task(run_in_thread())
+
+    async def _restore_workspace_copy(self) -> None:
+        """Unpack the session's saved project files into a fresh sandbox, when asked to.
+
+        Set only when the saved sandbox's snapshot was gone and this sandbox
+        replaces it; runs before the harness starts, so the agent resumes its
+        conversation over its own files. A failure leaves an empty workspace,
+        which is what the sandbox would have had without the copy.
+        """
+        url = restore_url_from_env()
+        if url is None or self.boot_mode is not BootMode.FRESH:
+            return
+        os.environ.pop(WORKSPACE_RESTORE_URL_ENV_VAR, None)
+        session_id_file = Path(tempfile.gettempdir()) / "agent-session-id"
+        await restore_from_url(url, default_roots(session_id_file), self.log)
+
     async def run(self, repo_image_callback: RepoImageBuildCallback | None = None) -> bool:
         startup_start = time.time()
         self.boot_mode = BootMode.from_env(os.environ)
@@ -709,6 +765,8 @@ class SandboxSupervisor:
                 # for as long as the boot runs.
                 await self.agent_bridge.start(early_connect=True)
                 self._bridge_watch_task = asyncio.create_task(self._watch_bridge_during_boot())
+
+            await self._restore_workspace_copy()
 
             if self.config.docker_enabled:
                 # Docker before the desktop and the repository boot: setup and

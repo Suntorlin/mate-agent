@@ -9,19 +9,17 @@
 
 import { computeHmacHex } from "@open-inspect/shared/auth";
 import {
-  automationCallbackContextSchema,
   linearCompletionCallbackPayloadSchema,
   linearToolCallCallbackPayloadSchema,
   SLACK_ACTIVITY_REFRESH_KIND,
 } from "@open-inspect/shared/types/session-api";
 import { callbackSigningSecret, type CallbackDestination } from "../auth/service/callback-signing";
 import type { Logger } from "../logger";
-import { deliverWithRetry, retryDelivery } from "./callback-delivery";
+import { deliverWithRetry } from "./callback-delivery";
 import { notifyLinearStarted } from "./linear-start-callback";
 import type { SessionRow } from "./types";
 import type { MessageRepository } from "./message-repository";
 import type { FetchClient } from "../platform-ports";
-import type { AutomationRunCompletion } from "../scheduler/scheduler";
 
 /**
  * Narrow repository interface — only the methods CallbackNotificationService needs.
@@ -43,8 +41,6 @@ export interface CallbackServiceEnv {
   LINEAR_BOT?: FetchClient;
 }
 
-export type AutomationRunCompletionHandler = (completion: AutomationRunCompletion) => Promise<void>;
-
 /**
  * Dependencies injected into CallbackNotificationService.
  */
@@ -54,7 +50,6 @@ export interface CallbackServiceDeps {
   env: CallbackServiceEnv;
   log: Logger;
   getSessionId: () => string;
-  completeAutomationRun?: AutomationRunCompletionHandler;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -66,10 +61,6 @@ export interface CallbackServiceDeps {
  */
 const NOTIFIED_CALL_IDS_CAP = 500;
 const EMPTY_TOOL_ARGS: Record<string, unknown> = {};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 /**
  * How stale a Slack assistant-thread activity indicator may get before the
@@ -110,7 +101,6 @@ export class CallbackNotificationService {
   private readonly log: Logger;
   private readonly getSessionId: () => string;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly completeAutomationRun: AutomationRunCompletionHandler | undefined;
   private _lastToolCallCallbackTs = 0;
   /**
    * When Slack's activity indicator was last (re)asserted for this session, by
@@ -127,7 +117,6 @@ export class CallbackNotificationService {
     this.env = deps.env;
     this.log = deps.log;
     this.getSessionId = deps.getSessionId;
-    this.completeAutomationRun = deps.completeAutomationRun;
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
@@ -147,10 +136,9 @@ export class CallbackNotificationService {
   }
 
   /**
-   * Where a non-automation callback goes and which key signs it — one
+   * Where a callback goes and which key signs it — one
    * decision, so destination and signing key cannot diverge (the CP signs
-   * with the DESTINATION bot's secret). Automation callbacks
-   * are routed to the automation scheduler before this is consulted. Non-linear
+   * with the DESTINATION bot's secret). Non-linear
    * sources default to the slack bot for backward compatibility (web
    * sources, etc.).
    */
@@ -230,26 +218,7 @@ export class CallbackNotificationService {
       }
 
       const rawContext: unknown = JSON.parse(message.callback_context);
-      source =
-        isRecord(rawContext) && rawContext.source === "automation"
-          ? "automation"
-          : (message.source ?? null);
-
-      // Route automation callbacks to the scheduler's completion function.
-      if (source === "automation") {
-        const automationContext = automationCallbackContextSchema.safeParse(rawContext);
-        if (!automationContext.success) {
-          result.rejectReason = "invalid_callback_context";
-          return;
-        }
-        result = await this.notifyAutomationComplete(
-          automationContext.data,
-          success,
-          error,
-          messageId
-        );
-        return;
-      }
+      source = message.source ?? null;
 
       const { binding, secret } = this.resolveCallbackRoute(source);
       if (!secret) {
@@ -333,61 +302,6 @@ export class CallbackNotificationService {
       if (outcome === "error") this.log.error("callback.complete_delivery", fields);
       else this.log.info("callback.complete_delivery", fields);
     }
-  }
-
-  /**
-   * Notify the automation scheduler of run completion.
-   */
-  private async notifyAutomationComplete(
-    context: { automationId: string; runId: string; automationName: string },
-    success: boolean,
-    error: string | undefined,
-    messageId: string
-  ): Promise<CallbackDeliveryResult> {
-    const completeAutomationRun = this.completeAutomationRun;
-    if (!completeAutomationRun) {
-      return { delivered: false, attempts: 0, rejectReason: "no_binding" };
-    }
-
-    const payload = {
-      automationId: context.automationId,
-      runId: context.runId,
-      sessionId: this.getSessionId(),
-      // The message whose agent response the bot fetches to post the run result.
-      messageId,
-      success,
-      error,
-      automationName: context.automationName,
-    };
-
-    const delivery = await retryDelivery<void, never>(
-      async () => ({
-        outcome: "delivered",
-        value: await completeAutomationRun(payload),
-      }),
-      this.sleep,
-      ({ attempt, error: deliveryError }) => {
-        this.log.warn("callback.complete_delivery_attempt_failed", {
-          message_id: messageId,
-          session_id: this.getSessionId(),
-          source: "automation",
-          automation_id: context.automationId,
-          run_id: context.runId,
-          attempt,
-          ...(deliveryError !== undefined
-            ? { error: deliveryError instanceof Error ? deliveryError : String(deliveryError) }
-            : {}),
-        });
-      },
-      // D1 operations do not accept AbortSignals. A fake timeout would retry
-      // while the first in-process completion can still be running.
-      { attemptTimeoutMs: null }
-    );
-
-    return {
-      delivered: delivery.outcome === "delivered",
-      attempts: delivery.attempts,
-    };
   }
 
   /**
@@ -544,19 +458,6 @@ export class CallbackNotificationService {
       return;
     }
     const source = message.source ?? null;
-
-    // Automation runs have no tool-call progress consumer. Skip rather than
-    // spam best-effort bot callbacks.
-    if (source === "automation") {
-      this.log.debug("callback.tool_call", {
-        message_id: messageId,
-        source,
-        tool,
-        outcome: "skipped",
-        skip_reason: "automation_no_consumer",
-      });
-      return;
-    }
 
     const { binding, secret } = this.resolveCallbackRoute(source);
     if (!secret) {

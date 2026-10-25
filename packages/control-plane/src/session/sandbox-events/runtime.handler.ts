@@ -39,7 +39,10 @@ export class SandboxRuntimeEventHandler {
     private readonly refreshSlackActivity: (messageId: string, timestamp: number) => void,
     private readonly scheduleInactivityCheck: () => Promise<void>,
     private readonly backgroundTasks: BackgroundTasks,
-    private readonly messageQueue: Pick<SessionMessageQueue, "processMessageQueue">,
+    private readonly messageQueue: Pick<
+      SessionMessageQueue,
+      "processMessageQueue" | "reconcileProcessingMessage"
+    >,
     private readonly log: Logger,
     private readonly lifecycle: SandboxReadiness
   ) {}
@@ -58,8 +61,13 @@ export class SandboxRuntimeEventHandler {
     }
   }
 
+  /**
+   * The runtime's title (the vendor's own, or the name the agent gave the
+   * project) lands on an unnamed session: one with no title, or with only the
+   * fallback taken from a prompt. A title the user typed stays.
+   */
   handleSessionTitle(event: Extract<SandboxEvent, { type: "session_title" }>): void {
-    this.applySessionTitleUpdate(event.title, { onlyIfUnset: true });
+    this.applySessionTitleUpdate(event.title, { onlyIfUnset: true, replaceFallback: true });
   }
 
   async handleReady(
@@ -86,11 +94,16 @@ export class SandboxRuntimeEventHandler {
 
     // No await between the authorized event and the lifecycle-owned commit.
     // Repeated, fenced or retired readiness must not wake the prompt queue.
-    if (
-      !this.lifecycle.onRuntimeReady(context.now, event.harness, event.preservationProtocolVersion)
-    ) {
-      return;
-    }
+    const becameReady = this.lifecycle.onRuntimeReady(
+      context.now,
+      event.harness,
+      event.preservationProtocolVersion
+    );
+    // A bridge resends `ready` on every reconnect, including the first
+    // connection of a bridge process that restarted mid-turn: ask it about
+    // the turn in flight even when the row was ready already.
+    this.messageQueue.reconcileProcessingMessage();
+    if (!becameReady) return;
     this.backgroundTasks.submit(() => this.messageQueue.processMessageQueue(), {
       name: "message_queue.process",
     });

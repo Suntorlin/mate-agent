@@ -1,0 +1,15 @@
+# gitleaks settings for scripts/check-public-safety.ts and the Public safety workflow.
+# The default rules, minus the test fixtures and HyperFrames' public telemetry key.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake keys in tests, and a public key in a vendored skill"
+paths = [
+  '''(^|/)(test|tests|test-fixtures|__fixtures__)/''',
+  '''\.test\.[cm]?[jt]sx?$''',
+  '''(^|/)test_[^/]*\.py$''',
+  '''_test\.py$''',
+  '''(^|/)vitest(\.[a-z]+)?\.config\.ts$''',
+  '''^skills/builtin/media-use/scripts/lib/telemetry\.mjs$''',
+]

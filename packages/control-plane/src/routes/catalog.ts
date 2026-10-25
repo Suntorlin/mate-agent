@@ -6,32 +6,24 @@
  */
 
 import type { RouteModule } from "../routing/hono-env";
-import { webhookRoutes } from "../webhooks";
-import { analyticsRoutes } from "./analytics";
-import { auditEventRoutes } from "./audit-events";
-import { autofixRoutes } from "./autofix";
-import { automationRoutes } from "./automations";
 import { browserAuthRoutes } from "./browser-auth";
 import { commitSigningRoutes } from "./commit-signing";
-import { environmentSecretsRoutes } from "./environment-secrets";
-import { environmentRoutes } from "./environments";
+import { spendRoutes } from "./spend";
+import { sessionCredentialRoutes } from "./session-credentials";
+import { userFileRoutes } from "./files";
+import { userMemoryRoutes } from "./memory";
+import { llmAdminRoutes } from "./llm-admin";
+import { llmUsageRoutes } from "./llm-usage";
 import { healthRoutes } from "./health";
-import { imageBuildRoutes } from "./image-builds";
-import { integrationSettingsRoutes } from "./integration-settings";
-import { keyboardShortcutRoutes } from "./keyboard-shortcuts";
-import { mcpServerRoutes } from "./mcp-servers";
-import { modelPreferencesRoutes } from "./model-preferences";
+import { personalSkillRoutes } from "./personal-skills";
+import { workflowRoutes } from "./workflows";
 import { modelProviderAccountRoutes } from "./model-provider-accounts";
 import { providerRuntimeCredentialRoutes } from "./provider-runtime-credentials";
 import { rbacRoutes } from "./rbac";
-import { reposRoutes } from "./repos";
-import { scmSettingsRoutes } from "./scm-settings";
-import { secretsRoutes } from "./secrets";
 import { sessionRoutes } from "./sessions";
 import { slackNotifyRoutes } from "./slack-notify";
 import { signInProviderRoutes } from "./sign-in-providers";
 import { skillRoutes } from "./skills";
-import { teamRoutes } from "./teams";
 
 /** Registration order is the precedence order: each module is mounted where it appears. */
 export const catalog: readonly RouteModule[] = [
@@ -40,66 +32,37 @@ export const catalog: readonly RouteModule[] = [
   browserAuthRoutes,
   signInProviderRoutes,
 
-  teamRoutes,
-
   // Session management, then the agent-initiated Slack notification
   sessionRoutes,
   slackNotifyRoutes,
-
-  // Repository management
-  reposRoutes,
-
-  // Secrets
-  secretsRoutes,
-
-  // Environments (Phase-2 session target; internal-HMAC only, web BFF proxied)
-  environmentRoutes,
-  environmentSecretsRoutes,
-
-  // Image builds (scope-generic)
-  imageBuildRoutes,
-
-  // Model preferences
-  modelPreferencesRoutes,
 
   // Subscription provider account management and sandbox access broker
   modelProviderAccountRoutes,
   // Delivery of stored provider secrets to sandboxes (Anthropic)
   providerRuntimeCredentialRoutes,
+  // Fresh gateway and product credentials for a session's sandbox
+  sessionCredentialRoutes,
+  // What a session's sandbox may spend (permission mode and budget)
+  spendRoutes,
+  // User files: uploads, the library and session inputs
+  userFileRoutes,
+  // User memory: the owner's memory routes and the sandbox's `mem`
+  userMemoryRoutes,
+  // The signed-in user's LLM spend against their gateway budget
+  llmUsageRoutes,
+  // Workspace admins' view of every user's LLM spend, budgets and blocks
+  llmAdminRoutes,
 
-  // Integration settings
-  integrationSettingsRoutes,
-
-  // Deployment-wide commit signing identity
+  // Deployment-wide commit signing identity, brokered to sandboxes
   commitSigningRoutes,
-
-  // SCM (source-control) settings
-  scmSettingsRoutes,
-
-  // Automations
-  automationRoutes,
-
-  // MCP servers
-  mcpServerRoutes,
-
-  // Analytics
-  analyticsRoutes,
-
-  // Workspace audit log
-  auditEventRoutes,
-
-  // Pull request feedback Autofix activity
-  autofixRoutes,
 
   // Installation-wide managed skills and personal profiles
   skillRoutes,
-
-  // Personal keyboard shortcuts
-  keyboardShortcutRoutes,
+  // Each user's own skills and on/off switches
+  personalSkillRoutes,
+  // Each user's saved script workflows and their runs
+  workflowRoutes,
 
   // Workspace roles, members, and current-user authorization
   rbacRoutes,
-
-  // Webhooks (public routes — auth handled per-route)
-  webhookRoutes,
 ];

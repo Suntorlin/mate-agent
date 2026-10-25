@@ -27,6 +27,8 @@ import {
   signalUntilDeadline,
   type CreateSandboxConfig,
   type CreateSandboxResult,
+  type ExtendLifetimeConfig,
+  type ExtendLifetimeResult,
   type ImageBuildProviderTriggerConfig,
   type RestoreConfig,
   type RestoreResult,
@@ -46,7 +48,7 @@ import type {
   VercelVcpus,
 } from "./client";
 import { VercelSandboxApiError } from "./client";
-import { DEFAULT_VERCEL_RUNTIME, VERCEL_PYTHON_BIN, VERCEL_SANDBOX_VERSION } from "./bootstrap";
+import { DEFAULT_VERCEL_IMAGE, VERCEL_PYTHON_BIN, VERCEL_SANDBOX_VERSION } from "./bootstrap";
 
 const log = createLogger("vercel-provider");
 
@@ -57,29 +59,44 @@ const TUNNEL_ENV_FILE_PATH = "/workspace/.tunnels.env";
 const TUNNEL_ENV_SANDBOX_ID_KEY = "TUNNEL_SANDBOX_ID";
 const EXPECTED_TUNNEL_PORTS_ENV_VAR = "EXPECTED_TUNNEL_PORTS";
 const DEFAULT_SNAPSHOT_EXPIRATION_MS = 0;
+// Hobby's session ceiling, the default when VercelProviderConfig.maxSessionTimeoutMs is unset.
 // Exported for the stale-threshold ceiling assertion in image-builds/maintenance.test.ts.
 export const VERCEL_MAX_SANDBOX_TIMEOUT_MS = 45 * 60 * 1000;
 const VERCEL_MEMORY_MIB_PER_VCPU = 2048;
 const VERCEL_SUPPORTED_VCPUS: readonly VercelVcpus[] = [1, 2, 4, 8];
 const VERCEL_MAX_VCPUS = VERCEL_SUPPORTED_VCPUS[VERCEL_SUPPORTED_VCPUS.length - 1];
 const VERCEL_TUNNEL_ENV_WRITE_TIMEOUT_MS = 30_000;
+/** Source session states after a successful snapshot: stopped, or on its way there. */
+const VERCEL_SNAPSHOT_SOURCE_STATUSES = new Set(["snapshotting", "stopping", "stopped"]);
+/** The managed image ships node in /usr/local/bin. */
+const VERCEL_RUNTIME_PATH = "/root/.bun/bin:/usr/local/bin:/usr/bin:/bin";
 
-function resolveVercelTimeoutMs(timeoutSeconds?: number): number {
+function resolveVercelTimeoutMs(timeoutSeconds: number | undefined, maxTimeoutMs: number): number {
   const requestedMs = (timeoutSeconds ?? DEFAULT_SANDBOX_TIMEOUT_SECONDS) * 1000;
-  return Math.min(requestedMs, VERCEL_MAX_SANDBOX_TIMEOUT_MS);
+  return Math.min(requestedMs, maxTimeoutMs);
 }
 
 export interface VercelProviderConfig {
   scmProvider: SourceControlProviderName;
   baseSnapshotId?: string;
   baseSnapshotName?: string;
-  runtime?: string;
+  /** Managed image the base snapshot was built on; defaults to DEFAULT_VERCEL_IMAGE. */
+  image?: string;
+  /** vCPUs for sessions whose settings request none; unset leaves Vercel's default (2). */
+  defaultVcpus?: number;
   snapshotExpirationMs?: number;
+  /** Plan's maximum session duration (Pro and Enterprise allow 24 h). Defaults to VERCEL_MAX_SANDBOX_TIMEOUT_MS. */
+  maxSessionTimeoutMs?: number;
   /** Secret used for domain-separated sandbox access password derivation. */
   sandboxAccessPasswordSecret: string;
   apiBaseUrl?: string;
   token: string;
   teamId?: string;
+}
+
+/** Vercel answers a create from a snapshot that expired or was deleted with 404 (or 410). */
+function isSnapshotGone(error: unknown): boolean {
+  return error instanceof VercelSandboxApiError && (error.status === 404 || error.status === 410);
 }
 
 export class VercelSandboxProvider implements SandboxProvider {
@@ -100,9 +117,13 @@ export class VercelSandboxProvider implements SandboxProvider {
     private readonly providerConfig: VercelProviderConfig
   ) {}
 
+  private get maxSessionTimeoutMs(): number {
+    return this.providerConfig.maxSessionTimeoutMs ?? VERCEL_MAX_SANDBOX_TIMEOUT_MS;
+  }
+
   async createSandbox(config: CreateSandboxConfig): Promise<CreateSandboxResult> {
     try {
-      const timeoutMs = resolveVercelTimeoutMs(config.timeoutSeconds);
+      const timeoutMs = resolveVercelTimeoutMs(config.timeoutSeconds, this.maxSessionTimeoutMs);
       const portPlan = resolveSandboxPortPlan(
         {
           codeServer: config.codeServerEnabled === true,
@@ -132,9 +153,12 @@ export class VercelSandboxProvider implements SandboxProvider {
         created = await this.client.createSandbox(
           {
             name: config.sandboxId,
-            runtime: this.providerConfig.runtime || DEFAULT_VERCEL_RUNTIME,
+            image: this.providerConfig.image || DEFAULT_VERCEL_IMAGE,
             timeoutMs,
-            resources: resolveVercelResources(config.sandboxSettings),
+            resources: resolveVercelResources(
+              config.sandboxSettings,
+              this.providerConfig.defaultVcpus
+            ),
             ports: portPlan.allExposedPorts,
             env,
             tags: this.buildTags(config),
@@ -187,7 +211,7 @@ export class VercelSandboxProvider implements SandboxProvider {
 
   async restoreFromSnapshot(config: RestoreConfig): Promise<RestoreResult> {
     try {
-      const timeoutMs = resolveVercelTimeoutMs(config.timeoutSeconds);
+      const timeoutMs = resolveVercelTimeoutMs(config.timeoutSeconds, this.maxSessionTimeoutMs);
       const portPlan = resolveSandboxPortPlan(
         {
           codeServer: config.codeServerEnabled === true,
@@ -202,19 +226,35 @@ export class VercelSandboxProvider implements SandboxProvider {
         portPlan
       );
 
-      const created = await this.client.createSandbox(
-        {
-          name: config.sandboxId,
-          runtime: this.providerConfig.runtime || DEFAULT_VERCEL_RUNTIME,
-          timeoutMs,
-          resources: resolveVercelResources(config.sandboxSettings),
-          ports: portPlan.allExposedPorts,
-          env,
-          tags: this.buildTags(config),
-          sourceSnapshotId: config.snapshotImageId,
-        },
-        config.correlation
-      );
+      let created: VercelCreateSandboxResponse;
+      try {
+        created = await this.client.createSandbox(
+          {
+            name: config.sandboxId,
+            image: this.providerConfig.image || DEFAULT_VERCEL_IMAGE,
+            timeoutMs,
+            resources: resolveVercelResources(
+              config.sandboxSettings,
+              this.providerConfig.defaultVcpus
+            ),
+            ports: portPlan.allExposedPorts,
+            env,
+            tags: this.buildTags(config),
+            sourceSnapshotId: config.snapshotImageId,
+          },
+          config.correlation
+        );
+      } catch (error) {
+        if (!isSnapshotGone(error)) throw error;
+        if (!config.workspaceCopyUrl) {
+          throw new SandboxProviderError(
+            "The saved sandbox snapshot no longer exists and the session has no workspace copy",
+            "permanent",
+            error instanceof Error ? error : undefined
+          );
+        }
+        return await this.rebuildFromWorkspaceCopy(config, config.workspaceCopyUrl);
+      }
 
       const access = await this.prepareSandboxAccess(
         created,
@@ -227,6 +267,7 @@ export class VercelSandboxProvider implements SandboxProvider {
 
       return {
         success: true,
+        restoredFrom: "snapshot",
         sandboxId: config.sandboxId,
         providerObjectId: created.session.id,
         lifetime: {
@@ -245,6 +286,25 @@ export class VercelSandboxProvider implements SandboxProvider {
       if (error instanceof SandboxProviderError) throw error;
       throw this.classifyError("Failed to restore Vercel sandbox from snapshot", error);
     }
+  }
+
+  /**
+   * The snapshot is gone (expired or deleted): start a fresh sandbox from the
+   * base image under the same identity, and have it unpack the session's
+   * newest workspace copy before the agent starts.
+   */
+  private async rebuildFromWorkspaceCopy(
+    config: RestoreConfig,
+    workspaceCopyUrl: string
+  ): Promise<RestoreResult> {
+    const { snapshotImageId: _snapshot, ...fresh } = config;
+    const created = await this.createSandbox({
+      ...fresh,
+      prebuiltImageId: null,
+      prebuiltImageSha: null,
+      workspaceCopyUrl,
+    });
+    return { ...created, success: true, restoredFrom: "workspace_copy" };
   }
 
   async takeSnapshot(config: SnapshotConfig): Promise<SnapshotResult> {
@@ -266,17 +326,67 @@ export class VercelSandboxProvider implements SandboxProvider {
         };
       }
 
-      if (snapshot.session.status !== "stopped") {
+      // Vercel answers while the source is still "snapshotting" and stops it a few seconds later;
+      // the snapshot is already usable, and the caller stops a source not reported stopped.
+      const sourceStatus = snapshot.session.status;
+      if (!VERCEL_SNAPSHOT_SOURCE_STATUSES.has(sourceStatus)) {
         return {
           success: false,
-          error: `Source session status was ${snapshot.session.status} after snapshot`,
+          error: `Source session status was ${sourceStatus} after snapshot`,
         };
       }
 
-      return { success: true, imageId: snapshot.snapshot.id, sourceStopped: true };
+      return {
+        success: true,
+        imageId: snapshot.snapshot.id,
+        sourceStopped: sourceStatus === "stopped",
+      };
     } catch (error) {
       if (error instanceof SandboxProviderError) throw error;
       throw this.classifyError("Failed to snapshot Vercel sandbox", error);
+    }
+  }
+
+  /**
+   * Add up to `extensionMs` to the running session's timeout, never past the
+   * plan's maximum session duration (`maxSessionTimeoutMs`, measured like the
+   * timeout from the session's `createdAt`).
+   */
+  async extendSandboxLifetime(config: ExtendLifetimeConfig): Promise<ExtendLifetimeResult> {
+    try {
+      const session = await this.client.getSession(config.providerObjectId, config.correlation);
+      if (session.status !== "running") {
+        throw new SandboxProviderError(
+          `Vercel session is ${session.status}, so its lifetime cannot be extended`,
+          "permanent"
+        );
+      }
+      const ceilingAtMs = session.createdAt + this.maxSessionTimeoutMs;
+      const durationMs = Math.min(
+        config.extensionMs,
+        ceilingAtMs - (session.createdAt + session.timeout)
+      );
+      const extended =
+        durationMs > 0
+          ? await this.client.extendSessionTimeout(
+              config.providerObjectId,
+              durationMs,
+              config.correlation
+            )
+          : session;
+      const expiresAtMs = extended.createdAt + extended.timeout;
+      return {
+        lifetime: {
+          kind: "finite",
+          expiresAtMs,
+          observedAtMs: Date.now(),
+          source: "provider",
+        },
+        atCeiling: expiresAtMs >= ceilingAtMs,
+      };
+    } catch (error) {
+      if (error instanceof SandboxProviderError) throw error;
+      throw this.classifyError("Failed to extend Vercel sandbox lifetime", error);
     }
   }
 
@@ -318,8 +428,11 @@ export class VercelSandboxProvider implements SandboxProvider {
       const created = await this.client.createSandbox(
         {
           name: sandboxName,
-          runtime: this.providerConfig.runtime || DEFAULT_VERCEL_RUNTIME,
-          timeoutMs: resolveVercelTimeoutMs(config.providerSessionTimeoutSeconds),
+          image: this.providerConfig.image || DEFAULT_VERCEL_IMAGE,
+          timeoutMs: resolveVercelTimeoutMs(
+            config.providerSessionTimeoutSeconds,
+            this.maxSessionTimeoutMs
+          ),
           env,
           tags: identity.labels,
           sourceSnapshotId: baseSnapshotId,
@@ -427,7 +540,7 @@ export class VercelSandboxProvider implements SandboxProvider {
       SANDBOX_VERSION: VERCEL_SANDBOX_VERSION,
       HOME: "/root",
       NODE_ENV: "development",
-      PATH: buildVercelRuntimePath(this.providerConfig.runtime),
+      PATH: VERCEL_RUNTIME_PATH,
       PYTHONPATH: "/app",
       PYTHONUNBUFFERED: "1",
       NODE_PATH: "/usr/lib/node_modules:/usr/local/lib/node_modules",
@@ -628,10 +741,12 @@ export class VercelSandboxProvider implements SandboxProvider {
 }
 
 function resolveVercelResources(
-  sandboxSettings: SandboxSettings | undefined
+  sandboxSettings: SandboxSettings | undefined,
+  defaultVcpus?: number
 ): { vcpus: VercelVcpus } | undefined {
-  const requestedCpuCores = sandboxSettings?.cpuCores ?? undefined;
   const requestedMemoryMib = sandboxSettings?.memoryMib ?? undefined;
+  const requestedCpuCores =
+    sandboxSettings?.cpuCores ?? (requestedMemoryMib === undefined ? defaultVcpus : undefined);
   const vcpusForMemory =
     requestedMemoryMib === undefined
       ? undefined
@@ -653,11 +768,6 @@ function routeToUrl(route: VercelSandboxRoute | undefined): string | undefined {
   if (!route) return undefined;
   if (route.url) return route.url.startsWith("http") ? route.url : `https://${route.url}`;
   return `https://${route.subdomain}.vercel.run`;
-}
-
-function buildVercelRuntimePath(runtime?: string): string {
-  const resolvedRuntime = runtime || DEFAULT_VERCEL_RUNTIME;
-  return `/root/.bun/bin:/usr/local/bin:/usr/bin:/bin:/vercel/runtimes/${resolvedRuntime}/bin`;
 }
 
 export function createVercelProvider(

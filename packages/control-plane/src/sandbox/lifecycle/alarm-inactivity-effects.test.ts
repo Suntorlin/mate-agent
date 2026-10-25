@@ -1,6 +1,18 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { DEFAULT_LIFECYCLE_CONFIG } from "./manager";
-import { createAlarmFixture, createMockSandbox, createMockProvider } from "./test-helpers";
+import { DEFAULT_LIFECYCLE_CONFIG, SandboxLifecycleManager } from "./manager";
+import {
+  createAlarmFixture,
+  createMockAlarmScheduler,
+  createMockBroadcaster,
+  createMockIdGenerator,
+  createMockProvider,
+  createMockSandbox,
+  createMockSession,
+  createMockStorage,
+  createMockWebSocketManager,
+  createTestConfig,
+  createUnmanagedShutdown,
+} from "./test-helpers";
 
 describe("inactivity alarm effects", () => {
   afterEach(() => {
@@ -226,5 +238,118 @@ describe("inactivity alarm effects", () => {
     expect(h.storage.calls).toContain("clearSandboxAccess:vnc");
     expect(sandbox.vnc_url).toBeNull();
     expect(sandbox.vnc_password).toBeNull();
+  });
+});
+
+describe("unprompted sandbox release", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function unpromptedFixture(release: "released" | "held" | "unmanaged") {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000_000);
+    const now = Date.now();
+    const sandbox = createMockSandbox({
+      last_heartbeat: now,
+      last_activity: now - DEFAULT_LIFECYCLE_CONFIG.inactivity.unpromptedTimeoutMs,
+    });
+    const provider = createMockProvider();
+    const storage = createMockStorage(createMockSession({ status: "created" }), sandbox);
+    const broadcaster = createMockBroadcaster();
+    const wsManager = createMockWebSocketManager(false, 0);
+    const alarmScheduler = createMockAlarmScheduler();
+    const shutdown = {
+      ...createUnmanagedShutdown(),
+      releaseUnprompted: vi.fn(async (_reason: string) => release),
+    };
+    const manager = new SandboxLifecycleManager(
+      provider,
+      storage,
+      storage,
+      broadcaster,
+      wsManager,
+      alarmScheduler,
+      createMockIdGenerator(),
+      shutdown,
+      createTestConfig()
+    );
+    return { now, sandbox, provider, storage, alarmScheduler, shutdown, manager };
+  }
+
+  it("releases a warm sandbox nobody prompted after the short idle, without a save", async () => {
+    const f = unpromptedFixture("released");
+
+    await expect(f.manager.handleAlarm()).resolves.toBe("sandbox_terminated");
+
+    expect(f.shutdown.releaseUnprompted).toHaveBeenCalledExactlyOnceWith("unprompted_timeout");
+    expect(f.shutdown.requestShutdown).not.toHaveBeenCalled();
+    expect(f.provider.takeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the ordinary inactivity stop when the release is not owned", async () => {
+    const f = unpromptedFixture("unmanaged");
+
+    await expect(f.manager.handleAlarm()).resolves.toBe("sandbox_terminated");
+
+    expect(f.shutdown.requestShutdown).toHaveBeenCalledWith("inactivity_timeout");
+    expect(f.sandbox.status).toBe("stopped");
+  });
+
+  it("looks again shortly when the shutdown owner is busy", async () => {
+    const f = unpromptedFixture("held");
+
+    await expect(f.manager.handleAlarm()).resolves.toBe("no_action");
+
+    expect(f.alarmScheduler.alarms).toEqual([
+      f.now + DEFAULT_LIFECYCLE_CONFIG.inactivity.minCheckIntervalMs,
+    ]);
+    expect(f.sandbox.status).toBe("ready");
+  });
+
+  it("arms the first inactivity check at the short idle", async () => {
+    const f = unpromptedFixture("released");
+
+    await f.manager.scheduleInactivityCheck();
+
+    expect(f.alarmScheduler.alarms).toEqual([
+      f.now + DEFAULT_LIFECYCLE_CONFIG.inactivity.unpromptedTimeoutMs,
+    ]);
+  });
+
+  it("releases an archived draft's sandbox, saving it only when release is not possible", async () => {
+    const released = unpromptedFixture("released");
+    await released.manager.releaseForArchivedDraft();
+    expect(released.shutdown.releaseUnprompted).toHaveBeenCalledWith("draft_archived");
+    expect(released.shutdown.requestShutdown).not.toHaveBeenCalled();
+
+    const unmanaged = unpromptedFixture("unmanaged");
+    await unmanaged.manager.releaseForArchivedDraft();
+    expect(unmanaged.shutdown.requestShutdown).toHaveBeenCalledWith("session_archived");
+  });
+
+  it("cancels, rather than holds, the sandbox of a draft archived while it is still starting", async () => {
+    const f = unpromptedFixture("unmanaged");
+    f.sandbox.status = "spawning";
+    f.sandbox.modal_object_id = null;
+
+    await f.manager.releaseForArchivedDraft();
+
+    // The row is stopped, so the provider's answer is destroyed when it arrives (a held
+    // generation would keep it running); nothing is saved and nothing waits for a runtime.
+    expect(f.sandbox.status).toBe("stopped");
+    expect(f.shutdown.requestShutdown).not.toHaveBeenCalled();
+    expect(f.provider.takeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("still saves an archived draft's sandbox that is up but whose release is not owned", async () => {
+    const f = unpromptedFixture("unmanaged");
+    f.sandbox.status = "spawning";
+    f.sandbox.modal_object_id = "provider-object-1";
+
+    await f.manager.releaseForArchivedDraft();
+
+    expect(f.shutdown.requestShutdown).toHaveBeenCalledWith("session_archived");
   });
 });

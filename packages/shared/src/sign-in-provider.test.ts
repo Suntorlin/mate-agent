@@ -10,7 +10,7 @@ describe("isSignInProvider", () => {
     expect(isSignInProvider(provider)).toBe(true);
   });
 
-  it.each(["slack", "linear"])("rejects %s", (provider) => {
+  it.each(["slack", "linear", "app"])("rejects %s", (provider) => {
     expect(isSignInProvider(provider)).toBe(false);
   });
 });

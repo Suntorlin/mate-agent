@@ -118,6 +118,8 @@ export interface CreateSandboxConfig {
   provider: string;
   /** LLM model (e.g., "claude-sonnet-4-5") */
   model: string;
+  /** Reasoning effort a prompt runs at unless it picks one; the runtime starts its agent with it. */
+  reasoningEffort?: string;
   /** User-provided environment variables (repo secrets) */
   userEnvVars?: Record<string, string>;
   /** The agent's own conversation id, for resumption */
@@ -163,6 +165,12 @@ export interface CreateSandboxConfig {
    * (pull-request-service) and travel in per-repo push specs.
    */
   repositories?: SessionRepositoryInfo[];
+  /**
+   * A signed URL of the session's newest workspace copy, which the fresh
+   * sandbox unpacks before the agent starts. Set only when a saved sandbox
+   * could not be restored and is rebuilt from that copy instead.
+   */
+  workspaceCopyUrl?: string;
 }
 
 /** Complete browser-desktop access credential returned by sandbox providers. */
@@ -235,6 +243,8 @@ export interface RestoreConfig {
   provider: string;
   /** LLM model (e.g., "claude-sonnet-4-5") */
   model: string;
+  /** Reasoning effort a prompt runs at unless it picks one; the runtime starts its agent with it. */
+  reasoningEffort?: string;
   /** User-provided environment variables (repo secrets) */
   userEnvVars?: Record<string, string>;
   /** Sandbox lifetime in seconds. Defaults to DEFAULT_SANDBOX_TIMEOUT_SECONDS. */
@@ -259,6 +269,12 @@ export interface RestoreConfig {
   generationCreatedAtMs?: number;
   /** Multi-repo member list — see CreateSandboxConfig. */
   repositories?: SessionRepositoryInfo[];
+  /**
+   * The session's newest workspace copy. A provider that finds the snapshot
+   * gone starts a fresh sandbox that unpacks this copy, rather than failing
+   * (see RestoreResult.restoredFrom).
+   */
+  workspaceCopyUrl?: string;
 }
 
 /**
@@ -281,6 +297,11 @@ interface RestoreResultFields {
   vncAccess?: VncAccess;
   /** Tunnel URLs for extra ports (port -> URL mapping) */
   tunnelUrls?: Record<string, string>;
+  /**
+   * "workspace_copy" when the snapshot was gone and the sandbox is a fresh one
+   * rebuilt from RestoreConfig.workspaceCopyUrl; the snapshot otherwise.
+   */
+  restoredFrom?: "snapshot" | "workspace_copy";
 }
 
 export type RestoreResult =
@@ -384,6 +405,28 @@ export type ResumeResult =
       success: false;
       lifetime?: never;
     });
+
+/**
+ * Configuration for pushing a running sandbox's expiry later.
+ */
+export interface ExtendLifetimeConfig {
+  /** Provider's internal object ID (the running provider session) */
+  providerObjectId: string;
+  /** How much later the sandbox should expire than it does now; the provider may grant less. */
+  extensionMs: number;
+  /** Correlation context for downstream tracing */
+  correlation?: CorrelationContext;
+}
+
+/**
+ * Result of extending a sandbox's lifetime.
+ */
+export interface ExtendLifetimeResult {
+  /** The expiry the provider reports after the call; unchanged when nothing could be added. */
+  lifetime: Extract<SandboxLifetime, { kind: "finite" }>;
+  /** The provider's ceiling is reached: no later call can push the expiry further. */
+  atCeiling: boolean;
+}
 
 /**
  * Configuration for explicitly stopping a sandbox.
@@ -646,4 +689,11 @@ export interface SandboxProvider {
    * Only available if `capabilities.supportsExplicitStop` is true.
    */
   stopSandbox?(config: StopConfig): Promise<StopResult>;
+
+  /**
+   * Push a running sandbox's expiry later, bounded by the provider's own
+   * maximum session duration. Providers without it keep the lifetime they
+   * were created with.
+   */
+  extendSandboxLifetime?(config: ExtendLifetimeConfig): Promise<ExtendLifetimeResult>;
 }

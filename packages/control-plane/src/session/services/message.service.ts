@@ -105,6 +105,8 @@ function toSessionMessage(message: MessageRow): SessionMessage {
     createdAt: message.created_at,
     startedAt: message.started_at,
     completedAt: message.completed_at,
+    costUsd: message.reported_cost_usd,
+    runtime: message.runtime ?? null,
   };
 }
 

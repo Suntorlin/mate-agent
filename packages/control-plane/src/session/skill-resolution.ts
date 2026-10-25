@@ -1,10 +1,13 @@
 import {
+  BUILTIN_SKILL_KEY_PREFIX,
   MAX_MANAGED_SKILL_MANIFEST_BYTES,
   type ResolvedSkill,
   type SessionSkillManifestSelection,
   type SessionSkillSelection,
 } from "@open-inspect/shared/types/skills";
+import { UserSkillPreferenceStore } from "../db/personal-skills";
 import { SkillProfileStore } from "../db/skill-profiles";
+import { BUILTIN_SKILLS, disabledBuiltinNames } from "../skills/builtin-skills";
 import { SkillStore } from "../db/skills";
 import type { SqlDatabase } from "../db/sql-database";
 import { hashSessionSkillManifest, SKILL_RESOLVER_VERSION } from "../skills/content-addressing";
@@ -19,11 +22,24 @@ export interface SessionSkillManifestInput {
   resolvedAt: number;
   skills: ResolvedSkill[];
   ignoredProfileSkillIds?: string[];
+  /** Image-bundled skills the session owner switched off; not part of the digest. */
+  disabledBundledSkills?: string[];
 }
 
 interface SkillResolutionTarget {
   repositories: readonly { repoOwner: string; repoName: string }[];
   environmentId: string | null;
+}
+
+interface SkillResolutionOptions {
+  /** False for unattended runs: no personal skills or switches. */
+  personal?: boolean;
+  /**
+   * `/my-skills` keys the creator ticked for this session. When given they
+   * replace `selection` and the owner's switches: switchable built-ins not
+   * named are off, and exactly the named shared and own skills are pinned.
+   */
+  skillKeys?: readonly string[];
 }
 
 /**
@@ -35,17 +51,41 @@ export async function resolveManagedSkills(
   db: SqlDatabase,
   target: SkillResolutionTarget,
   selection: SessionSkillSelection,
-  canonicalUserId: string | null
+  canonicalUserId: string | null,
+  options: SkillResolutionOptions = {}
 ): Promise<SessionSkillManifestInput> {
+  // Personal skills and switches belong to interactive sessions of their owner.
+  const personalOwner = options.personal === false ? null : canonicalUserId;
   const skills = new SkillStore(db);
   const profiles = new SkillProfileStore(db);
+  const picked = options.skillKeys && splitSkillKeys(options.skillKeys);
+
+  let disabledBundledSkills: string[] = [];
+  if (picked) {
+    disabledBundledSkills = disabledBuiltinNames(
+      BUILTIN_SKILLS.map((skill) => skill.key).filter((key) => !picked.builtinKeys.has(key))
+    );
+  } else if (personalOwner) {
+    disabledBundledSkills = disabledBuiltinNames(
+      await new UserSkillPreferenceStore(db).disabledKeys(personalOwner)
+    );
+  }
 
   for (let attempt = 0; attempt < MAX_CATALOG_READ_ATTEMPTS; attempt++) {
     const generationBefore = await skills.catalogGeneration();
-    const applicable = await skills.listApplicable(target);
+    // The owner's personal skills join the shared ones; the owner's switches
+    // drop shared skills they turned off.
+    const applicable = await skills.listApplicable(
+      target,
+      personalOwner,
+      picked ? new Set(picked.skillIds) : null
+    );
     let manifestSelection: SessionSkillManifestSelection;
     let selectedIds: Set<string> | null;
-    if (selection.mode === "profile") {
+    if (picked) {
+      manifestSelection = { mode: "ids", skillIds: picked.skillIds };
+      selectedIds = new Set(picked.skillIds);
+    } else if (selection.mode === "profile") {
       if (!canonicalUserId)
         throw new SkillResolutionError("A canonical user is required for profiles", 403);
       const profile = await profiles.getOwned(selection.profileId, canonicalUserId);
@@ -56,6 +96,11 @@ export async function resolveManagedSkills(
         profileName: profile.name,
       };
       selectedIds = new Set(profile.skillIds);
+    } else if (selection.mode === "ids") {
+      // Deduplicated and sorted so equal selections hash to equal manifests.
+      const skillIds = [...new Set(selection.skillIds)].sort();
+      manifestSelection = { mode: "ids", skillIds };
+      selectedIds = new Set(skillIds);
     } else {
       manifestSelection = selection;
       selectedIds = selection.mode === "none" ? new Set() : null;
@@ -89,9 +134,27 @@ export async function resolveManagedSkills(
       resolvedAt: Date.now(),
       skills: resolved,
       ignoredProfileSkillIds,
+      disabledBundledSkills,
     };
   }
   throw new SkillResolutionError("Managed skills catalog changed during resolution", 409);
+}
+
+/**
+ * Split `/my-skills` keys into built-in keys and catalog skill ids, the latter
+ * deduplicated and sorted so equal picks hash to equal manifests.
+ */
+function splitSkillKeys(keys: readonly string[]): {
+  builtinKeys: Set<string>;
+  skillIds: string[];
+} {
+  const builtinKeys = new Set<string>();
+  const skillIds = new Set<string>();
+  for (const key of keys) {
+    if (key.startsWith(BUILTIN_SKILL_KEY_PREFIX)) builtinKeys.add(key);
+    else skillIds.add(key);
+  }
+  return { builtinKeys, skillIds: [...skillIds].sort() };
 }
 
 /**

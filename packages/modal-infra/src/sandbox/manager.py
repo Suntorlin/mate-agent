@@ -167,7 +167,7 @@ class SandboxManager:
 
         Captures the full state including:
         - Repository with uncommitted changes
-        - OpenCode session state
+        - Agent session state
         - Any cached artifacts
 
         Args:
@@ -322,7 +322,7 @@ class SandboxManager:
         """
         Create a new sandbox from a filesystem snapshot Image.
 
-        The OpenCode session resumes with full workspace state intact.
+        The agent session resumes with full workspace state intact.
         Git clone is skipped since the workspace already has all changes.
 
         Args:

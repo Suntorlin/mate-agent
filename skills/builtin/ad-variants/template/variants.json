@@ -1,0 +1,26 @@
+{
+  "prefix": "brand",
+  "base": "timeline.json",
+  "hooks": [
+    { "id": "h0" },
+    {
+      "id": "h1",
+      "text": "Replace: a different first line",
+      "vo": "assets/hook_h1.mp3",
+      "line": "Replace: the spoken hook"
+    },
+    {
+      "id": "h2",
+      "text": "Replace: a different angle",
+      "src": "assets/hook_h2.mp4",
+      "vo": "assets/hook_h2.mp3",
+      "line": "Replace"
+    }
+  ],
+  "headlines": [
+    { "id": "t0" },
+    { "id": "t1", "replace": { "Replace: text that is on screen now": "Replace: the new wording" } }
+  ],
+  "sizes": ["9:16", "4:5", "1:1"],
+  "limit": 12
+}

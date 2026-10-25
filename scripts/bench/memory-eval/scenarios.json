@@ -1,0 +1,1622 @@
+[
+  {
+    "id": "c01",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "小鱼咖啡日记",
+    "turns": [
+      {
+        "creator": "我是「小鱼咖啡日记」，做精品咖啡豆和手冲器具，观众主要是25-35 岁的上班族，主要发抖音、小红书。以后的视频都用男声配音，字幕用黄色描边，不要说'家人们'。整体专业但不端着，画面干净的白底产品图。下周五要上新品，帮我做一条预热短视频。这条用 1:1 发朋友圈。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "开头太慢了，钩子要在前 2 秒出现。另外不要用流行歌，用纯音乐。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 字幕用黄色描边.",
+        "A current preference keeps the rule: 不要说'家人们'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 开头太慢了，钩子要在前 2 秒出现."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c02",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Lumi Skincare",
+    "turns": [
+      {
+        "creator": "I'm Lumi Skincare, we sell clean skincare serums to US women 25-40, mostly on Instagram, TikTok. From now on always use a young female voice for voice-overs, plain captions, no animated text, and never show prices. Keep it honest and friendly, like talking to a friend, visually warm tones and natural light. Next friday we launch a new product, so make me a teaser. Make this one square for facebook.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, punchy music with clear beats for cuts.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a young female voice; actually switch to a deep male voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a deep male voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a deep male voice for voice-overs (the creator's correction), not a young female voice.",
+        "A current preference keeps the caption style: plain captions, no animated text.",
+        "A current preference keeps the rule: never show prices.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["young", "female"],
+        "new": ["deep", "male"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c03",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "阿花的厨房",
+    "turns": [
+      {
+        "creator": "我是「阿花的厨房」，做家常菜教程，观众主要是刚独居的年轻人，主要发抖音。以后的视频都用沉稳的男声配音，字幕用黄色描边，不要说'家人们'。整体幽默一点，画面复古胶片感。下周五要上新品，帮我做一条预热短视频。这条先做 10 秒的试试。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "画面很好，旁白语速再快一点。另外配乐节奏要强，适合卡点。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用沉稳的男声，其实以后都换成温柔的女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成温柔的女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 温柔的女声 for voice-overs (the creator's correction), not 沉稳的男声.",
+        "A current preference keeps the caption style: 字幕用黄色描边.",
+        "A current preference keeps the rule: 不要说'家人们'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 画面很好，旁白语速再快一点."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c04",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "铁哥健身",
+    "turns": [
+      {
+        "creator": "我是「铁哥健身」，做居家徒手健身，观众主要是30-45 岁的男性白领，主要发快手、抖音。以后的视频都用男声配音，不要花字特效，字幕简洁，不要说'家人们'。整体专业但不端着，画面干净的白底产品图。下周五要上新品，帮我做一条预热短视频。这条用 1:1 发朋友圈。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "节奏不错，但字幕太多了。另外配乐要轻快的 lo-fi。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 不要花字特效，字幕简洁.",
+        "A current preference keeps the rule: 不要说'家人们'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 节奏不错，但字幕太多了."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c05",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Pawsome Bakery",
+    "turns": [
+      {
+        "creator": "I'm Pawsome Bakery, we sell dog treats to dog owners in their 30s, mostly on Instagram Reels. From now on always use a male voice for voice-overs, captions in the lower third only, and no emojis. Keep it expert but relaxed, visually clean product shots on white. Next friday we launch a new product, so make me a teaser. Skip the end card this time.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "The opening is too slow, the hook must land in the first 2 seconds. Also, upbeat lo-fi music.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a male voice; actually switch to a female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a female voice for voice-overs (the creator's correction), not a male voice.",
+        "A current preference keeps the caption style: captions in the lower third only.",
+        "A current preference keeps the rule: no emojis.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: the opening is too slow, the hook must land in the first 2 seconds."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["male"],
+        "new": ["female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c06",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "青禾茶事",
+    "turns": [
+      {
+        "creator": "我是「青禾茶事」，做高山乌龙茶，观众主要是喜欢慢生活的女性，主要发小红书、视频号。以后的视频都用男声配音，字幕用黄色描边，不要出现价格。整体幽默一点，画面复古胶片感。下周五要上新品，帮我做一条预热短视频。这次先不加片尾。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "节奏不错，但字幕太多了。另外配乐节奏要强，适合卡点。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 字幕用黄色描边.",
+        "A current preference keeps the rule: 不要出现价格.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 节奏不错，但字幕太多了."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c07",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Pixel Pals",
+    "turns": [
+      {
+        "creator": "I'm Pixel Pals, we sell indie pixel-art games to gamers 18-30, mostly on YouTube Shorts, TikTok. From now on always use a calm male voice for voice-overs, big white captions with a black edge, and never show prices. Keep it expert but relaxed, visually retro film look. Next friday we launch a new product, so make me a teaser. Make this one 10 seconds as a test.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, upbeat lo-fi music.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a calm male voice; actually switch to a warm female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a warm female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a warm female voice for voice-overs (the creator's correction), not a calm male voice.",
+        "A current preference keeps the caption style: big white captions with a black edge.",
+        "A current preference keeps the rule: never show prices.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["calm", "male"],
+        "new": ["warm", "female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c08",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "木木家居",
+    "turns": [
+      {
+        "creator": "我是「木木家居」，做北欧风实木小家具，观众主要是刚买房的年轻夫妻，主要发小红书。以后的视频都用年轻女声配音，字幕要大、白字黑边，不要说'家人们'。整体语气真诚、像朋友聊天，画面暖色调、自然光。下周五要上新品，帮我做一条预热短视频。这条用 1:1 发朋友圈。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "画面很好，旁白语速再快一点。另外不要用流行歌，用纯音乐。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用年轻女声，其实以后都换成成熟男声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成成熟男声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 成熟男声 for voice-overs (the creator's correction), not 年轻女声.",
+        "A current preference keeps the caption style: 字幕要大、白字黑边.",
+        "A current preference keeps the rule: 不要说'家人们'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 画面很好，旁白语速再快一点."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["女声"],
+        "new": ["男声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c09",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Nomad Notes",
+    "turns": [
+      {
+        "creator": "I'm Nomad Notes, we sell budget travel guides to students and backpackers, mostly on TikTok. From now on always use a male voice for voice-overs, bold yellow captions with a black outline, and never say 'guys'. Keep it expert but relaxed, visually warm tones and natural light. Next friday we launch a new product, so make me a teaser. Skip the end card this time.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "The opening is too slow, the hook must land in the first 2 seconds. Also, punchy music with clear beats for cuts.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a male voice; actually switch to a female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a female voice for voice-overs (the creator's correction), not a male voice.",
+        "A current preference keeps the caption style: bold yellow captions with a black outline.",
+        "A current preference keeps the rule: never say 'guys'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: the opening is too slow, the hook must land in the first 2 seconds."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["male"],
+        "new": ["female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c10",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "糖糖手作",
+    "turns": [
+      {
+        "creator": "我是「糖糖手作」，做手工黏土饰品，观众主要是15-24 岁女生，主要发抖音、B站。以后的视频都用年轻女声配音，字幕要大、白字黑边，不要出现 emoji。整体幽默一点，画面干净的白底产品图。下周五要上新品，帮我做一条预热短视频。这条先做 10 秒的试试。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "画面很好，旁白语速再快一点。另外配乐要轻快的 lo-fi。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用年轻女声，其实以后都换成成熟男声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成成熟男声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 成熟男声 for voice-overs (the creator's correction), not 年轻女声.",
+        "A current preference keeps the caption style: 字幕要大、白字黑边.",
+        "A current preference keeps the rule: 不要出现 emoji.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 画面很好，旁白语速再快一点."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["女声"],
+        "new": ["男声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c11",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "GreenRide",
+    "turns": [
+      {
+        "creator": "I'm GreenRide, we sell electric bikes to city commuters, mostly on Instagram, YouTube. From now on always use a calm male voice for voice-overs, plain captions, no animated text, and never say 'guys'. Keep it a bit playful, visually clean product shots on white. Next friday we launch a new product, so make me a teaser. Make this one square for facebook.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, punchy music with clear beats for cuts.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a calm male voice; actually switch to a warm female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a warm female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a warm female voice for voice-overs (the creator's correction), not a calm male voice.",
+        "A current preference keeps the caption style: plain captions, no animated text.",
+        "A current preference keeps the rule: never say 'guys'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["calm", "male"],
+        "new": ["warm", "female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c12",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "老王修车铺",
+    "turns": [
+      {
+        "creator": "我是「老王修车铺」，做汽车保养知识，观众主要是有车的中年男性，主要发快手。以后的视频都用沉稳的男声配音，字幕用黄色描边，不要出现 emoji。整体专业但不端着，画面暖色调、自然光。下周五要上新品，帮我做一条预热短视频。这条用 1:1 发朋友圈。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "开头太慢了，钩子要在前 2 秒出现。另外配乐要轻快的 lo-fi。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用沉稳的男声，其实以后都换成温柔的女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成温柔的女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 温柔的女声 for voice-overs (the creator's correction), not 沉稳的男声.",
+        "A current preference keeps the caption style: 字幕用黄色描边.",
+        "A current preference keeps the rule: 不要出现 emoji.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 开头太慢了，钩子要在前 2 秒出现."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c13",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Mochi Mama",
+    "turns": [
+      {
+        "creator": "I'm Mochi Mama, we sell baby food recipes to new parents, mostly on Instagram. From now on always use a calm male voice for voice-overs, big white captions with a black edge, and never say 'guys'. Keep it honest and friendly, like talking to a friend, visually retro film look. Next friday we launch a new product, so make me a teaser. Skip the end card this time.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, instrumental music only, no pop songs.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a calm male voice; actually switch to a warm female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a warm female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a warm female voice for voice-overs (the creator's correction), not a calm male voice.",
+        "A current preference keeps the caption style: big white captions with a black edge.",
+        "A current preference keeps the rule: never say 'guys'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["calm", "male"],
+        "new": ["warm", "female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c14",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "书虫阿七",
+    "turns": [
+      {
+        "creator": "我是「书虫阿七」，做读书分享，观众主要是大学生，主要发B站、小红书。以后的视频都用男声配音，字幕放在画面下三分之一，不要用夸张的标题党。整体幽默一点，画面复古胶片感。下周五要上新品，帮我做一条预热短视频。这条先做 10 秒的试试。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "开头太慢了，钩子要在前 2 秒出现。另外配乐要轻快的 lo-fi。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 字幕放在画面下三分之一.",
+        "A current preference keeps the rule: 不要用夸张的标题党.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 开头太慢了，钩子要在前 2 秒出现."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c15",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Volt Coffee",
+    "turns": [
+      {
+        "creator": "I'm Volt Coffee, we sell cold brew cans to gym-goers, mostly on TikTok. From now on always use a young female voice for voice-overs, big white captions with a black edge, and no emojis. Keep it a bit playful, visually clean product shots on white. Next friday we launch a new product, so make me a teaser. Skip the end card this time.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "The opening is too slow, the hook must land in the first 2 seconds. Also, punchy music with clear beats for cuts.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a young female voice; actually switch to a deep male voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a deep male voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a deep male voice for voice-overs (the creator's correction), not a young female voice.",
+        "A current preference keeps the caption style: big white captions with a black edge.",
+        "A current preference keeps the rule: no emojis.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: the opening is too slow, the hook must land in the first 2 seconds."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["young", "female"],
+        "new": ["deep", "male"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c16",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "云朵宠物",
+    "turns": [
+      {
+        "creator": "我是「云朵宠物」，做猫粮测评，观众主要是养猫的年轻人，主要发抖音、小红书。以后的视频都用男声配音，字幕要大、白字黑边，不要出现价格。整体幽默一点，画面干净的白底产品图。下周五要上新品，帮我做一条预热短视频。这条先做 10 秒的试试。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "开头太慢了，钩子要在前 2 秒出现。另外配乐节奏要强，适合卡点。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 字幕要大、白字黑边.",
+        "A current preference keeps the rule: 不要出现价格.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 开头太慢了，钩子要在前 2 秒出现."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c17",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Studio Kaya",
+    "turns": [
+      {
+        "creator": "I'm Studio Kaya, we sell ceramic mugs to design lovers, mostly on Instagram. From now on always use a male voice for voice-overs, captions in the lower third only, and never say 'guys'. Keep it expert but relaxed, visually warm tones and natural light. Next friday we launch a new product, so make me a teaser. Make this one 10 seconds as a test.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Great visuals, but the narration should be a bit faster. Also, instrumental music only, no pop songs.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a male voice; actually switch to a female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a female voice for voice-overs (the creator's correction), not a male voice.",
+        "A current preference keeps the caption style: captions in the lower third only.",
+        "A current preference keeps the rule: never say 'guys'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: great visuals, but the narration should be a bit faster."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["male"],
+        "new": ["female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c18",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "小周学英语",
+    "turns": [
+      {
+        "creator": "我是「小周学英语」，做英语口语课，观众主要是想出国的大学生，主要发抖音、视频号。以后的视频都用沉稳的男声配音，字幕用黄色描边，不要说'家人们'。整体语气真诚、像朋友聊天，画面复古胶片感。下周五要上新品，帮我做一条预热短视频。这次先不加片尾。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "开头太慢了，钩子要在前 2 秒出现。另外不要用流行歌，用纯音乐。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用沉稳的男声，其实以后都换成温柔的女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成温柔的女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 温柔的女声 for voice-overs (the creator's correction), not 沉稳的男声.",
+        "A current preference keeps the caption style: 字幕用黄色描边.",
+        "A current preference keeps the rule: 不要说'家人们'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 开头太慢了，钩子要在前 2 秒出现."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c19",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Hike&Seek",
+    "turns": [
+      {
+        "creator": "I'm Hike&Seek, we sell outdoor gear reviews to weekend hikers, mostly on YouTube Shorts. From now on always use a male voice for voice-overs, plain captions, no animated text, and no emojis. Keep it honest and friendly, like talking to a friend, visually retro film look. Next friday we launch a new product, so make me a teaser. Skip the end card this time.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "The opening is too slow, the hook must land in the first 2 seconds. Also, upbeat lo-fi music.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a male voice; actually switch to a female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a female voice for voice-overs (the creator's correction), not a male voice.",
+        "A current preference keeps the caption style: plain captions, no animated text.",
+        "A current preference keeps the rule: no emojis.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: the opening is too slow, the hook must land in the first 2 seconds."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["male"],
+        "new": ["female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c20",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "暖暖烘焙",
+    "turns": [
+      {
+        "creator": "我是「暖暖烘焙」，做低糖面包，观众主要是控糖人群，主要发小红书。以后的视频都用年轻女声配音，字幕要大、白字黑边，不要出现 emoji。整体幽默一点，画面复古胶片感。下周五要上新品，帮我做一条预热短视频。这次先不加片尾。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "节奏不错，但字幕太多了。另外配乐要轻快的 lo-fi。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用年轻女声，其实以后都换成成熟男声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成成熟男声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 成熟男声 for voice-overs (the creator's correction), not 年轻女声.",
+        "A current preference keeps the caption style: 字幕要大、白字黑边.",
+        "A current preference keeps the rule: 不要出现 emoji.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 节奏不错，但字幕太多了."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["女声"],
+        "new": ["男声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c21",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "CodeBites",
+    "turns": [
+      {
+        "creator": "I'm CodeBites, we sell programming tips to junior developers, mostly on TikTok, YouTube. From now on always use a male voice for voice-overs, plain captions, no animated text, and no clickbait titles. Keep it honest and friendly, like talking to a friend, visually retro film look. Next friday we launch a new product, so make me a teaser. Make this one square for facebook.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, instrumental music only, no pop songs.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a male voice; actually switch to a female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a female voice for voice-overs (the creator's correction), not a male voice.",
+        "A current preference keeps the caption style: plain captions, no animated text.",
+        "A current preference keeps the rule: no clickbait titles.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["male"],
+        "new": ["female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c22",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "江南绣坊",
+    "turns": [
+      {
+        "creator": "我是「江南绣坊」，做苏绣丝巾，观众主要是30-50 岁女性，主要发抖音直播间、视频号。以后的视频都用年轻女声配音，字幕用黄色描边，不要出现 emoji。整体专业但不端着，画面复古胶片感。下周五要上新品，帮我做一条预热短视频。这次先不加片尾。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "画面很好，旁白语速再快一点。另外配乐节奏要强，适合卡点。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用年轻女声，其实以后都换成成熟男声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成成熟男声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 成熟男声 for voice-overs (the creator's correction), not 年轻女声.",
+        "A current preference keeps the caption style: 字幕用黄色描边.",
+        "A current preference keeps the rule: 不要出现 emoji.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 画面很好，旁白语速再快一点."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["女声"],
+        "new": ["男声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c23",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Petal Post",
+    "turns": [
+      {
+        "creator": "I'm Petal Post, we sell flower subscriptions to young professionals, mostly on Instagram. From now on always use a calm male voice for voice-overs, plain captions, no animated text, and never say 'guys'. Keep it a bit playful, visually clean product shots on white. Next friday we launch a new product, so make me a teaser. Skip the end card this time.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, instrumental music only, no pop songs.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a calm male voice; actually switch to a warm female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a warm female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a warm female voice for voice-overs (the creator's correction), not a calm male voice.",
+        "A current preference keeps the caption style: plain captions, no animated text.",
+        "A current preference keeps the rule: never say 'guys'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["calm", "male"],
+        "new": ["warm", "female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c24",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "阿杰数码",
+    "turns": [
+      {
+        "creator": "我是「阿杰数码」，做手机测评，观众主要是数码爱好者，主要发B站、抖音。以后的视频都用男声配音，不要花字特效，字幕简洁，不要出现价格。整体专业但不端着，画面暖色调、自然光。下周五要上新品，帮我做一条预热短视频。这次先不加片尾。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "画面很好，旁白语速再快一点。另外不要用流行歌，用纯音乐。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 不要花字特效，字幕简洁.",
+        "A current preference keeps the rule: 不要出现价格.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 画面很好，旁白语速再快一点."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c25",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Saffron Street",
+    "turns": [
+      {
+        "creator": "I'm Saffron Street, we sell Indian street food kits to home cooks, mostly on TikTok. From now on always use a young female voice for voice-overs, captions in the lower third only, and no clickbait titles. Keep it a bit playful, visually warm tones and natural light. Next friday we launch a new product, so make me a teaser. Make this one 10 seconds as a test.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "The opening is too slow, the hook must land in the first 2 seconds. Also, instrumental music only, no pop songs.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a young female voice; actually switch to a deep male voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a deep male voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a deep male voice for voice-overs (the creator's correction), not a young female voice.",
+        "A current preference keeps the caption style: captions in the lower third only.",
+        "A current preference keeps the rule: no clickbait titles.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: the opening is too slow, the hook must land in the first 2 seconds."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["young", "female"],
+        "new": ["deep", "male"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c26",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "小满民宿",
+    "turns": [
+      {
+        "creator": "我是「小满民宿」，做大理民宿，观众主要是情侣游客，主要发小红书、抖音。以后的视频都用沉稳的男声配音，字幕要大、白字黑边，不要出现 emoji。整体幽默一点，画面暖色调、自然光。下周五要上新品，帮我做一条预热短视频。这条用 1:1 发朋友圈。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "开头太慢了，钩子要在前 2 秒出现。另外不要用流行歌，用纯音乐。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用沉稳的男声，其实以后都换成温柔的女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成温柔的女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 温柔的女声 for voice-overs (the creator's correction), not 沉稳的男声.",
+        "A current preference keeps the caption style: 字幕要大、白字黑边.",
+        "A current preference keeps the rule: 不要出现 emoji.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 开头太慢了，钩子要在前 2 秒出现."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c27",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Brightside Kids",
+    "turns": [
+      {
+        "creator": "I'm Brightside Kids, we sell STEM toys to parents of 5-10 year olds, mostly on YouTube. From now on always use a young female voice for voice-overs, big white captions with a black edge, and no emojis. Keep it honest and friendly, like talking to a friend, visually retro film look. Next friday we launch a new product, so make me a teaser. Make this one square for facebook.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Good pacing but too much text on screen. Also, upbeat lo-fi music.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a young female voice; actually switch to a deep male voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a deep male voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a deep male voice for voice-overs (the creator's correction), not a young female voice.",
+        "A current preference keeps the caption style: big white captions with a black edge.",
+        "A current preference keeps the rule: no emojis.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: good pacing but too much text on screen."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["young", "female"],
+        "new": ["deep", "male"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c28",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "老街酱香",
+    "turns": [
+      {
+        "creator": "我是「老街酱香」，做地方辣酱，观众主要是爱吃辣的年轻人，主要发抖音。以后的视频都用男声配音，字幕放在画面下三分之一，不要说'家人们'。整体幽默一点，画面暖色调、自然光。下周五要上新品，帮我做一条预热短视频。这条先做 10 秒的试试。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "节奏不错，但字幕太多了。另外不要用流行歌，用纯音乐。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用男声，其实以后都换成女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 女声 for voice-overs (the creator's correction), not 男声.",
+        "A current preference keeps the caption style: 字幕放在画面下三分之一.",
+        "A current preference keeps the rule: 不要说'家人们'.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 节奏不错，但字幕太多了."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c29",
+    "lang": "en",
+    "today": "2026-10-03",
+    "name": "Moonlit Candles",
+    "turns": [
+      {
+        "creator": "I'm Moonlit Candles, we sell soy candles to people who love cozy homes, mostly on Instagram, Pinterest. From now on always use a calm male voice for voice-overs, bold yellow captions with a black outline, and no emojis. Keep it expert but relaxed, visually warm tones and natural light. Next friday we launch a new product, so make me a teaser. Make this one square for facebook.",
+        "agent": "On it. While rendering, Remotion reported a missing font; switching to Noto Sans fixed it. The 15 s vertical teaser 'New drop teaser' is in the preview: two Seedance product shots and upbeat instrumental music."
+      },
+      {
+        "creator": "Great visuals, but the narration should be a bit faster. Also, instrumental music only, no pop songs.",
+        "agent": "Done: I tightened the opening and re-rendered it as 'New drop teaser v2'. The first TTS request timed out and worked on retry."
+      },
+      {
+        "creator": "Earlier I said a calm male voice; actually switch to a warm female voice for all future videos. v2 is final, thanks!",
+        "agent": "Done, re-voiced with a warm female voice; the final cut is in the preview."
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use a warm female voice for voice-overs (the creator's correction), not a calm male voice.",
+        "A current preference keeps the caption style: bold yellow captions with a black outline.",
+        "A current preference keeps the rule: no emojis.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: great visuals, but the narration should be a bit faster."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["calm", "male"],
+        "new": ["warm", "female"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  },
+  {
+    "id": "c30",
+    "lang": "zh",
+    "today": "2026-10-03",
+    "name": "森林瑜伽",
+    "turns": [
+      {
+        "creator": "我是「森林瑜伽」，做线上瑜伽课，观众主要是久坐的上班族，主要发视频号、小红书。以后的视频都用沉稳的男声配音，字幕要大、白字黑边，不要用夸张的标题党。整体幽默一点，画面暖色调、自然光。下周五要上新品，帮我做一条预热短视频。这次先不加片尾。",
+        "agent": "好的，我先看看素材库。渲染时 Remotion 报了字体缺失，换成思源黑体后渲染成功了。15 秒竖屏预热片已放到预览，标题「新品预告」，用了 Seedance 生成两段产品镜头，配乐是轻快纯音乐。"
+      },
+      {
+        "creator": "节奏不错，但字幕太多了。另外配乐要轻快的 lo-fi。",
+        "agent": "收到，我把开头改短了，重新渲染后放到预览，标题「新品预告 v2」。这次 TTS 第一次请求超时，重试后成功。"
+      },
+      {
+        "creator": "之前说用沉稳的男声，其实以后都换成温柔的女声吧。这条 v2 就定稿了，谢谢！",
+        "agent": "好的，已经换成温柔的女声重新配音，定稿版放到预览了。"
+      }
+    ],
+    "gold": {
+      "must": [
+        "A current preference says to use 温柔的女声 for voice-overs (the creator's correction), not 沉稳的男声.",
+        "A current preference keeps the caption style: 字幕要大、白字黑边.",
+        "A current preference keeps the rule: 不要用夸张的标题党.",
+        "A project entry records the finished teaser video for the upcoming launch.",
+        "The creator's reaction to the first cut is remembered as a preference, lesson or project note: 节奏不错，但字幕太多了."
+      ],
+      "must_not": [
+        {
+          "any": ["Remotion", "字体缺失", "missing font", "思源", "Noto"],
+          "label": "tool error kept as creator memory"
+        },
+        {
+          "any": ["超时", "timed out", "retry", "重试"],
+          "label": "transient error kept"
+        },
+        {
+          "any": ["10 秒", "10 seconds", "10s", "片尾", "end card", "1:1", "square"],
+          "label": "one-off setting kept",
+          "layers": ["preference", "profile", "lesson"]
+        }
+      ],
+      "superseded": {
+        "old": ["男声"],
+        "new": ["女声"]
+      },
+      "date": {
+        "any": ["2026-10-09", "10-09", "10月9日", "10 月 9 日", "October 9", "Oct 9"]
+      },
+      "platform_lesson": {
+        "any": ["Remotion", "字体", "font", "Noto", "思源"]
+      }
+    }
+  }
+]

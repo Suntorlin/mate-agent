@@ -14,16 +14,16 @@
         },
         "source": {
           "type": "string",
-          "enum": ["user", "agent", "automation", "github-bot", "linear-bot", "slack-bot"]
+          "enum": ["user", "agent", "automation", "github-bot", "linear-bot", "slack-bot", "app"]
         },
         "spawnSource": {
           "type": "string",
-          "enum": ["user", "agent", "automation", "github-bot", "linear-bot", "slack-bot"]
+          "enum": ["user", "agent", "automation", "github-bot", "linear-bot", "slack-bot", "app"]
         },
         "parentSessionId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "rootSessionId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "spawnDepth": { "type": "number" },
-        "harness": { "type": "string", "enum": ["opencode", "claude"] },
+        "harness": { "type": "string", "enum": ["claude", "opencode"] },
         "repoOwner": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "repoName": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
         "baseBranch": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
@@ -134,11 +134,15 @@
               },
               "status": {
                 "type": "string",
-                "enum": ["pending", "processing", "completed", "failed"]
+                "enum": ["pending", "processing", "completed", "failed", "stopped"]
               },
               "createdAt": { "type": "number" },
               "startedAt": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
-              "completedAt": { "anyOf": [{ "type": "number" }, { "type": "null" }] }
+              "completedAt": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
+              "costUsd": { "type": "number" },
+              "runtime": {
+                "anyOf": [{ "type": "string", "enum": ["inline", "sandbox"] }, { "type": "null" }]
+              }
             },
             "required": [
               "id",
@@ -182,7 +186,11 @@
                   "boot_progress",
                   "session_title",
                   "snapshot_ready",
-                  "user_message"
+                  "user_message",
+                  "question",
+                  "question_answered",
+                  "card_dismissed",
+                  "media_generation"
                 ]
               },
               "data": {
@@ -206,7 +214,7 @@
               "messageId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
               "model": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
               "harness": {
-                "anyOf": [{ "type": "string", "enum": ["opencode", "claude"] }, { "type": "null" }]
+                "anyOf": [{ "type": "string", "enum": ["claude", "opencode"] }, { "type": "null" }]
               },
               "inputTokens": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
               "outputTokens": { "anyOf": [{ "type": "number" }, { "type": "null" }] },

@@ -31,6 +31,19 @@ describe("visibleSessionsPredicate", () => {
     }
   );
 
+  it.each(["off", "shadow", "on"] as const)(
+    "lists a lone creator only the sessions they started in %s, whatever the rows say",
+    (mode) => {
+      const creator: SessionViewer = { ...member, roleKey: "owner", ownSessionsOnly: true };
+      for (const excludePrivate of [false, true]) {
+        expect(visibleSessionsPredicate("s", creator, { mode, excludePrivate })).toEqual({
+          sql: "s.user_id = ?",
+          params: ["user-a"],
+        });
+      }
+    }
+  );
+
   it("excludes private rows for owners even when they can break glass by ID", () => {
     const owner: SessionViewer = { ...member, roleKey: "owner" };
     const result = visibleSessionsPredicate("s", owner, { mode: "on", excludePrivate: true });

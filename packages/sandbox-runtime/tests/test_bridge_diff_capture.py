@@ -13,6 +13,7 @@ from sandbox_runtime.diff_capture import (
     ControlPlaneDiffClient,
     SessionDiffRefreshWorker,
 )
+from sandbox_runtime.harness import HarnessId
 from sandbox_runtime.log_config import get_logger
 from sandbox_runtime.repo_config import RepoEntry, dump_repo_manifest
 
@@ -23,6 +24,7 @@ def _bridge() -> AgentBridge:
         session_id="session-1",
         control_plane_url="https://control.example.com",
         auth_token="sandbox-token",
+        harness_id=HarnessId.OPENCODE,
     )
 
 

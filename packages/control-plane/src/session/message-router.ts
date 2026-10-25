@@ -40,7 +40,7 @@ export interface SessionClientCommands<Connection, Client extends ConnectedClien
   cancelPrompt: (connection: Connection, message: ClientCancelPrompt) => Promise<void>;
   stopExecution: () => Promise<void>;
   recoverShutdown: (action: RecoverShutdownCommand["action"]) => Promise<void>;
-  notifyTyping: () => Promise<void>;
+  notifyTyping: () => void;
   updatePresence: (client: Client, message: ClientPresence) => void;
   getHistoryPage: (message: {
     cursor: NonNullable<FetchHistory["cursor"]>;
@@ -175,7 +175,7 @@ export class SessionMessageRouter<Connection, Client extends ConnectedClient> {
           break;
         case "typing":
           if (!(await this.authorizeCommand(connection, client, "collaborate"))) break;
-          await this.deps.clientCommands.notifyTyping();
+          this.deps.clientCommands.notifyTyping();
           break;
         case "fetch_history":
           if (!this.canFetchHistory(connection, client, data)) break;

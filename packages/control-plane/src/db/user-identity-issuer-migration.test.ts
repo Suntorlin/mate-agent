@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 const MIGRATIONS_DIRECTORY = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../terraform/d1/migrations"
+  "../../../../deploy/d1/migrations"
 );
 const ISSUER_BACKFILL_MIGRATION = "0056_backfill_user_identity_issuers.sql";
 

@@ -14,11 +14,6 @@ export async function main(): Promise<void> {
   const token = process.env.VERCEL_TOKEN;
   const projectId = process.env.VERCEL_PROJECT_ID;
   if (!token || !projectId) throw new Error("VERCEL_TOKEN and VERCEL_PROJECT_ID are required");
-  if (process.env.VERCEL_RUNTIME && process.env.VERCEL_RUNTIME !== "node24") {
-    throw new Error(
-      "The Vercel image target requires node24; update targets.json to introduce another substrate"
-    );
-  }
   const packed = packImage(root, "vercel");
   const client = createVercelSandboxClient({
     token,
@@ -47,9 +42,14 @@ export async function main(): Promise<void> {
       return;
     }
     const archive = join(temporary, "bundle.tar.gz");
-    execFileSync("tar", ["-czf", archive, "-C", packed.directory, "."], { stdio: "inherit" });
+    // COPYFILE_DISABLE keeps macOS tar from adding AppleDouble ._* files to the image.
+    execFileSync("tar", ["-czf", archive, "-C", packed.directory, "."], {
+      stdio: "inherit",
+      env: { ...process.env, COPYFILE_DISABLE: "1" },
+    });
     const result = await buildVercelBaseSnapshot(client, {
       runtimeArchive: readFileSync(archive),
+      image: process.env.VERCEL_IMAGE,
       sourceVersion: packed.plan.buildHash,
       namePrefix: process.env.VERCEL_BASE_SNAPSHOT_NAME || "openinspect-base",
       sandboxName: process.env.OPENINSPECT_IMAGE_CANDIDATE,

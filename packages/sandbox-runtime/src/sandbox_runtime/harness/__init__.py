@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from ..claude_stager import ClaudeHarnessHandoff
 from ..credentials.provider_credential_client import RuntimeCredentialClient
+from ..mcp_proxy import app_mcp_proxy
 from .base import (
     DEFAULT_HARNESS_ID,
     DETERMINISTIC_FAILURE_EXIT_CODE,
@@ -21,6 +22,7 @@ from .base import (
     PromptLimits,
     TurnOutcome,
     parse_harness_id,
+    parse_permission_mode,
 )
 from .claude import ClaudeHarness, ClaudeHarnessConfig
 from .claude_env import OAUTH_MANAGED_ENV_VAR
@@ -67,14 +69,16 @@ def build_agent_harness(
         case HarnessId.CLAUDE:
             handoff = ClaudeHarnessHandoff.read()
             session_config = _session_config_from_env()
+            mcp_servers = _mcp_servers_from(session_config)
             oauth_managed = bool(os.environ.get(OAUTH_MANAGED_ENV_VAR))
             config = ClaudeHarnessConfig(
                 workdir=handoff.workdir,
                 config_dir=handoff.config_dir,
                 # From the bridge's own SESSION_CONFIG: MCP entries can carry
                 # credentials, and the handoff file never does.
-                mcp_servers=_mcp_servers_from(session_config),
+                mcp_servers=mcp_servers,
                 default_model=str(session_config.get("model") or "claude-sonnet-4-6"),
+                default_reasoning_effort=_optional_str(session_config.get("reasoning_effort")),
                 oauth_managed=oauth_managed,
                 system_prompt_append=_repository_guidance(handoff.workdir),
                 tools=ToolServerConfig(
@@ -98,11 +102,24 @@ def build_agent_harness(
                 if oauth_managed and identity.control_plane_url
                 else None
             )
+            app_server = app_mcp_proxy(
+                mcp_servers,
+                control_plane_url=identity.control_plane_url,
+                session_id=identity.session_id,
+                auth_token=identity.auth_token,
+                log=log,
+            )
+            # Keyed by the product's own server name, which its tools are called by.
+            mcp_proxies = None
+            if app_server:
+                app_name, app_proxy = app_server
+                mcp_proxies = {app_name: app_proxy}
             return ClaudeHarness(
                 config=config,
                 log=log,
                 limits=limits,
                 credential_client=credential_client,
+                mcp_proxies=mcp_proxies,
             )
     raise ValueError(f"Unsupported harness: {harness_id}")
 
@@ -116,6 +133,10 @@ def _session_config_from_env() -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _mcp_servers_from(session_config: dict[str, object]) -> tuple[dict[str, object], ...]:
@@ -158,4 +179,5 @@ __all__ = [
     "TurnOutcome",
     "build_agent_harness",
     "parse_harness_id",
+    "parse_permission_mode",
 ]

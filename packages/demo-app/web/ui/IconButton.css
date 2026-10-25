@@ -1,0 +1,53 @@
+.ui-icon-button {
+  display: inline-grid;
+  flex-shrink: 0;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-pill);
+  text-decoration: none;
+  transition:
+    background-color var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-ease);
+}
+
+.ui-icon-button--default {
+  width: var(--control-md);
+  height: var(--control-md);
+}
+.ui-icon-button--sm {
+  width: var(--control-sm);
+  height: var(--control-sm);
+}
+
+.ui-icon-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.ui-icon-button--ghost {
+  background: transparent;
+  color: var(--social-fg-muted);
+}
+.ui-icon-button--ghost:hover:not(:disabled) {
+  background: var(--social-muted);
+  color: var(--social-fg);
+}
+
+.ui-icon-button--muted {
+  background: var(--social-muted);
+  color: var(--social-fg);
+}
+.ui-icon-button--muted:hover:not(:disabled) {
+  background: var(--social-border);
+}
+
+.ui-icon-button--filled {
+  background: var(--social-primary);
+  color: var(--social-primary-fg);
+}
+.ui-icon-button--filled:hover:not(:disabled) {
+  opacity: 0.9;
+}
+.ui-icon-button--filled:disabled {
+  background: var(--social-muted);
+  color: var(--social-fg-subtle);
+}

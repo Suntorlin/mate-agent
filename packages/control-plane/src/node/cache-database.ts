@@ -3,7 +3,7 @@
  * one table `SqlCacheStore` uses.
  *
  * It is deliberately not part of the global store. That file's schema is
- * `terraform/d1/migrations`, which is applied to D1 as well, and nothing on
+ * `deploy/d1/migrations`, which is applied to D1 as well, and nothing on
  * Cloudflare caches in SQL — so putting the table there would create it on a
  * host that never touches it. This is the same arrangement as the host alarm
  * index: a Node-local file whose schema is a `CREATE TABLE IF NOT EXISTS` in

@@ -1,0 +1,29 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "demo-gateway",
+      "runtimeExecutable": "scripts/local/gateway.sh",
+      "runtimeArgs": [],
+      "port": 8795
+    },
+    {
+      "name": "demo-dataplane",
+      "runtimeExecutable": "scripts/local/dataplane.sh",
+      "runtimeArgs": [],
+      "port": 9911
+    },
+    {
+      "name": "demo-engine",
+      "runtimeExecutable": "scripts/local/control-plane.sh",
+      "runtimeArgs": [],
+      "port": 8798
+    },
+    {
+      "name": "demo-app",
+      "runtimeExecutable": "scripts/local/demo-app.sh",
+      "runtimeArgs": [],
+      "port": 9320
+    }
+  ]
+}

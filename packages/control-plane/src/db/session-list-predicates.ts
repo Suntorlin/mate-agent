@@ -53,6 +53,17 @@ const REPOSITORY_MEMBERSHIP_SQL = `((repo_owner = ? AND repo_name = ?)
     WHERE repo_owner = ? AND repo_name = ?
   ))`;
 
+/**
+ * A session someone started in the web app or through a product's backend that is
+ * still `created` was never sent a prompt: a warm draft behind an open
+ * composer, or one its author walked away from. Listing it shows an empty "Untitled session", so lists show a
+ * session from its first prompt on. Asking for `created` by name still finds
+ * them, and drafts other sources create (an agent's child) stay listed.
+ */
+export function notAWarmDraftSql(table = "sessions"): string {
+  return `NOT (${table}.status = 'created' AND ${table}.spawn_source IN ('user', 'app'))`;
+}
+
 /** The `WHERE` clause and bindings for a filtered walk of `sessions`. */
 export function buildSessionListPredicates(filters: SessionListFilters): SessionListPredicates {
   const {
@@ -82,6 +93,10 @@ export function buildSessionListPredicates(filters: SessionListFilters): Session
   if (excludeStatus) {
     conditions.push("status != ?");
     params.push(excludeStatus);
+  }
+
+  if (status !== "created" && readScope.kind !== "internal") {
+    conditions.push(notAWarmDraftSql());
   }
 
   if (excludeAutomationLineage) {

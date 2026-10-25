@@ -40,6 +40,23 @@ function snapshotProvider(overrides: Partial<SandboxProvider> = {}): SandboxProv
   };
 }
 
+/** A provider whose replacement sandbox starts, which is when the creator is told what carried over. */
+function startingProvider(overrides: Partial<SandboxProvider> = {}): SandboxProvider {
+  return snapshotProvider({
+    createSandbox: vi.fn<SandboxProvider["createSandbox"]>(async (config) => ({
+      sandboxId: config.sandboxId,
+      providerObjectId: "replacement-source",
+      createdAt: Date.now(),
+      lifetime: { kind: "none", observedAtMs: Date.now() },
+    })),
+    ...overrides,
+  });
+}
+
+/** What the creator reads when a sandbox was replaced and no workspace copy brought its work back. */
+const WORK_NOT_RECOVERED =
+  "Reconnected, but the earlier work could not be recovered. Send your request again to continue.";
+
 describe("sandbox state retention", () => {
   it.each([
     ["snapshot", "access"],
@@ -109,11 +126,11 @@ describe("sandbox state retention", () => {
     }
   );
 
-  it("records continuity loss when persistent resume requests a fresh replacement", async () => {
+  it("says the work was not recovered when persistent resume requests a fresh replacement", async () => {
     const stub = await servingSession();
     await queryDO(stub, "UPDATE sandbox SET status = 'stopped', last_heartbeat = ?", Date.now());
     await runInSessionDO(stub, async (instance, durableState) => {
-      const provider = snapshotProvider({
+      const provider = startingProvider({
         capabilities: {
           supportsSandboxTimeout: true,
           supportsSnapshots: false,
@@ -134,39 +151,46 @@ describe("sandbox state retention", () => {
         .exec("SELECT data FROM events WHERE type = 'warning'")
         .toArray();
       expect(warnings).toHaveLength(1);
-      expect(JSON.parse(warnings[0].data as string).message).toContain(
-        "Uncommitted changes and earlier conversation context"
-      );
+      expect(JSON.parse(warnings[0].data as string)).toMatchObject({
+        scope: "continuity",
+        message: WORK_NOT_RECOVERED,
+      });
     });
   });
 
-  it("does not duplicate the continuity warning when replacement reservation is retried", async () => {
+  it("tells the creator once, when the replacement starts, if its reservation is retried", async () => {
     const stub = await servingSession();
     await queryDO(stub, "UPDATE sandbox SET status = 'stopped', last_heartbeat = ?", Date.now());
     await runInSessionDO(stub, async (instance, durableState) => {
+      const warningCount = () =>
+        durableState.storage.sql
+          .exec("SELECT COUNT(*) AS count FROM events WHERE type = 'warning'")
+          .toArray();
       durableState.storage.sql.exec(
         "CREATE TRIGGER reject_reservation BEFORE INSERT ON sandbox_preservation BEGIN SELECT RAISE(FAIL, 'reservation unavailable'); END"
       );
-      const provider = snapshotProvider();
+      const provider = startingProvider();
       await realLifecycleHarness(instance, durableState, provider).manager.spawnSandbox();
       expect(provider.stopSandbox).not.toHaveBeenCalled();
+      // Nothing has started, so there is nothing to tell yet.
+      expect(warningCount()).toEqual([{ count: 0 }]);
       durableState.storage.sql.exec("DROP TRIGGER reject_reservation");
       await realLifecycleHarness(instance, durableState, provider).manager.spawnSandbox();
       expect(provider.createSandbox).toHaveBeenCalledOnce();
-      expect(
-        durableState.storage.sql
-          .exec("SELECT COUNT(*) AS count FROM events WHERE type = 'warning'")
-          .toArray()
-      ).toEqual([{ count: 1 }]);
+      expect(warningCount()).toEqual([{ count: 1 }]);
     });
   });
 
-  it("persists the continuity warning before an interrupted replacement can lose its source metadata", async () => {
+  it("tells the creator once, after the old sandbox is stopped, when a second manager spawns meanwhile", async () => {
     const stub = await servingSession();
     await queryDO(stub, "UPDATE sandbox SET status = 'stopped', last_heartbeat = ?", Date.now());
     await runInSessionDO(stub, async (instance, durableState) => {
+      const warningCount = () =>
+        durableState.storage.sql
+          .exec("SELECT COUNT(*) AS count FROM events WHERE type = 'warning'")
+          .toArray();
       let finishStop!: () => void;
-      const provider = snapshotProvider({
+      const provider = startingProvider({
         stopSandbox: vi.fn(async () => {
           await new Promise<void>((resolve) => {
             finishStop = resolve;
@@ -177,21 +201,16 @@ describe("sandbox state retention", () => {
       const initial = realLifecycleHarness(instance, durableState, provider);
       const spawning = initial.manager.spawnSandbox();
       await vi.waitFor(() => expect(provider.stopSandbox).toHaveBeenCalledOnce());
-      expect(
-        durableState.storage.sql
-          .exec("SELECT COUNT(*) AS count FROM events WHERE type = 'warning'")
-          .toArray()
-      ).toEqual([{ count: 1 }]);
+      // The replacement has not started, so the notice is not written yet.
+      expect(warningCount()).toEqual([{ count: 0 }]);
       expect(initial.sandbox.getSandbox()?.last_heartbeat).toBeNull();
       const restarted = realLifecycleHarness(instance, durableState, provider);
       await restarted.manager.spawnSandbox();
+      expect(provider.createSandbox).not.toHaveBeenCalled();
       finishStop();
       await spawning;
-      expect(
-        durableState.storage.sql
-          .exec("SELECT COUNT(*) AS count FROM events WHERE type = 'warning'")
-          .toArray()
-      ).toEqual([{ count: 1 }]);
+      expect(provider.createSandbox).toHaveBeenCalledOnce();
+      expect(warningCount()).toEqual([{ count: 1 }]);
     });
   });
 
@@ -574,7 +593,7 @@ describe("sandbox state retention", () => {
     });
   });
 
-  it("records lost continuity on the timeline even if replacement creation fails", async () => {
+  it("leaves the timeline alone when the replacement fails to start", async () => {
     const stub = await servingSession();
     await queryDO(stub, "UPDATE sandbox SET status = 'stopped', last_heartbeat = ?", Date.now());
     await runInSessionDO(stub, async (instance, durableState) => {
@@ -583,13 +602,8 @@ describe("sandbox state retention", () => {
       await manager.spawnSandbox();
       expect(provider.createSandbox).toHaveBeenCalledOnce();
     });
-    const warnings = await queryDO<{ data: string }>(
-      stub,
-      "SELECT data FROM events WHERE type = 'warning'"
-    );
-    expect(warnings.map(({ data }) => JSON.parse(data).message)).toEqual([
-      expect.stringContaining("Uncommitted changes and earlier conversation context"),
-    ]);
+    // "Reconnected" would be false: the creator is told only once the replacement starts.
+    expect(await queryDO(stub, "SELECT data FROM events WHERE type = 'warning'")).toEqual([]);
   });
 
   it("keeps a lost capture held after reconstruction and ignores its late response", async () => {

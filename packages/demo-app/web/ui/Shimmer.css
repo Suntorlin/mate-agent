@@ -1,0 +1,24 @@
+.ui-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--social-fg-muted) 0%,
+    var(--social-fg-subtle) 40%,
+    var(--social-fg) 50%,
+    var(--social-fg-subtle) 60%,
+    var(--social-fg-muted) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ui-shimmer var(--motion-shimmer) linear infinite;
+}
+
+@keyframes ui-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}

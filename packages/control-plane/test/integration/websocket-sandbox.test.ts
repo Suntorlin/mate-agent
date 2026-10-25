@@ -837,6 +837,71 @@ describe("Sandbox WebSocket (via SELF.fetch)", () => {
     ws!.close();
   });
 
+  it("asks a bridge that reconnects mid-turn about the turn, and settles the turn it lost", async () => {
+    const name = `ws-sandbox-reconcile-${Date.now()}`;
+    const { stub } = await initNamedSession(name);
+    // Ready already: the bridge process restarted, so its `ready` is a repeat.
+    await seedSandboxAuth(stub, {
+      authToken: SANDBOX_TOKEN,
+      sandboxId: SANDBOX_ID,
+      status: "ready",
+    });
+    const [{ id: authorId }] = await queryDO<{ id: string }>(
+      stub,
+      "SELECT id FROM participants LIMIT 1"
+    );
+    await seedMessage(stub, {
+      id: "message-lost-on-restart",
+      authorId,
+      content: "Run a long build",
+      source: "web",
+      status: "processing",
+      createdAt: 100,
+      startedAt: 200,
+    });
+    const { ws } = await openSandboxWs(name, {
+      authToken: SANDBOX_TOKEN,
+      sandboxId: SANDBOX_ID,
+    });
+    expect(ws).not.toBeNull();
+    ws!.accept();
+
+    const reconcile = collectMessages(ws!, {
+      until: (message) => message.type === "reconcile_prompt",
+    });
+    ws!.send(
+      JSON.stringify({ type: "ready", sandboxId: SANDBOX_ID, timestamp: Date.now() / 1000 })
+    );
+    expect(await reconcile).toContainEqual({
+      type: "reconcile_prompt",
+      messageId: "message-lost-on-restart",
+    });
+
+    // The restarted bridge never received the message, so it fails it.
+    const ack = collectMessages(ws!, { until: (message) => message.type === "ack" });
+    ws!.send(
+      JSON.stringify({
+        type: "execution_complete",
+        messageId: "message-lost-on-restart",
+        success: false,
+        error: "The sandbox's agent process restarted and lost this turn. Send it again.",
+        sandboxId: SANDBOX_ID,
+        timestamp: Date.now() / 1000,
+        ackId: "ack-lost-on-restart",
+      })
+    );
+    await ack;
+    expect(
+      await queryDO<{ status: string }>(
+        stub,
+        "SELECT status FROM messages WHERE id = ?",
+        "message-lost-on-restart"
+      )
+    ).toEqual([{ status: "failed" }]);
+
+    ws!.close();
+  });
+
   it("preserves token segments around context compaction for replay", async () => {
     const name = `ws-sandbox-compaction-${Date.now()}`;
     const { stub } = await initNamedSession(name);

@@ -55,7 +55,13 @@ import { NodeJobs } from "./job-queue";
 import { openJobStore } from "./job-store";
 import { ensurePrivateDirectory } from "./private-paths";
 import { createNodeSessionRuntimeDispatch } from "./runtime-client";
-import { createS3ObjectStorage, type S3ObjectStorageConfig } from "./s3-object-storage";
+import { createS3DirectTransfer } from "../storage/s3/s3-direct-transfer";
+import {
+  createS3LargeObjectTransfers,
+  readS3TransferConfig,
+  type S3TransferConfig,
+} from "../storage/s3/s3-large-object-transfers";
+import { createS3ObjectStorage, type S3ObjectStorageConfig } from "../storage/s3/s3-object-storage";
 import { SessionRuntimeRegistry } from "./session-runtime-registry";
 import { createFileSessionStoreProvider } from "./session-store";
 import { openNodeSqlDatabase } from "./sqlite-database";
@@ -68,6 +74,11 @@ export interface NodeHostOptions {
   config: EnvConfig;
   settings: NodeHostSettings;
   objectStorage: S3ObjectStorageConfig;
+  /**
+   * Signed-URL transfers on the same store; derived from `objectStorage` when omitted. Its public
+   * endpoint (OBJECT_STORE_PUBLIC_ENDPOINT) serves both MEDIA_TRANSFERS and MEDIA_DIRECT.
+   */
+  objectTransfers?: S3TransferConfig;
   /** The route modules to serve: the production catalog unless a test supplies its own. */
   routes?: readonly RouteModule[];
 }
@@ -187,11 +198,26 @@ async function boot(
     buildRuntime: (platform) => createSessionRuntime(platform, env),
     log,
   });
+  const transferConfig = options.objectTransfers ?? readS3TransferConfig({}, options.objectStorage);
+  const mediaTransfers = createS3LargeObjectTransfers(options.objectStorage, transferConfig);
+  if (transferConfig.corsOrigins.length > 0) {
+    // Browsers PUT upload parts straight to the store, which must allow the web origin. Best
+    // effort: a store that refuses the rule still serves everything but browser uploads.
+    mediaTransfers.applyCors(transferConfig.corsOrigins).catch((error: unknown) => {
+      log.warn("Could not apply the object store's CORS rule", {
+        event: "object_store.cors_failed",
+        origins: transferConfig.corsOrigins,
+        error: error instanceof Error ? error : String(error),
+      });
+    });
+  }
   const platform: Platform = {
     DB: db,
     SESSION: createNodeSessionRuntimeDispatch(registry),
     REPOS_CACHE: new SqlCacheStore(cacheDb),
     MEDIA_BUCKET: createS3ObjectStorage(options.objectStorage),
+    MEDIA_DIRECT: createS3DirectTransfer(options.objectStorage, transferConfig.publicEndpoint),
+    MEDIA_TRANSFERS: mediaTransfers,
     JOBS: jobs,
   };
   const env: Env = { ...config, ...platform };

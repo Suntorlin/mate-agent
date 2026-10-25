@@ -46,10 +46,14 @@ function createCtx(principal?: Principal): RequestContext {
       summarize: () => ({}),
     },
     principal,
-    ...(principal?.kind === "user"
+    ...(principal?.kind === "user" ||
+    (principal?.kind === "service" && principal.actor?.canonicalUserId)
       ? {
           authorization: {
-            userId: principal.userId,
+            userId:
+              principal.kind === "user"
+                ? principal.userId
+                : (principal.actor?.canonicalUserId ?? "unreachable"),
             suspendedAt: null,
             role: { id: "role_builtin_owner", key: "owner" as const, name: "Owner" },
             permissions: ["sessions.read", "sessions.delete", "sessions.lifecycle"] as const,
@@ -95,6 +99,8 @@ const listSession = {
   activeDurationMs: 0,
   messageCount: 1,
   prCount: 0,
+  cover: null,
+  mediaCount: 0,
   environmentId: null,
   createdAt: 100,
   updatedAt: 200,
@@ -248,6 +254,32 @@ describe("session index routes", () => {
         offset: 0,
         viewerUserId: "0123456789abcdef0123456789abcdef",
         ownerFilter: "started",
+      })
+    );
+  });
+
+  it("resolves createdBy=me through a the product app actor's canonical user", async () => {
+    // The "mine" filter and the viewer read-state join both key off
+    // viewerUserId, so one binding proves app sessions list as the
+    // canonical user's own with that user's read state.
+    const canonicalUserId = "fedcba9876543210fedcba9876543210";
+    const response = await listSessions("?createdBy=me", {
+      kind: "service",
+      service: "app",
+      actor: {
+        provider: "app",
+        providerUserId: "uid-42",
+        canonicalUserId,
+        participantUserId: "app:uid-42",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockSessionIndexStore.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createdByUserIds: [],
+        ownerFilter: "started",
+        viewerUserId: canonicalUserId,
       })
     );
   });

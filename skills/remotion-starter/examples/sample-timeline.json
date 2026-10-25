@@ -1,0 +1,53 @@
+{
+  "canvas": { "width": 1080, "height": 1920, "fps": 30 },
+  "shots": [
+    {
+      "src": "assets/gradient.png",
+      "duration": 2.5,
+      "kenBurns": { "from": { "scale": 1.0 }, "to": { "scale": 1.15, "y": -3 } }
+    },
+    {
+      "src": "assets/clip.mp4",
+      "duration": 3.0,
+      "trimStart": 0.5,
+      "transition": { "type": "crossfade", "duration": 0.4 }
+    },
+    {
+      "src": "assets/grid.png",
+      "duration": 2.5,
+      "fit": "contain",
+      "transition": { "type": "crossfade", "duration": 0.3 }
+    }
+  ],
+  "texts": [
+    {
+      "text": "STOP SCROLLING 🔥",
+      "start": 0,
+      "duration": 2.3,
+      "style": "hook",
+      "position": "top"
+    },
+    { "text": "新品上市", "start": 5.6, "duration": 2.4, "style": "label", "position": "upper" }
+  ],
+  "captions": [
+    {
+      "words": [
+        { "text": "This", "start": 2.5, "end": 2.8 },
+        { "text": "changed", "start": 2.8, "end": 3.3 },
+        { "text": "my", "start": 3.3, "end": 3.5 },
+        { "text": "morning", "start": 3.5, "end": 4.1 },
+        { "text": "routine", "start": 4.1, "end": 4.9 }
+      ]
+    },
+    {
+      "style": "box",
+      "words": [
+        { "text": "这个", "start": 5.1, "end": 5.6 },
+        { "text": "产品", "start": 5.6, "end": 6.2 },
+        { "text": "真的", "start": 6.2, "end": 6.8 },
+        { "text": "太好用了", "start": 6.8, "end": 7.9 }
+      ]
+    }
+  ],
+  "audio": [{ "src": "assets/tone.m4a", "start": 0, "volume": 0.3, "duration": 8 }]
+}

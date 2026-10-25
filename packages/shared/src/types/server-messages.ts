@@ -3,9 +3,15 @@ import { z } from "zod";
 import { sessionArtifactSchema } from "./artifacts";
 import { sessionRepositoryStateSchema } from "./repositories";
 import { sandboxBootPhaseSchema, sandboxEventSchema } from "./sandbox-events";
-import { sandboxStatusSchema, sessionStatusSchema, timelineSequenceSchema } from "./sessions";
+import {
+  sandboxStatusSchema,
+  sessionPermissionModeSchema,
+  sessionStatusSchema,
+  timelineSequenceSchema,
+} from "./sessions";
 import { sandboxShutdownSchema, shutdownRecoveryActionSchema } from "./sandbox-shutdown";
 import { clientRequestIdSchema } from "./prompts";
+import { userMemoryLoadedMessageSchema, userMemoryUpdatedMessageSchema } from "./user-memory";
 
 export const promptQueueItemSchema = z.object({
   messageId: z.string(),
@@ -36,9 +42,11 @@ const sessionStateSchema = z.object({
   reasoningEffort: z.string().optional(),
   isProcessing: z.boolean().optional(),
   parentSessionId: z.string().nullable().optional(),
+  /** USD the session has spent against its budget. */
   totalCost: z.number().optional(),
   maxSessionCostUsd: z.number().nullable().optional(),
   budgetExhausted: z.boolean().optional(),
+  permissionMode: sessionPermissionModeSchema.optional(),
   codeServerUrl: z.string().nullable().optional(),
   codeServerPassword: z.string().nullable().optional(),
   vncUrl: z.string().nullable().optional(),
@@ -199,10 +207,13 @@ const serverMessageUnionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("processing_status"), isProcessing: z.boolean() }),
   z.object({
     type: z.literal("budget_status"),
+    /** USD spent against the budget. */
     totalCost: z.number(),
     maxSessionCostUsd: z.number().nullable(),
     budgetExhausted: z.boolean(),
   }),
+  userMemoryUpdatedMessageSchema,
+  userMemoryLoadedMessageSchema,
   z.object({
     type: z.literal("diff_state_changed"),
     revisionId: z.string().nullable(),

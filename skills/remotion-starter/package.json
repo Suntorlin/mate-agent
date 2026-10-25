@@ -1,0 +1,26 @@
+{
+  "name": "remotion-starter",
+  "private": true,
+  "type": "module",
+  "description": "Data-driven 9:16 timeline renderer preinstalled in the sandbox image",
+  "dependencies": {
+    "@react-three/fiber": "9.3.0",
+    "@remotion/cli": "4.0.528",
+    "@remotion/google-fonts": "4.0.528",
+    "@remotion/lottie": "4.0.528",
+    "@remotion/media-parser": "4.0.528",
+    "@remotion/media-utils": "4.0.528",
+    "@remotion/noise": "4.0.528",
+    "@remotion/paths": "4.0.528",
+    "@remotion/shapes": "4.0.528",
+    "@remotion/three": "4.0.528",
+    "@remotion/transitions": "4.0.528",
+    "lottie-web": "5.13.0",
+    "puppeteer-core": "25.12.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.528",
+    "three": "0.180.0",
+    "zod": "4.5.4"
+  }
+}

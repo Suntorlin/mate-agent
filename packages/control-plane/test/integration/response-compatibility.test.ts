@@ -18,11 +18,14 @@ const MP4_BYTES = Uint8Array.from([
   0x69, 0x73, 0x6f, 0x6d, 0x69, 0x73, 0x6f, 0x32,
 ]);
 
-const SERVICE_SECRETS: Record<ServiceName, string> = {
+type TestServiceName = ServiceName;
+
+const SERVICE_SECRETS: Record<TestServiceName, string> = {
   web: "test-service-secret-web",
   "github-bot": "test-service-secret-github-bot",
   "slack-bot": "test-service-secret-slack-bot",
   "linear-bot": "test-service-secret-linear-bot",
+  app: "test-service-secret-app",
 };
 
 function fetchWorker(request: Request, requestEnv: WorkerBindings = env): Promise<Response> {
@@ -32,7 +35,7 @@ function fetchWorker(request: Request, requestEnv: WorkerBindings = env): Promis
 async function signedRequest(input: {
   url: string;
   method?: string;
-  service: ServiceName;
+  service: TestServiceName;
   body?: string;
   actor?: string;
   headers?: Record<string, string>;
@@ -136,8 +139,9 @@ describe("ordinary HTTP response compatibility", () => {
   it("decorates an SCM provider rejection with the common response headers", async () => {
     const traceId = "scm-rejection-trace";
     const request = await signedRequest({
-      url: "https://test.local/repos",
+      url: "https://test.local/sessions",
       service: "slack-bot",
+      actor: "slack:U-SCM-REJECTION",
       headers: { "x-trace-id": traceId },
     });
 

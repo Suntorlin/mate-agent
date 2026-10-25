@@ -1,0 +1,31 @@
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-title);
+  font-weight: var(--weight-strong);
+  line-height: var(--leading-title);
+}
+
+.brand--large {
+  font-size: var(--text-heading);
+  line-height: var(--leading-heading);
+}
+
+.brand__mark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-tag);
+  background: var(--social-primary);
+}
+
+.brand__mark--solo {
+  display: grid;
+  place-items: center;
+  color: var(--social-primary-fg);
+  font-size: var(--text-body);
+  font-weight: var(--weight-strong);
+  width: var(--control-md);
+  height: var(--control-md);
+  border-radius: var(--radius-field);
+}

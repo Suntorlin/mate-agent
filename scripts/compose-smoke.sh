@@ -6,7 +6,7 @@
 # It builds the image, brings up the app with the object store, Litestream and
 # a stand-in for the Modal data plane, runs the session driver, then checks the
 # boot-level invariants no unit test can see: migrations applied, the cron loop
-# ticking, the global store replicating, a clean drain on SIGTERM, and a
+# running, the global store replicating, a clean drain on SIGTERM, and a
 # readable failure when a required key is missing.
 #
 # Everything runs locally. No cloud credentials, so this passes on a fork's
@@ -40,7 +40,7 @@ ENV_FILE="$(mktemp -t compose-smoke-env.XXXXXX)"
 export SMOKE_ENV_FILE="$ENV_FILE"
 
 COMPOSE=(docker compose --project-name "$PROJECT" --env-file "$ENV_FILE"
-  -f docker-compose.yml -f docker-compose.smoke.yml)
+  -f deploy/compose/docker-compose.yml -f deploy/compose/docker-compose.smoke.yml)
 
 # Overridable so the smoke can run beside a development stack on the defaults.
 APP_PORT="${SMOKE_APP_PORT:-8787}"
@@ -169,20 +169,18 @@ CONTROL_PLANE_URL="http://localhost:$APP_PORT" \
 # Boot-level invariants: what only a booted container can show.
 # ---------------------------------------------------------------------------
 
-# The scheduler tick runs on the minute, so the wait is bounded by one slot
-# plus room for a slow runner. Everything above already ran, so most of that
-# minute has usually passed by the time we get here.
-log "scheduled work"
-TICK_DEADLINE=$((SECONDS + 90))
-until "${COMPOSE[@]}" logs --no-color app | grep -q "scheduler.tick_complete"; do
-  [ "$SECONDS" -lt "$TICK_DEADLINE" ] || fail "the cron loop never completed a tick"
+# The cron loop is asserted through /healthz by the driver above: the jobs
+# left on it run hourly at the most, so there is no tick to wait for here.
+
+# Litestream starts once the app is healthy and snapshots on its own clock, so
+# the wait is bounded rather than a single look.
+log "replication"
+SNAPSHOT_DEADLINE=$((SECONDS + 90))
+until "${COMPOSE[@]}" logs --no-color litestream | grep -q "snapshot written"; do
+  [ "$SECONDS" -lt "$SNAPSHOT_DEADLINE" ] ||
+    fail "Litestream never wrote a snapshot of the global store"
   sleep 3
 done
-echo "  ok  the cron loop ticked"
-
-log "replication"
-"${COMPOSE[@]}" logs --no-color litestream | grep -q "snapshot written" ||
-  fail "Litestream never wrote a snapshot of the global store"
 echo "  ok  Litestream replicated the global store"
 
 log "clean shutdown"

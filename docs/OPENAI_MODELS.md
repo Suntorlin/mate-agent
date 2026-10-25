@@ -6,6 +6,10 @@ how to configure your deployment to use them.
 OpenAI subscriptions are managed as installation-wide provider accounts. Sessions and automations
 can use the installation default, select a specific account, or explicitly use API-key mode.
 
+OpenAI models run on the OpenCode harness: create the session with `"harness": "opencode"`, or set
+`DEFAULT_SESSION_HARNESS=opencode` for callers that name no harness. The default Claude Agent
+harness runs Anthropic models only.
+
 ---
 
 ## Supported Models

@@ -19,6 +19,8 @@ class _PromptActivity:
     message_id: str
     task: asyncio.Task[Event]
     interruption_error: str | None = None
+    # The interruption was a person's stop, not a failure; the terminal says so.
+    stopped: bool = False
     terminal_selected: bool = False
 
 
@@ -72,14 +74,19 @@ class ActivitySupervisor:
         self._prompts[task] = activity
         task.add_done_callback(lambda completed: self._finish_prompt(activity, completed))
 
-    def interrupt_prompt(self, error: str) -> None:
-        self.set_prompt_interruption(error)
+    def interrupt_prompt(self, error: str, *, stopped: bool = False) -> None:
+        self.set_prompt_interruption(error, stopped=stopped)
         activity = self._current_prompt
         if activity is not None and not activity.task.done():
             activity.task.cancel()
 
     def set_prompt_interruption(
-        self, error: str, *, all_prompts: bool = False, overwrite: bool = False
+        self,
+        error: str,
+        *,
+        all_prompts: bool = False,
+        overwrite: bool = False,
+        stopped: bool = False,
     ) -> None:
         activities = tuple(self._prompts.values()) if all_prompts else (self._current_prompt,)
         for activity in activities:
@@ -87,6 +94,7 @@ class ActivitySupervisor:
                 continue
             if activity.interruption_error is None or overwrite:
                 activity.interruption_error = error
+                activity.stopped = stopped
 
     def _cancel_prompts(self, *, all_prompts: bool) -> None:
         activities = tuple(self._prompts.values()) if all_prompts else (self._current_prompt,)
@@ -122,6 +130,7 @@ class ActivitySupervisor:
                 **event,
                 "success": False,
                 "error": activity.interruption_error,
+                **({"stopped": True} if activity.stopped else {}),
             }
         activity.terminal_selected = True
         self._schedule_delivery(event, refresh_message_id=activity.message_id)

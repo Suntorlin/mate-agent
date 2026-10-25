@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Register this session's workflow with the control plane.
+
+Usage: save-workflow <workflow.json>
+
+The file carries {name, description?, definition}; steps reference skills by
+name and the control plane pins their current revisions. Prints the saved
+workflow as JSON, or a readable error and a non-zero exit.
+"""
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+REQUEST_TIMEOUT_SECONDS = 30
+
+
+class SaveError(Exception):
+    pass
+
+
+def session_id() -> str:
+    try:
+        config = json.loads(os.environ.get("SESSION_CONFIG") or "{}")
+    except json.JSONDecodeError:
+        config = {}
+    value = config.get("sessionId") or config.get("session_id") or ""
+    if not value:
+        raise SaveError("no session id in SESSION_CONFIG")
+    return value
+
+
+def save(payload: dict) -> dict:
+    token = os.environ.get("SANDBOX_AUTH_TOKEN")
+    if not token:
+        raise SaveError("SANDBOX_AUTH_TOKEN is not set")
+    base = (os.environ.get("CONTROL_PLANE_URL") or "http://localhost:8787").rstrip("/")
+    request = urllib.request.Request(
+        f"{base}/sessions/{urllib.parse.quote(session_id(), safe='')}/saved-workflows",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "save-workflow",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", "replace")
+        try:
+            message = json.loads(body).get("error") or body
+        except json.JSONDecodeError:
+            message = body
+        raise SaveError(f"not saved ({error.code}): {message}") from error
+    except urllib.error.URLError as error:
+        raise SaveError(f"could not reach the control plane: {error.reason}") from error
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("usage: save-workflow <workflow.json>", file=sys.stderr)
+        return 2
+    try:
+        with open(argv[1], encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"save-workflow: cannot read {argv[1]}: {error}", file=sys.stderr)
+        return 1
+    try:
+        result = save(payload)
+    except SaveError as error:
+        print(f"save-workflow: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

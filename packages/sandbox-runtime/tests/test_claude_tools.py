@@ -8,12 +8,15 @@ import httpx
 import pytest
 
 from sandbox_runtime.harness.claude_tools import (
+    NAME_PROJECT_DESCRIPTION,
+    PROJECT_NAME_MAX_CHARS,
     PULL_REQUEST_TIMEOUT_SECONDS,
     ControlPlaneToolClient,
     OpenInspectTools,
     ToolServerConfig,
     build_tool_server,
     build_tools,
+    project_name,
 )
 
 
@@ -328,10 +331,26 @@ async def test_upload_media_video_carries_every_required_field(tmp_path: Path) -
         assert f"require {missing}" in _text(await tools.upload_media(args))
         assert seen == []
 
-    seen.clear()
-    text = _text(await tools.upload_media({**video, "hasAudio": True}))
-    assert "do not support audio" in text
+    await tools.upload_media({**video, "hasAudio": True})
+    assert _multipart_fields(seen[0])["hasAudio"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_upload_media_sends_html_as_a_page(tmp_path: Path) -> None:
+    page = tmp_path / "storyboard.html"
+    page.write_text("<!doctype html><h1>Storyboard</h1>")
+    tools, seen = _tools(tmp_path, lambda _r: httpx.Response(200, json={"artifactId": "p1"}))
+    assert "artifactType 'page'" in _text(await tools.upload_media({"filePath": str(page)}))
     assert seen == []
+
+    text = _text(
+        await tools.upload_media(
+            {"filePath": str(page), "artifactType": "page", "caption": "Storyboard"}
+        )
+    )
+    assert _multipart_fields(seen[0]) == {"artifactType": "page", "caption": "Storyboard"}
+    assert b"Content-Type: text/html" in seen[0].content
+    assert "p1" in text
 
 
 @pytest.mark.asyncio
@@ -339,8 +358,116 @@ async def test_upload_media_rejects_unsupported_files(tmp_path: Path) -> None:
     doc = tmp_path / "notes.txt"
     doc.write_text("x")
     tools, seen = _tools(tmp_path, lambda _r: httpx.Response(200, json={}))
-    assert "only supports" in _text(await tools.upload_media({"filePath": str(doc)}))
+    text = _text(await tools.upload_media({"filePath": str(doc)}))
+    assert "only previews" in text and "artifactType 'file'" in text
     assert seen == []
+
+
+def _direct_handler(part_size: int = 4):
+    """The control plane's direct-upload routes and the store's signed part URLs."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT":
+            number = request.url.params["partNumber"]
+            return httpx.Response(200, headers={"etag": f'"etag-{number}"'})
+        body = json.loads(request.content or b"{}")
+        if request.url.path == "/sessions/s1/uploads":
+            count = max(1, -(-body["sizeBytes"] // part_size))
+            return httpx.Response(
+                201,
+                json={
+                    "artifactId": "f1",
+                    "uploadId": "up-1",
+                    "filename": body["filename"],
+                    "partSizeBytes": part_size,
+                    "parts": [
+                        {"partNumber": n, "url": f"https://store.example/k?partNumber={n}"}
+                        for n in range(1, count + 1)
+                    ],
+                },
+            )
+        return httpx.Response(201, json={"artifactId": "f1", "filename": body.get("filename")})
+
+    return handle
+
+
+@pytest.mark.asyncio
+async def test_upload_media_hands_over_any_file_through_signed_parts(tmp_path: Path) -> None:
+    doc = tmp_path / "notes.txt"
+    doc.write_text("ten bytes!")
+    tools, seen = _tools(tmp_path, _direct_handler(part_size=4))
+
+    text = _text(
+        await tools.upload_media(
+            {"filePath": str(doc), "artifactType": "file", "caption": "脚本", "kind": "project"}
+        )
+    )
+
+    assert "f1" in text
+    start = seen[0]
+    assert start.url.path == "/sessions/s1/uploads"
+    assert start.headers["authorization"] == "Bearer tok"
+    assert json.loads(start.content) == {
+        "artifactType": "file",
+        "filename": "notes.txt",
+        "contentType": "text/plain",
+        "sizeBytes": 10,
+    }
+    puts = sorted(
+        (request for request in seen if request.method == "PUT"),
+        key=lambda request: int(request.url.params["partNumber"]),
+    )
+    assert b"".join(request.content for request in puts) == b"ten bytes!"
+    assert all("authorization" not in request.headers for request in puts)
+    complete = json.loads(seen[-1].content)
+    assert seen[-1].url.path == "/sessions/s1/uploads/f1/complete"
+    assert complete == {
+        "artifactType": "file",
+        "uploadId": "up-1",
+        "filename": "notes.txt",
+        "caption": "脚本",
+        "kind": "project",
+        "contentType": "text/plain",
+        "parts": [{"partNumber": n, "etag": f'"etag-{n}"'} for n in (1, 2, 3)],
+    }
+
+
+@pytest.mark.asyncio
+async def test_upload_media_sends_large_videos_straight_to_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_runtime.harness import claude_tools
+
+    monkeypatch.setattr(claude_tools, "VIDEO_INLINE_MAX_BYTES", 8)
+    clip = tmp_path / "v03-4k.mp4"
+    clip.write_bytes(b"\x00\x00\x00\x18ftypisom-and-more")
+    tools, seen = _tools(tmp_path, _direct_handler(part_size=64))
+
+    await tools.upload_media(
+        {
+            "filePath": str(clip),
+            "artifactType": "video",
+            "caption": "成片 4K",
+            "durationMs": 180_000,
+            "recordingStartedAt": 1_000,
+            "recordingEndedAt": 181_000,
+            "dimensions": {"width": 2160, "height": 3840},
+            "hasAudio": True,
+        }
+    )
+
+    assert seen[0].url.path == "/sessions/s1/uploads"
+    assert json.loads(seen[0].content)["artifactType"] == "video"
+    complete = json.loads(seen[-1].content)
+    assert complete["video"] == {
+        "caption": "成片 4K",
+        "durationMs": "180000",
+        "recordingStartedAt": "1000",
+        "recordingEndedAt": "181000",
+        "dimensions": json.dumps({"width": 2160, "height": 3840}),
+        "truncated": "false",
+        "hasAudio": "true",
+    }
 
 
 def test_build_tool_server_registers_the_gated_tools(tmp_path: Path) -> None:
@@ -356,3 +483,94 @@ def test_build_tool_server_registers_the_gated_tools(tmp_path: Path) -> None:
     minimal = names(has_repository=False, slack_notify_enabled=False)
     assert "create-pull-request" not in minimal
     assert "slack-notify" not in minimal
+    # Every session can ask its user and name its project.
+    assert {"ask_user", "name_project", "upload-media"} <= minimal
+
+
+_PACE_CARD = {
+    "title": "节奏想要哪种",
+    "kind": "single",
+    "options": [{"value": "keep", "title": "照原片节奏"}, {"value": "fast", "title": "更快"}],
+    "allowOther": True,
+    "secondary": None,
+}
+
+
+@pytest.mark.asyncio
+async def test_ask_user_shows_the_card_and_tells_the_agent_to_end_its_turn(tmp_path: Path) -> None:
+    tools, seen = _tools(
+        tmp_path,
+        lambda _r: httpx.Response(201, json={"questionId": "q_abc", "messageId": "msg-1"}),
+    )
+
+    result = await tools.ask_user(_PACE_CARD)
+
+    request = seen[0]
+    assert request.method == "POST"
+    assert str(request.url) == "https://cp.example/sessions/s1/questions"
+    assert request.headers["Authorization"] == "Bearer tok"
+    # Absent optionals stay absent rather than arriving as null.
+    assert json.loads(request.content) == {k: v for k, v in _PACE_CARD.items() if v is not None}
+    assert not result.get("is_error")
+    text = _text(result)
+    assert "questionId q_abc" in text
+    assert "End your turn now" in text
+    assert '"[回答 q_abc"' in text
+
+
+@pytest.mark.asyncio
+async def test_ask_user_relays_what_is_wrong_with_the_card(tmp_path: Path) -> None:
+    tools, _ = _tools(
+        tmp_path,
+        lambda _r: httpx.Response(
+            400,
+            json={
+                "error": "Invalid question",
+                "issues": ["options: a binary question has exactly 2 options"],
+            },
+        ),
+    )
+
+    result = await tools.ask_user({"title": "?", "kind": "binary", "options": []})
+
+    assert result["is_error"] is True
+    assert "- options: a binary question has exactly 2 options" in _text(result)
+    assert "call ask_user again" in _text(result)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_falls_back_to_plain_text_when_no_card_can_be_shown(tmp_path: Path) -> None:
+    tools, _ = _tools(
+        tmp_path, lambda _r: httpx.Response(409, json={"error": "No turn is running"})
+    )
+
+    result = await tools.ask_user(_PACE_CARD)
+
+    assert result["is_error"] is True
+    assert "No turn is running (HTTP 409)" in _text(result)
+    assert "plain text" in _text(result)
+
+
+@pytest.mark.asyncio
+async def test_name_project_takes_a_short_title_and_calls_nothing(tmp_path: Path) -> None:
+    tools, seen = _tools(tmp_path, lambda _r: httpx.Response(500))
+
+    named = await tools.name_project({"title": "  颜料宇宙 · 30 秒动效片 "})
+    assert not named.get("is_error")
+    assert "Named" in _text(named)
+    assert project_name({"title": "  颜料宇宙 ·\n30 秒动效片 "}) == "颜料宇宙 · 30 秒动效片"
+
+    for bad in ({}, {"title": "   "}, {"title": 3}, {"title": "长" * (PROJECT_NAME_MAX_CHARS + 1)}):
+        refused = await tools.name_project(bad)
+        assert refused.get("is_error")
+        assert "Call name_project again" in _text(refused)
+        assert project_name(bad) is None
+    # The harness turns the call into the session's title; the tool itself sends nothing.
+    assert seen == []
+
+
+def test_name_project_says_when_to_name_and_in_whose_language() -> None:
+    assert "as soon as you know what is being made" in NAME_PROJECT_DESCRIPTION
+    assert "in the user's language" in NAME_PROJECT_DESCRIPTION
+    assert "Not a file name or code name" in NAME_PROJECT_DESCRIPTION
+    assert "do not mention the call" in NAME_PROJECT_DESCRIPTION

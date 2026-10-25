@@ -26,9 +26,12 @@ describe("readEnvConfig", () => {
     expect("LOG_LEVEL" in config).toBe(false);
   });
 
-  it("rejects invalid teams enforcement modes at startup", () => {
+  it("rejects invalid teams enforcement modes and session visibilities at startup", () => {
     expect(() => readEnvConfig({ ...REQUIRED, TEAMS_ENFORCEMENT: "enabled" })).toThrow(
       "Invalid TEAMS_ENFORCEMENT"
+    );
+    expect(() => readEnvConfig({ ...REQUIRED, DEFAULT_SESSION_VISIBILITY: "team" })).toThrow(
+      "Invalid DEFAULT_SESSION_VISIBILITY"
     );
   });
 
@@ -50,7 +53,7 @@ describe("readNodeHostSettings", () => {
       migrationsDir: DEFAULT_MIGRATIONS_DIR,
       shutdownTimeoutMs: 30_000,
     });
-    expect(DEFAULT_MIGRATIONS_DIR.endsWith("/terraform/d1/migrations")).toBe(true);
+    expect(DEFAULT_MIGRATIONS_DIR.endsWith("/deploy/d1/migrations")).toBe(true);
   });
 
   it("reads the overrides and rejects a malformed number", () => {

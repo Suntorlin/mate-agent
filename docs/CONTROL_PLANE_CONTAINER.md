@@ -22,13 +22,14 @@ locally, pointed at the container (see below).
 
 ## Quick start
 
-Prerequisites: Docker with Compose v2, a GitHub App and OAuth app as in
-[GETTING_STARTED.md](./GETTING_STARTED.md), and a sandbox provider (Modal by default).
+Prerequisites: Docker with Compose v2, a GitHub App and OAuth app, and a sandbox provider (Modal by
+default). The compose files and `.env.example` are in `deploy/compose/`; run every `docker compose`
+command below from that directory.
 
 1. Create the configuration file and fill it in:
 
    ```bash
-   cp .env.example .env
+   cd deploy/compose && cp .env.example .env
    ```
 
    Every variable is documented in place, and every value a boot cannot do without either ships with
@@ -195,29 +196,6 @@ network, so `APP_BIND_ADDRESS` stays on loopback and the plaintext port is never
 outside. `WORKER_URL` is then `https://<CADDY_DOMAIN>` and the web app's `NEXT_PUBLIC_WS_URL` is
 `wss://<CADDY_DOMAIN>`.
 
-## Configuration on AWS
-
-On AWS the container reads the same `.env` variables from its environment. The deploy step
-materializes them from SSM Parameter Store; nothing is baked into the image. With an instance role,
-leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty and the SDK uses the role.
-
-The instance runs this same stack with one overlay, `docker-compose.aws.yml`:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d
-```
-
-It changes three things and nothing else. The app runs the image `CONTROL_PLANE_IMAGE` names — an
-ordinary `.env` entry, written from SSM like the rest, so changing the tag is a `terraform apply`
-and a restart rather than a new instance — rather than a build, because the instance has no
-checkout. The local object store does not run, because S3 is the object store and Litestream's
-replica target. And Caddy leaves the `tls` profile and starts with the rest, because TLS is not
-optional on a public address.
-
-`.env` still has to carry `OBJECT_STORE_ROOT_PASSWORD`: Compose interpolates the base file before it
-applies an overlay, so that variable's `:?` guard fires whether or not the local object store is
-among the services that end up running. The AWS deployment gives it an unused value.
-
 ## The smoke test
 
 CI boots this stack on every pull request and round-trips one session through it:
@@ -230,7 +208,7 @@ It runs under its own Compose project name and a temporary environment file, so 
 this checkout's `.env` or a development stack's containers and volumes. It builds the image, brings
 the stack up with a stand-in for the Modal data plane, creates a session, sends a prompt, and waits
 for that exact message's reply to arrive on a subscribed client socket. Then it checks what only a
-booted container shows: migrations applied, the cron loop ticking, Litestream replicating, a clean
+booted container shows: migrations applied, the cron loop running, Litestream replicating, a clean
 drain on SIGTERM, and a readable failure when a required key is blank.
 
 The stand-in lives in `packages/control-plane/test/smoke/`. It answers the control plane's sandbox

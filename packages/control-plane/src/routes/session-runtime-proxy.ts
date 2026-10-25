@@ -7,7 +7,11 @@ import type {
   SessionParticipantProfilesResponse,
   SessionParticipantProfile,
 } from "@open-inspect/shared/types/sessions";
-import { sessionBudgetUpdateSchema } from "@open-inspect/shared/types/session-api";
+import {
+  sessionBudgetUpdateSchema,
+  sessionPermissionModeUpdateSchema,
+} from "@open-inspect/shared/types/session-api";
+import { cardDismissRequestSchema } from "@open-inspect/shared/types/session-cards";
 import {
   redactSessionSnapshotSandboxAccess,
   sessionSnapshotSchema,
@@ -35,6 +39,7 @@ import {
 import { parseBody, parseJsonBody } from "./body";
 import { type SessionRouteContext, dispatchSession } from "./session-route";
 import { canManageSessionBudget } from "../session/budget-authorization";
+import { enforcesSessionAccess } from "../authorization/teams-enforcement";
 
 const participantsResponseSchema = z.object({
   participants: z.array(
@@ -177,7 +182,12 @@ async function handleSessionSnapshot(
   if (!parsed.success) return error("Invalid session snapshot", 502);
   const admission = ctx.sessionAdmission;
   const sandboxAllowed =
-    admission && (admission.row.visibility === "private" || ctx.teamsEnforcementMode === "on")
+    admission &&
+    enforcesSessionAccess(
+      ctx.teamsEnforcementMode ?? "off",
+      admission.row.visibility,
+      admission.viewer
+    )
       ? checkSessionAccess(admission.viewer, admission.row, "sandbox").allowed
       : ctx.authorization?.permissions.includes("sessions.sandbox_access");
   const snapshot = sandboxAllowed ? parsed.data : redactSessionSnapshotSandboxAccess(parsed.data);
@@ -306,6 +316,66 @@ async function handleBudgetUpdate(
   });
 }
 
+/**
+ * The permission mode decides when the agent may spend without asking, so,
+ * like the cost limit, only the session owner changes it.
+ */
+async function handlePermissionModeUpdate(
+  request: Request,
+  _env: Env,
+  params: SessionParams,
+  ctx: SessionRouteContext
+): Promise<Response> {
+  const sessionId = params.id;
+
+  const body = await parseBody(
+    request,
+    sessionPermissionModeUpdateSchema,
+    "Invalid permission mode request"
+  );
+  if (body instanceof Response) return body;
+
+  const session = await new SessionIndexStore(ctx.db).get(sessionId);
+  if (!session) return error("Session not found", 404);
+  if (!canManageSessionBudget(session.userId, ctx.authorization)) {
+    return error("Only the session owner can change the permission mode", 403);
+  }
+
+  return ctx.sessionRuntime.fetch(sessionId, SessionInternalPaths.permissionMode, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Closing a card tells the session's agent something in the owner's name (with
+ * the next prompt), so, like the owner settings, only the session owner does it.
+ */
+async function handleCardDismiss(
+  request: Request,
+  _env: Env,
+  params: SessionParams,
+  ctx: SessionRouteContext
+): Promise<Response> {
+  const sessionId = params.id;
+
+  const body = await parseBody(request, cardDismissRequestSchema, "Invalid card dismiss request");
+  if (body instanceof Response) return body;
+
+  const session = await new SessionIndexStore(ctx.db).get(sessionId);
+  if (!session) return error("Session not found", 404);
+  if (!canManageSessionBudget(session.userId, ctx.authorization)) {
+    return error("Only the session owner can dismiss cards", 403);
+  }
+
+  return ctx.sessionRuntime.fetch(sessionId, SessionInternalPaths.dismissCard, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 /** Every proxied session operation, by the name its route is known by. */
 const LIFECYCLE = admit({
   ...GITHUB_USER_OR_SERVICE_ROUTE,
@@ -324,7 +394,7 @@ sessionRuntimeProxyRoutes.get(
 );
 sessionRuntimeProxyRoutes.get(
   "/sessions/:id",
-  admit({ ...SCM_AGNOSTIC_HUMAN_USER_ROUTE, authorization: requireSession("read") }),
+  admit({ ...SCM_AGNOSTIC_USER_OR_SERVICE_ROUTE, authorization: requireSession("read") }),
   (c) => dispatchSession(c, handleSessionSnapshot)
 );
 sessionRuntimeProxyRoutes.post(
@@ -440,11 +510,31 @@ sessionRuntimeProxyRoutes.post("/sessions/:id/archive", LIFECYCLE, (c) =>
 sessionRuntimeProxyRoutes.post("/sessions/:id/unarchive", LIFECYCLE, (c) =>
   dispatchSession(c, lifecycleProxy(SessionInternalPaths.unarchive))
 );
+// Both owner settings are open to a service acting for a user as well as to a
+// browser session: the product relays the user who owns the session.
 sessionRuntimeProxyRoutes.patch(
   "/sessions/:id/budget",
   admit({
-    ...SCM_AGNOSTIC_HUMAN_USER_ROUTE,
+    ...SCM_AGNOSTIC_USER_OR_SERVICE_ROUTE,
     authorization: requireSession("lifecycle"),
   }),
   (c) => dispatchSession(c, handleBudgetUpdate)
+);
+sessionRuntimeProxyRoutes.patch(
+  "/sessions/:id/permission-mode",
+  admit({
+    ...SCM_AGNOSTIC_USER_OR_SERVICE_ROUTE,
+    authorization: requireSession("lifecycle"),
+  }),
+  (c) => dispatchSession(c, handlePermissionModeUpdate)
+);
+// The owner closing a card in the conversation; the product relays the
+// user who owns the session, like the owner settings above.
+sessionRuntimeProxyRoutes.post(
+  "/sessions/:id/cards/dismiss",
+  admit({
+    ...SCM_AGNOSTIC_USER_OR_SERVICE_ROUTE,
+    authorization: requireSession("lifecycle"),
+  }),
+  (c) => dispatchSession(c, handleCardDismiss)
 );

@@ -1,0 +1,13 @@
+#!/opt/openinspect/python/bin/python3
+"""media-edit <command> [options]: captions, jumpcut, reframe, beatcut, voice, loudness, scenes,
+contact, transcribe. `media-edit <command> --help` documents each one."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from mediaedit.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    main()

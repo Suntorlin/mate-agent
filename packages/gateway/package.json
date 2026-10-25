@@ -1,0 +1,27 @@
+{
+  "name": "@open-inspect/gateway",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "The LLM gateway: one core, a Cloudflare Worker host and a Node host",
+  "scripts": {
+    "build": "npm run build:worker && npm run build:node",
+    "build:worker": "esbuild src/worker/index.ts --bundle --format=esm --platform=browser --target=es2022 --conditions=workerd,worker,browser --external:cloudflare:* --outfile=dist/worker/index.js --metafile=dist/worker/meta.json",
+    "build:node": "esbuild src/node/main.ts --bundle --format=esm --platform=node --target=node24 --external:node:* --outfile=dist/node/main.js --metafile=dist/node/meta.json",
+    "start:node": "node dist/node/main.js",
+    "test": "vitest run && vitest run --config vitest.node.config.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p test && tsc --noEmit -p test/node"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.18",
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.103.0"
+  }
+}

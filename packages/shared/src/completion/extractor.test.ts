@@ -5,6 +5,7 @@ import {
   summarizeToolCall,
   toArtifactType,
   toEventArtifactInfo,
+  toEventMediaArtifactInfo,
   type ControlPlaneFetcher,
 } from "./extractor";
 
@@ -17,6 +18,20 @@ describe("completion artifact type narrowing", () => {
     expect(toEventArtifactInfo({ artifactType: "video", url: "sessions/s1/media/a1.mp4" })).toBe(
       null
     );
+  });
+
+  it("recognizes page artifacts and keeps them out of public links and media uploads", () => {
+    expect(toArtifactType("page")).toBe("page");
+    const page = { artifactType: "page", artifactId: "a1", url: "sessions/s1/media/a1.html" };
+    expect(toEventArtifactInfo(page)).toBeNull();
+    expect(toEventMediaArtifactInfo(page)).toBeNull();
+  });
+
+  it("recognizes file artifacts and keeps them out of public links and media uploads", () => {
+    expect(toArtifactType("file")).toBe("file");
+    const file = { artifactType: "file", artifactId: "a1", url: "sessions/s1/files/a1/cut.mov" };
+    expect(toEventArtifactInfo(file)).toBeNull();
+    expect(toEventMediaArtifactInfo(file)).toBeNull();
   });
 
   it.each([null, undefined, ["main"], "main", 42])(

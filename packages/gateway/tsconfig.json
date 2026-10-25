@@ -1,0 +1,19 @@
+{
+  // The Worker's program: the core and the Worker host with workerd types only, no Node globals,
+  // so nothing in src/core or src/worker can lean on a Node API the Worker (deployed without
+  // nodejs_compat) does not have. tsconfig.node.json checks the core again with Node types only.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": ["@cloudflare/workers-types"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src/core/**/*.ts", "src/worker/**/*.ts"]
+}

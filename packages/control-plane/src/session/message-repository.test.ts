@@ -626,6 +626,28 @@ describe("MessageRepository", () => {
     expect(mock.calls[2].params[0]).toBe("execution_complete:msg-1");
   });
 
+  it("records a stopped turn as stopped, keeping why for older readers", () => {
+    mock.setData(`SELECT status, created_at, started_at FROM messages WHERE id = ?`, [
+      { status: "processing", created_at: 1000, started_at: 1200 },
+    ]);
+    const completion = repository.recordMessageCompletion(
+      {
+        type: "execution_complete",
+        messageId: "msg-1",
+        success: false,
+        error: "Execution was stopped",
+        stopped: true,
+        sandboxId: "",
+        timestamp: 3,
+      },
+      3000,
+      "processing"
+    );
+    expect(completion?.status).toBe("stopped");
+    expect(mock.calls[1].query).toContain("UPDATE messages SET status = ?");
+    expect(mock.calls[1].params).toEqual(["stopped", 3000, "Execution was stopped", "msg-1"]);
+  });
+
   it("does not complete a message in another state", () => {
     mock.setData(`SELECT status, created_at, started_at FROM messages WHERE id = ?`, [
       { status: "completed", created_at: 1000, started_at: 1200 },
@@ -715,9 +737,181 @@ describe("MessageRepository", () => {
     }
   });
 
+  it("lists the conversation and the inline turns a sandbox has not seen against SQLite", () => {
+    const db = new DatabaseSync(":memory:");
+    const sql = createNodeSqlStorage(db).sql;
+    try {
+      initSchema(sql);
+      sql.exec(
+        "INSERT INTO participants (id, user_id, role, joined_at) VALUES ('author', 'user', 'owner', 1)"
+      );
+      const turns: Array<[string, string, string, number]> = [
+        ["m1", "inline", "completed", 1000],
+        ["m2", "sandbox", "completed", 2000],
+        ["m3", "inline", "completed", 3000],
+        ["m4", "inline", "failed", 4000],
+        ["m5", "inline", "completed", 5000],
+        ["m6", "inline", "processing", 6000],
+      ];
+      for (const [id, runtime, status, createdAt] of turns) {
+        sql.exec(
+          `INSERT INTO messages (id, author_id, content, source, status, created_at, runtime)
+           VALUES (?, 'author', ?, 'web', ?, ?, ?)`,
+          id,
+          `ask ${id}`,
+          status,
+          createdAt,
+          runtime
+        );
+        sql.exec(
+          `INSERT INTO events (id, type, data, message_id, created_at, timeline_sequence)
+           VALUES (?, 'token', ?, ?, ?, ?)`,
+          `token:${id}`,
+          JSON.stringify({ type: "token", content: `reply ${id}` }),
+          id,
+          createdAt + 1,
+          createdAt + 1
+        );
+      }
+      const transaction = <T>(closure: () => T) => closure();
+      const realRepository = new MessageRepository(
+        sql,
+        transaction,
+        new SessionAttachmentRepository(sql),
+        new EventRepository(sql, transaction)
+      );
+
+      expect(realRepository.listConversationBefore("m6", 3)).toEqual([
+        { content: "ask m2", reply: "reply m2" },
+        { content: "ask m3", reply: "reply m3" },
+        { content: "ask m5", reply: "reply m5" },
+      ]);
+      expect(realRepository.listInlineTurnsSinceSandbox(20)).toEqual([
+        { content: "ask m3", reply: "reply m3" },
+        { content: "ask m5", reply: "reply m5" },
+      ]);
+      realRepository.setMessageRuntime("m6", "sandbox");
+      expect(realRepository.listInlineTurnsSinceSandbox(20)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reads the processing message a sandbox runs, never an inline turn, against SQLite", () => {
+    const db = new DatabaseSync(":memory:");
+    const sql = createNodeSqlStorage(db).sql;
+    try {
+      initSchema(sql);
+      sql.exec(
+        "INSERT INTO participants (id, user_id, role, joined_at) VALUES ('author', 'user', 'owner', 1)"
+      );
+      sql.exec(
+        `INSERT INTO messages (id, author_id, content, source, status, created_at)
+         VALUES ('m1', 'author', 'ask', 'web', 'processing', 1000)`
+      );
+      const transaction = <T>(closure: () => T) => closure();
+      const realRepository = new MessageRepository(
+        sql,
+        transaction,
+        new SessionAttachmentRepository(sql),
+        new EventRepository(sql, transaction)
+      );
+
+      // A message dispatched by an engine without inline turns has no runtime.
+      expect(realRepository.getProcessingSandboxMessage()).toEqual({ id: "m1" });
+      realRepository.setMessageRuntime("m1", "sandbox");
+      expect(realRepository.getProcessingSandboxMessage()).toEqual({ id: "m1" });
+      realRepository.setMessageRuntime("m1", "inline");
+      expect(realRepository.getProcessingSandboxMessage()).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("reads the running turn's start and its reported cost against SQLite", () => {
+    const db = new DatabaseSync(":memory:");
+    const sql = createNodeSqlStorage(db).sql;
+    try {
+      initSchema(sql);
+      sql.exec(
+        "INSERT INTO participants (id, user_id, role, joined_at) VALUES ('author', 'user', 'owner', 1)"
+      );
+      sql.exec(
+        `INSERT INTO messages (id, author_id, content, source, status, created_at, started_at,
+           completed_at, reported_cost_usd)
+         VALUES ('done', 'author', 'one', 'web', 'completed', 1000, 1000, 2000, 0.5)`
+      );
+      const transaction = <T>(closure: () => T) => closure();
+      const realRepository = new MessageRepository(
+        sql,
+        transaction,
+        new SessionAttachmentRepository(sql),
+        new EventRepository(sql, transaction)
+      );
+      expect(realRepository.getRunningTurnCost()).toBeNull();
+
+      sql.exec(
+        `INSERT INTO messages (id, author_id, content, source, status, created_at, started_at)
+         VALUES ('running', 'author', 'two', 'web', 'processing', 3000, 3500)`
+      );
+      expect(realRepository.getRunningTurnCost()).toEqual({
+        messageId: "running",
+        startedAt: 3500,
+        reportedCostUsd: 0,
+      });
+
+      realRepository.raiseReportedCost("running", 0.25);
+      expect(realRepository.getRunningTurnCost()).toEqual({
+        messageId: "running",
+        startedAt: 3500,
+        reportedCostUsd: 0.25,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("lists the earliest prompts oldest first against SQLite", () => {
+    const db = new DatabaseSync(":memory:");
+    const sql = createNodeSqlStorage(db).sql;
+    try {
+      initSchema(sql);
+      sql.exec(
+        "INSERT INTO participants (id, user_id, role, joined_at) VALUES ('author', 'user', 'owner', 1)"
+      );
+      for (const [id, createdAt] of [
+        ["msg-late", 7000],
+        ["msg-first", 5000],
+        ["msg-second", 6000],
+      ] as const) {
+        sql.exec(
+          `INSERT INTO messages (id, author_id, content, source, status, created_at)
+           VALUES (?, 'author', ?, 'web', 'completed', ?)`,
+          id,
+          `content of ${id}`,
+          createdAt
+        );
+      }
+      const transaction = <T>(closure: () => T) => closure();
+      const realRepository = new MessageRepository(
+        sql,
+        transaction,
+        new SessionAttachmentRepository(sql),
+        new EventRepository(sql, transaction)
+      );
+
+      expect(realRepository.getEarliestMessageContents(2)).toEqual([
+        "content of msg-first",
+        "content of msg-second",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("selects the latest terminal message", () => {
     repository.getLatestTerminalMessage();
-    expect(mock.calls[0].query).toContain("status IN ('completed', 'failed')");
+    expect(mock.calls[0].query).toContain("status IN ('completed', 'failed', 'stopped')");
     expect(mock.calls[0].query).toContain("COALESCE(completed_at, started_at, created_at) DESC");
   });
 

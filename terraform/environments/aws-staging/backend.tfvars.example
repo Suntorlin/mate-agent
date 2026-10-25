@@ -1,4 +1,0 @@
-# Copy to backend.tfvars (gitignored) and run:
-#   terraform init -backend-config=backend.tfvars
-bucket = "open-inspect-terraform-state-<account-id>"
-region = "us-west-2"

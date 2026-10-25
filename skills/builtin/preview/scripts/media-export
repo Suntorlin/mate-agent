@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""media-export: bundle a project folder into a zip the user can download (stdlib only).
+
+  media-export [<project folder>] ["<title>"]
+
+Zips the folder (default /workspace/project, else the current folder): sources, timeline,
+captions, audio stems, renders and editing-app project files, without dependency folders and
+caches. The zip is handed over through the runtime's upload-media as a project download, which the
+preview pane offers as "Download project"; the newest one wins. Prints upload-media's JSON, which
+carries the artifactId.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import zipfile
+from pathlib import Path
+
+# The control plane's file limit (packages/control-plane/src/media.ts).
+FILE_MAX_BYTES = 4 * 1024 * 1024 * 1024
+DEFAULT_PROJECT = Path("/workspace/project")
+
+# Rebuildable or private; never part of what an editor needs.
+EXCLUDED_NAMES = {
+    "node_modules",
+    ".cache",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".npm",
+    ".pnpm-store",
+    ".yarn",
+    ".next",
+    ".turbo",
+    ".git",
+    ".DS_Store",
+    ".pytest_cache",
+    ".tunnels.env",
+}
+# Already compressed: stored as is, which is as small and much faster.
+STORED_SUFFIXES = {
+    ".mp4",
+    ".mov",
+    ".m4v",
+    ".mkv",
+    ".webm",
+    ".avi",
+    ".mxf",
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".ogg",
+    ".opus",
+    ".flac",
+    ".wav",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".heic",
+    ".avif",
+    ".zip",
+    ".gz",
+    ".tgz",
+    ".zst",
+    ".7z",
+    ".rar",
+    ".woff",
+    ".woff2",
+}
+
+
+class ExportError(Exception):
+    pass
+
+
+def project_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(name for name in dirnames if name not in EXCLUDED_NAMES)
+        for name in sorted(filenames):
+            path = Path(directory) / name
+            if name in EXCLUDED_NAMES or not path.is_file():
+                continue
+            files.append(path)
+    return files
+
+
+def bundle(root: Path, archive: Path) -> int:
+    """Writes the zip; returns how many files went in."""
+    files = project_files(root)
+    if not files:
+        raise ExportError(f"{root} has no files to export")
+    total = sum(path.stat().st_size for path in files)
+    if total > FILE_MAX_BYTES:
+        raise ExportError(
+            f"{root} holds {total} bytes, over the {FILE_MAX_BYTES}-byte download limit; "
+            "export a smaller folder (e.g. without old renders)"
+        )
+    with zipfile.ZipFile(archive, "w", allowZip64=True) as bundle_file:
+        for path in files:
+            stored = path.suffix.lower() in STORED_SUFFIXES
+            bundle_file.write(
+                path,
+                arcname=f"{root.name}/{path.relative_to(root).as_posix()}",
+                compress_type=zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED,
+            )
+    return len(files)
+
+
+def archive_name(root: Path) -> str:
+    slug = re.sub(r"[^\w.-]+", "-", root.name, flags=re.UNICODE).strip("-") or "project"
+    return f"{slug}-{time.strftime('%Y%m%d-%H%M')}.zip"
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    if len(argv) > 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    default = DEFAULT_PROJECT if DEFAULT_PROJECT.is_dir() else Path.cwd()
+    root = (Path(argv[0]) if argv else default).resolve()
+    title = argv[1].strip() if len(argv) == 2 and argv[1].strip() else root.name
+    if not root.is_dir():
+        print(f"media-export: {root} is not a folder", file=sys.stderr)
+        return 1
+
+    with tempfile.TemporaryDirectory(prefix="media-export-") as scratch:
+        archive = Path(scratch) / archive_name(root)
+        try:
+            bundle(root, archive)
+        except (ExportError, OSError) as error:
+            print(f"media-export: {error}", file=sys.stderr)
+            return 1
+        if archive.stat().st_size > FILE_MAX_BYTES:
+            print(
+                f"media-export: the zip is over the {FILE_MAX_BYTES}-byte download limit",
+                file=sys.stderr,
+            )
+            return 1
+        return subprocess.run(
+            [
+                "upload-media",
+                str(archive),
+                "--artifact-type",
+                "file",
+                "--kind",
+                "project",
+                "--caption",
+                title,
+            ]
+        ).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

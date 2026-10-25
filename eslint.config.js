@@ -1,7 +1,5 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
-import reactPlugin from "eslint-plugin-react";
-import reactHooksPlugin from "eslint-plugin-react-hooks";
 import eslintConfigPrettier from "eslint-config-prettier";
 import globals from "globals";
 
@@ -29,6 +27,8 @@ export default tseslint.config(
       "**/.source/**",
       "**/build/**",
       "**/.wrangler/**",
+      // The local stack's data, bundles and logs (scripts/local).
+      ".local/**",
       "**/coverage/**",
       "**/.venv/**",
       "**/venv/**",
@@ -69,6 +69,55 @@ export default tseslint.config(
         ...globals.es2022,
       },
     },
+  },
+
+  // Skill scripts under skills/builtin/** run inside the sandbox (Node.js), written in the style of the
+  // HyperFrames and media-use skills they come from: best-effort file operations swallow their error
+  // on purpose (`catch {}`), a destructured name that is dropped starts with `_`, and the scripts that
+  // drive a page (animation-map, contrast-report) carry code that runs in the browser, so the
+  // browser's globals are as defined for them as Node's.
+  {
+    files: ["skills/builtin/**/*.{js,mjs}"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.es2022,
+        ...globals.browser,
+      },
+    },
+    rules: {
+      "no-empty": ["error", { allowEmptyCatch: true }],
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+        },
+      ],
+    },
+  },
+
+  // long-scroll-film's template is a set of plain browser scripts that index.html loads in
+  // order and that share their names through the page (FILM, SPR, NES, LINES, drawSpr), and its
+  // render.mjs reads `window` inside page.evaluate. They are copied into a user's project as they
+  // are, not turned into modules, so the browser's globals and those names are defined for them, and
+  // a helper the template destructures for the user to use is not an unused variable.
+  {
+    files: ["skills/builtin/long-scroll-film/**/*.{js,mjs}"],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+        ...globals.es2022,
+        ...globals.browser,
+        FILM: "readonly",
+        SPR: "readonly",
+        NES: "readonly",
+        LINES: "readonly",
+        drawSpr: "readonly",
+      },
+    },
+    rules: { "@typescript-eslint/no-unused-vars": "off" },
   },
 
   // TypeScript files configuration
@@ -353,78 +402,6 @@ export default tseslint.config(
     rules: { "no-restricted-imports": ["error", { patterns: sandboxImplementationImports }] },
   },
 
-  // React-specific configuration for browser packages
-  {
-    files: ["packages/{docs,web}/**/*.{ts,tsx}"],
-    plugins: {
-      react: reactPlugin,
-      "react-hooks": reactHooksPlugin,
-    },
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-        React: "readonly",
-      },
-    },
-    settings: {
-      react: {
-        version: "detect",
-      },
-    },
-    rules: {
-      ...reactPlugin.configs.recommended.rules,
-      ...reactHooksPlugin.configs.recommended.rules,
-      "react/react-in-jsx-scope": "off",
-      "react/prop-types": "off",
-    },
-  },
-
-  // Web code depends on app-owned auth and request seams. OAuth and session
-  // protocol code is owned by the control plane.
-  {
-    files: ["packages/web/src/**/*.{ts,tsx}"],
-    rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          paths: [
-            {
-              name: "next-auth",
-              message: "Use the app-owned browser authentication seams.",
-            },
-          ],
-          patterns: [
-            {
-              group: ["next-auth/*"],
-              message: "Use the app-owned browser authentication seams.",
-            },
-            {
-              regex: "(?:^|/)lib/auth$",
-              message: "Use getServerAuthSession from @/lib/server-auth-session.",
-            },
-          ],
-        },
-      ],
-    },
-  },
-  {
-    files: ["packages/web/src/**/*.{ts,tsx}"],
-    ignores: [
-      "**/*.test.{ts,tsx}",
-      "**/*.spec.{ts,tsx}",
-      "packages/web/src/lib/browser-api-fetch.ts",
-      "packages/web/src/lib/control-plane-transport.ts",
-    ],
-    rules: {
-      "no-restricted-globals": [
-        "error",
-        {
-          name: "fetch",
-          message: "Use an app-owned HTTP transport instead of raw fetch.",
-        },
-      ],
-    },
-  },
   // Cloudflare Workers specific config
   {
     files: ["packages/control-plane/**/*.ts"],
@@ -439,6 +416,45 @@ export default tseslint.config(
         ExecutionContext: "readonly",
         ScheduledEvent: "readonly",
       },
+    },
+  },
+
+  // The LLM gateway: its core runs on both hosts, so it names neither; the Worker host runs on
+  // workerd without nodejs_compat. tsconfig.json and tsconfig.node.json check the same by types.
+  {
+    files: ["packages/gateway/src/core/**/*.ts"],
+    languageOptions: { globals: globals.worker },
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "^(?:node|cloudflare):|^\\.\\./(?:node|worker)(?:/|$)",
+              message:
+                "The gateway's core is host-independent: Node APIs belong in src/node, Cloudflare ones in src/worker.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/gateway/src/worker/**/*.ts"],
+    languageOptions: { globals: globals.worker },
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "^node:|^\\.\\./node(?:/|$)",
+              message:
+                "The gateway Worker runs without nodejs_compat; Node APIs belong in src/node.",
+            },
+          ],
+        },
+      ],
     },
   },
 

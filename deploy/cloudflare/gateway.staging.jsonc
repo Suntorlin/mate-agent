@@ -1,0 +1,37 @@
+// The LLM gateway as a Worker with a ledger Durable Object (the dev environment, created as staging).
+// Source: packages/gateway (src/worker). Template only: not bound to any account. Secrets are not kept
+// here (GATEWAY_SECRET, OPENROUTER_API_KEY); see README.md.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "agent-engine-staging-gateway",
+  "main": "../../packages/gateway/src/worker/index.ts",
+  "compatibility_date": "2026-06-01",
+  "workers_dev": true,
+  // The ledger Durable Object is created next to the first caller; the Worker runs next to the
+  // sandboxes and OpenRouter so the object lands in the US east as well.
+  "placement": { "region": "aws:us-east-1" },
+  "durable_objects": { "bindings": [{ "name": "LEDGER", "class_name": "LedgerDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LedgerDO"] }],
+  // Keep-alive ping bodies too large for a SQLite row; the bucket expires `keepalive/` after a day.
+  "r2_buckets": [{ "binding": "KEEPALIVE_BUCKET", "bucket_name": "agent-engine-staging" }],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "vars": {
+    // The service-wide guard counts the whole OpenRouter key's spend since this gateway's first check, and
+    // the local gateway shares the key: 50 was used up on 2026-10-08 (the key had spent 257 of its
+    // 1,000 a month), so it is 300. A user may spend 20 a month, so a day of real work here (Opus turns,
+    // planning a few videos) does not stop at 3.
+    "LLM_BUDGET_USD": "300",
+    "LLM_USER_BUDGET_USD": "20",
+    "LLM_USER_BUDGET_PERIOD": "month",
+    "LLM_MONTHLY_BUDGET_USD": "",
+    "LLM_ALERT_WEBHOOK_URL": "",
+    // Off until a product bills its users' calls (secret LLM_USAGE_REPORT_TOKEN with it).
+    "LLM_USAGE_REPORT_URL": "",
+    "LLM_MODEL_MAP": "",
+    "LLM_FORCE_DEFAULT_MODEL": "false",
+    "CACHE_KEEPALIVE": "true",
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api",
+    "ADMIN_HTTP_ENABLED": "true",
+    "MAX_PARSED_BODY_BYTES": "16777216",
+  },
+}

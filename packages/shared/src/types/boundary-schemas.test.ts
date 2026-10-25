@@ -60,6 +60,8 @@ describe("boundary schemas", () => {
     activeDurationMs: 500,
     messageCount: 2,
     prCount: 1,
+    cover: { artifactId: "artifact-1", type: "video" },
+    mediaCount: 3,
     environmentId: "env-1",
     createdAt: 100,
     updatedAt: 200,

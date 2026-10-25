@@ -52,6 +52,8 @@ export interface SandboxReadiness {
 export interface SandboxCancellation {
   cancelSandbox(): Promise<void>;
   preserveForArchive(): Promise<void>;
+  /** Archiving a session never prompted: its sandbox holds nothing to save. */
+  releaseForArchivedDraft(): Promise<void>;
 }
 
 /** Transport attachment reports facts without granting ordinary command readiness. */

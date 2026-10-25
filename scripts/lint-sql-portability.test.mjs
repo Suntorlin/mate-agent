@@ -5,6 +5,7 @@ import {
   RULES,
   compareToBaseline,
   findingsIn,
+  isGeneratedFile,
   maskSqlComments,
   scanTypeScript,
   targetsSessionEngine,
@@ -80,6 +81,39 @@ test("does not desynchronise on an escaped quote", () => {
   ].join("\n");
 
   assert.deepEqual(scanTypeScript("example.ts", source), []);
+});
+
+test("does not desynchronise on a regular expression that holds a quote or a backtick", () => {
+  // `/```(?:json)?/gi` opens a template literal as far as a scanner that does not know regular
+  // expressions can tell, and everything after it, code included, becomes "a literal": a
+  // response.json() two functions later was reported as SQL.
+  const source = [
+    'const a = text.replace(/```(?:json)?/gi, "");',
+    "const b = value.split(/['\"]/);",
+    "const c = path.replace(/[/]+$/, '');",
+    "async function f(response) {",
+    "  throw new Error(`The session's events answered ${response.status}`);",
+    "}",
+    "const d = await response.json();",
+    'const e = db.prepare("SELECT 1");',
+    "const f = `${d}`;",
+  ].join("\n");
+
+  assert.deepEqual(scanTypeScript("example.ts", source), []);
+});
+
+test("still reads SQL that follows a regular expression, and a division is not one", () => {
+  const source = [
+    'const a = text.replace(/```/g, "");',
+    'const share = (2 * shared) / (a.size + b.size) / 2; const sql = db.prepare("SELECT json_group_array(id) FROM t");',
+    "const half = total / 2 + `${count / 4}`;",
+    "const b = db.prepare(\"SELECT strftime('%Y', created_at) FROM t\");",
+  ].join("\n");
+
+  assert.deepEqual(
+    scanTypeScript("example.ts", source).map((finding) => finding.rule),
+    ["json-function", "strftime"]
+  );
 });
 
 test("matches SQL function names whatever their case", () => {
@@ -211,4 +245,18 @@ test("scans a migration file as one SQL body", () => {
     ]),
     [["autoincrement", 2]]
   );
+});
+
+test("leaves out a generated file, whose prose can read like a SQL function", () => {
+  // builtin-skills.generated.ts carries skill documents as strings; "JSON (see ...)" is one of them.
+  const source =
+    'export const text = "Return JSON (see the schema) and run json_object(...) by hand";';
+
+  assert.ok(scanTypeScript("skills.ts", source).length > 0, "read as code, the prose is flagged");
+  assert.equal(
+    isGeneratedFile("packages/control-plane/src/skills/builtin-skills.generated.ts"),
+    true
+  );
+  assert.equal(isGeneratedFile("packages/control-plane/src/skills/builtin-skills.ts"), false);
+  assert.equal(isGeneratedFile("packages/control-plane/src/db/generated.ts"), false);
 });

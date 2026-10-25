@@ -1,0 +1,9 @@
+{
+  // The Node host's program: the core and src/node with Node types only. A Cloudflare type
+  // leaking into the core fails here; a Node API leaking into it fails in tsconfig.json.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src/core/**/*.ts", "src/node/**/*.ts", "types/node-web.d.ts"]
+}

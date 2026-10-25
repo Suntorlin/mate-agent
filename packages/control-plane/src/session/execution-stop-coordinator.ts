@@ -31,8 +31,11 @@ export class ExecutionStopCoordinator {
     private readonly processMessageQueue: () => Promise<void>
   ) {}
 
+  /** A person's stop: the turn ends as stopped, not failed, and the session stays usable. */
   async stop(reason = "Execution was stopped"): Promise<void> {
-    const preparation = this.repository.transaction(() => this.prepare(reason, Date.now()));
+    const preparation = this.repository.transaction(() =>
+      this.prepare(reason, Date.now(), "stopped")
+    );
     if (!preparation) {
       this.messenger.broadcast({ type: "processing_status", isProcessing: false });
       return;
@@ -40,11 +43,16 @@ export class ExecutionStopCoordinator {
     await this.deliver(preparation);
   }
 
-  prepare(reason: string, now: number): ExecutionStopPreparation | null {
+  /** End the processing turn; anything but a person's stop (a spent budget) ends it as failed. */
+  prepare(
+    reason: string,
+    now: number,
+    outcome: "failed" | "stopped" = "failed"
+  ): ExecutionStopPreparation | null {
     const processingMessage = this.messageRepository.getProcessingMessageWithCreatedAt();
     const stopConfirmationDeadline = now + STOP_CONFIRMATION_TIMEOUT_MS;
     const failure = processingMessage
-      ? this.messageFailures.record(processingMessage.id, reason, now, "processing")
+      ? this.messageFailures.record(processingMessage.id, reason, now, "processing", outcome)
       : null;
     if (!failure) return null;
     this.messageRepository.markMessageAwaitingStopConfirmation(
@@ -68,7 +76,7 @@ export class ExecutionStopCoordinator {
     const stopSent = sandboxWs !== null && this.wsManager.send(sandboxWs, { type: "stop" });
     const [alarm, status] = await Promise.allSettled([
       this.alarmScheduler.schedule(preparation.stopConfirmationDeadline),
-      this.sessionStatus.reconcileAfterExecution(false),
+      this.sessionStatus.reconcileAfterExecution(preparation.failure.completion.status),
     ]);
     if (status.status === "rejected") {
       this.log.error("Stop status reconciliation failed", { error: status.reason });

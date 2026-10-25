@@ -172,7 +172,7 @@ function scalarField(frontmatter: ParsedSkillMarkdown["frontmatter"], key: strin
  * Map parsed frontmatter and body onto managed-skill content, collecting a
  * warning for every frontmatter key the managed-skill model has no home for.
  */
-function mapFrontmatter(
+export function mapFrontmatter(
   markdown: string,
   files: SkillFileInput[]
 ): { content: SkillContentInput; frontmatterName: string | null; warnings: SkillImportWarning[] } {

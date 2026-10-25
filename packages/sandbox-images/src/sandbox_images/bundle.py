@@ -37,6 +37,9 @@ PAYLOAD_ROOTS = (
     RUNTIME_PACKAGE / "pyproject.toml",
     RUNTIME_PACKAGE / "uv.lock",
     *(IMAGE_PACKAGE / part for part in ("install", "verify", "locks", "toolchain.json")),
+    # Installed only by the optional media phase (install.sh media).
+    Path("skills/remotion-starter"),
+    Path("skills/builtin"),
 )
 INFRA_MODULES = {
     "modal": "modal-app",

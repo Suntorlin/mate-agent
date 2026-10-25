@@ -6,7 +6,7 @@ import {
   checkHarnessCompatibility,
   getValidHarnessOrDefault,
 } from "@open-inspect/shared/harnesses";
-import { getValidModelOrDefault, isValidReasoningEffort } from "@open-inspect/shared/models";
+import { getValidModelOrDefault, isRequestableReasoningEffort } from "@open-inspect/shared/models";
 import type { CreateSessionResponse } from "@open-inspect/shared/types/session-api";
 import { generateId } from "../auth/crypto";
 import { resolveGitHubCredentialAuthority } from "../source-control/github-credential-authority";
@@ -20,6 +20,8 @@ import { EnvironmentStore } from "../db/environments";
 import { UserStore } from "../db/user-store";
 import { createLogger } from "../logger";
 import { parseCreateSessionInput } from "../session/create-session-input";
+import { parseDefaultSessionVisibility } from "../session/default-visibility";
+import { isAppUser } from "../authorization/app-user";
 import { initializeSession, type SessionInitInput } from "../session/initialize";
 import { resolveGitHubEnrichmentForRequest } from "../session/identity";
 import { resolveSessionScopedSettings } from "../session/integration-settings-resolution";
@@ -189,12 +191,13 @@ export async function handleCreateSession(
   }
 
   // Validate harness, model and reasoning effort once for both DO init and D1 index
-  const harness = getValidHarnessOrDefault(body.harness);
+  // A request that names no harness gets the deployment's default, if set.
+  const harness = getValidHarnessOrDefault(body.harness ?? env.DEFAULT_SESSION_HARNESS);
   const model = getValidModelOrDefault(body.model);
   const harnessModelIncompatibility = checkHarnessCompatibility(harness, model);
   if (harnessModelIncompatibility) return error(harnessModelIncompatibility.message, 400);
   const reasoningEffort =
-    body.reasoningEffort && isValidReasoningEffort(model, body.reasoningEffort)
+    body.reasoningEffort && isRequestableReasoningEffort(model, body.reasoningEffort)
       ? body.reasoningEffort
       : null;
 
@@ -237,7 +240,8 @@ export async function handleCreateSession(
         environmentId,
       },
       body.skillSelection ?? { mode: "all" },
-      resolvedUserId
+      resolvedUserId,
+      { skillKeys: body.skillKeys }
     );
   } catch (e) {
     if (e instanceof SkillResolutionError) return error(e.message, e.status);
@@ -246,7 +250,8 @@ export async function handleCreateSession(
 
   const input: SessionInitInput = {
     ownerTeamId: null,
-    visibility: "workspace",
+    // A product's user works alone, so their sessions are private.
+    visibility: isAppUser(ctx.principal) ? "private" : parseDefaultSessionVisibility(env),
     sessionId,
     repoOwner,
     repoName,
@@ -259,6 +264,7 @@ export async function handleCreateSession(
     harness,
     model,
     reasoningEffort,
+    permissionMode: body.permissionMode,
     participantUserId,
     platformUserId: resolvedUserId,
     scmLogin,

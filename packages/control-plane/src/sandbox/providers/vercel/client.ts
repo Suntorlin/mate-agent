@@ -59,6 +59,8 @@ const vercelSandboxSessionSchema = z.object({
 
 export type VercelSandboxSession = z.infer<typeof vercelSandboxSessionSchema>;
 
+const vercelSessionResponseSchema = z.object({ session: vercelSandboxSessionSchema });
+
 export type VercelVcpus = 1 | 2 | 4 | 8;
 
 const vercelSandboxMetadataSchema = z.object({
@@ -73,7 +75,8 @@ export type VercelSandboxMetadata = z.infer<typeof vercelSandboxMetadataSchema>;
 
 export interface VercelCreateSandboxRequest {
   name: string;
-  runtime?: string;
+  /** Managed image, e.g. vercel/sandbox/node:24 (replaces the deprecated `runtime`). */
+  image?: string;
   timeoutMs?: number;
   resources?: { vcpus: VercelVcpus };
   ports?: number[];
@@ -202,7 +205,7 @@ export class VercelSandboxClient {
         body: JSON.stringify({
           projectId: this.config.projectId,
           name: request.name,
-          runtime: request.runtime,
+          image: request.image,
           timeout: request.timeoutMs,
           resources: request.resources,
           ports: request.ports ?? [],
@@ -334,6 +337,44 @@ export class VercelSandboxClient {
       VERCEL_API_REQUEST_DEADLINE_MS
     );
     return response.snapshots;
+  }
+
+  /** A session's current state, including its total `timeout` measured from `createdAt`. */
+  async getSession(
+    sessionId: string,
+    correlation?: CorrelationContext,
+    signal?: AbortSignal
+  ): Promise<VercelSandboxSession> {
+    const response = await this.requestJson(
+      `/v2/sandboxes/sessions/${encodeURIComponent(sessionId)}`,
+      { method: "GET", signal },
+      vercelSessionResponseSchema,
+      correlation,
+      "getSession",
+      VERCEL_API_REQUEST_DEADLINE_MS
+    );
+    return response.session;
+  }
+
+  /**
+   * Add `durationMs` to a running session's timeout. Vercel refuses a total
+   * beyond the plan's maximum session duration.
+   */
+  async extendSessionTimeout(
+    sessionId: string,
+    durationMs: number,
+    correlation?: CorrelationContext,
+    signal?: AbortSignal
+  ): Promise<VercelSandboxSession> {
+    const response = await this.requestJson(
+      `/v2/sandboxes/sessions/${encodeURIComponent(sessionId)}/extend-timeout`,
+      { method: "POST", body: JSON.stringify({ duration: durationMs }), signal },
+      vercelSessionResponseSchema,
+      correlation,
+      "extendSessionTimeout",
+      VERCEL_API_REQUEST_DEADLINE_MS
+    );
+    return response.session;
   }
 
   async stopSession(

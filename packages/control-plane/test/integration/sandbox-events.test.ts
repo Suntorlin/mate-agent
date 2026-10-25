@@ -351,6 +351,42 @@ describe("POST /internal/sandbox-event", () => {
     expect(state.title).toBe("Manual title");
   });
 
+  it("replaces a title that is only the prompt's first line with the generated one", async () => {
+    // The first turn settled before the agent named the project, so the
+    // session carries the prompt-derived fallback (the pasted link dropped).
+    const { stub } = await initSession({ title: "你能做这个吗" });
+    const participants = await queryDO<{ id: string }>(
+      stub,
+      "SELECT id FROM participants WHERE user_id = 'user-1'"
+    );
+    await seedMessage(stub, {
+      id: "msg-first-prompt",
+      authorId: participants[0].id,
+      content:
+        "https://www.instagram.com/reel/Dc_RhWSB-Qg/?utm_source=ig_web_copy_link 你能做这个吗",
+      source: "web",
+      status: "completed",
+      createdAt: Date.now() - 1000,
+    });
+
+    const res = await stub.fetch("http://internal/internal/sandbox-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "session_title",
+        title: "一镜到底穿越房间 · 制作拆解版",
+        sandboxId: "sb-1",
+        timestamp: Date.now() / 1000,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+
+    const stateRes = await stub.fetch("http://internal/internal/state");
+    const state = (await stateRes.json()) as { title: string };
+    expect(state.title).toBe("一镜到底穿越房间 · 制作拆解版");
+  });
+
   it("execution_complete marks message as completed", async () => {
     const { stub } = await initSession();
 
@@ -490,7 +526,7 @@ describe("POST /internal/sandbox-event", () => {
       200
     );
     await vi.waitFor(async () => {
-      expect(await index.get(sessionName)).toMatchObject({ status: "failed", inputTokens: 100 });
+      expect(await index.get(sessionName)).toMatchObject({ status: "completed", inputTokens: 100 });
     });
 
     // A step already in flight lands after the settle; its terminal is then a no-op.

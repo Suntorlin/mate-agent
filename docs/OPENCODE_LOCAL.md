@@ -1,9 +1,9 @@
 # Running OpenCode Locally on This Repo
 
-[OpenCode](https://opencode.ai) is the built-in harness Open-Inspect runs inside sandboxes, but it
-is also a normal CLI you can run on a checkout of this repository to work on it. This page covers
-that local use: installing a matching version, pointing it at the repo, and the ways a local run
-differs from a sandbox session.
+[OpenCode](https://opencode.ai) is the harness the engine runs OpenAI and xAI sessions on (the
+Claude agent runs the rest), but it is also a normal CLI you can run on a checkout of this
+repository to work on it. This page covers that local use: installing a matching version, pointing
+it at the repo, and the ways a local run differs from a sandbox session.
 
 For the harness as a product feature (choosing a harness for a session, provider accounts,
 subscriptions), see [CLAUDE_AGENT.md](CLAUDE_AGENT.md) and

@@ -1,0 +1,55 @@
+/* A frosted bar: the page scrolls under it. Shared by the headers and the tab bar. */
+.ui-bar {
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
+  background: var(--social-bar-bg);
+  backdrop-filter: blur(20px);
+}
+
+.ui-page-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: calc(var(--page-header-height) + var(--safe-top));
+  padding: var(--safe-top) 12px 0 20px;
+}
+
+.ui-page-header--sub {
+  padding-left: 4px;
+  border-bottom: 1px solid var(--social-divider);
+}
+
+.ui-page-header__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ui-page-header__title {
+  overflow: hidden;
+  font-size: var(--text-heading);
+  font-weight: var(--weight-strong);
+  line-height: var(--leading-heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-page-header__title--sub {
+  font-size: var(--text-title);
+  line-height: var(--leading-title);
+}
+
+.ui-page-header__subtitle {
+  overflow: hidden;
+  color: var(--social-fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ui-page-header__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}

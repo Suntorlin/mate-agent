@@ -26,6 +26,7 @@ import {
   type SubscriptionProviderId,
 } from "@open-inspect/shared/types/provider-accounts";
 import { ModelProviderAccountStore } from "../db/model-provider-accounts";
+import { applyGatewaySandboxEnv } from "../gateway/sandbox-env";
 import type { SqlDatabase } from "../db/sql-database";
 import type { Logger } from "../logger";
 import { resolvePublicSessionId } from "./public-session-id";
@@ -52,6 +53,11 @@ export interface UserEnvResolverDeps {
   secretsCapEnforcement: string | undefined;
   /** The session-scoped logger; the composition root creates it before this class. */
   log: Logger;
+  /**
+   * The gateway layer for the session (a fresh token on every call), or null
+   * when the deployment has no gateway or the session no owner.
+   */
+  resolveGatewayEnv?: (sessionId: string) => Promise<Record<string, string> | null>;
 }
 
 interface UserEnvContext {
@@ -69,6 +75,7 @@ export class UserEnvResolver {
   private readonly repoSecretsEncryptionKey: string;
   private readonly secretsCapEnforcement: string | undefined;
   private readonly log: Logger;
+  private readonly resolveGatewayEnv?: UserEnvResolverDeps["resolveGatewayEnv"];
 
   constructor(deps: UserEnvResolverDeps) {
     this.db = deps.db;
@@ -78,6 +85,7 @@ export class UserEnvResolver {
     this.repoSecretsEncryptionKey = deps.repoSecretsEncryptionKey;
     this.secretsCapEnforcement = deps.secretsCapEnforcement;
     this.log = deps.log;
+    this.resolveGatewayEnv = deps.resolveGatewayEnv;
   }
 
   /**
@@ -87,7 +95,23 @@ export class UserEnvResolver {
   async getUserEnvVars(): Promise<Record<string, string> | undefined> {
     const context = await this.loadUserEnvContext();
     if (!context) return undefined;
-    return Object.keys(context.sandboxEnv).length === 0 ? undefined : context.sandboxEnv;
+    const sandboxEnv = await this.withGatewayEnv(context.sandboxEnv);
+    return Object.keys(sandboxEnv).length === 0 ? undefined : sandboxEnv;
+  }
+
+  /**
+   * Every spawn and snapshot restore assembles its environment here, so the
+   * gateway token is issued anew at each bridge start.
+   */
+  private async withGatewayEnv(
+    sandboxEnv: Record<string, string>
+  ): Promise<Record<string, string>> {
+    const session = this.sessionCoreRepository.getSession();
+    if (!this.resolveGatewayEnv || !session) return sandboxEnv;
+    const gatewayEnv = await this.resolveGatewayEnv(
+      resolvePublicSessionId(session, this.durableObjectId)
+    );
+    return gatewayEnv ? applyGatewaySandboxEnv(sandboxEnv, gatewayEnv) : sandboxEnv;
   }
 
   /**

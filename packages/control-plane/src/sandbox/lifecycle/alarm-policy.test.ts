@@ -11,7 +11,12 @@ const config: AlarmPolicyConfig = {
   connectingTimeout: { timeoutMs: 120_000 },
   heartbeat: { timeoutMs: 90_000 },
   bootBudget: { timeoutMs: 1_800_000 },
-  inactivity: { timeoutMs: 600_000, extensionMs: 300_000, minCheckIntervalMs: 30_000 },
+  inactivity: {
+    timeoutMs: 600_000,
+    extensionMs: 300_000,
+    minCheckIntervalMs: 30_000,
+    unpromptedTimeoutMs: 120_000,
+  },
 };
 
 function row(overrides: Partial<AlarmSandbox> = {}): AlarmSandbox {
@@ -27,6 +32,20 @@ function row(overrides: Partial<AlarmSandbox> = {}): AlarmSandbox {
 const healthy = { outcome: "healthy", nextCheckMs: config.inactivity.minCheckIntervalMs } as const;
 
 describe("evaluateAlarmPolicy", () => {
+  it("finds an unprompted sandbox nobody watches idle after the short timeout", () => {
+    const idle = row({
+      status: "ready",
+      last_heartbeat: now,
+      last_activity: now - config.inactivity.unpromptedTimeoutMs,
+    });
+
+    expect(evaluateAlarmPolicy(idle, config, now, 0, true)).toEqual({
+      outcome: "unprompted_timeout",
+    });
+    expect(evaluateAlarmPolicy(idle, config, now, 0, false).outcome).toBe("healthy");
+    expect(evaluateAlarmPolicy(idle, config, now, 1, true).outcome).toBe("healthy");
+  });
+
   it("prioritizes terminal, connect watchdog, stale heartbeat, boot budget, then inactivity", () => {
     const expired = row({
       created_at: now - config.bootBudget.timeoutMs,
@@ -214,7 +233,12 @@ describe("evaluateAlarmPolicy", () => {
       ...config,
       bootBudget: { timeoutMs: 250_000 },
       heartbeat: { timeoutMs: 50 },
-      inactivity: { timeoutMs: 100, extensionMs: 80, minCheckIntervalMs: 10 },
+      inactivity: {
+        timeoutMs: 100,
+        extensionMs: 80,
+        minCheckIntervalMs: 10,
+        unpromptedTimeoutMs: 50,
+      },
     };
     expect(
       evaluateAlarmPolicy(row({ status: "ready", last_heartbeat: now - 51 }), custom, now, 0)

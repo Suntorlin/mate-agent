@@ -1,6 +1,9 @@
 import {
+  type FileArtifactMetadata,
   listArtifactsResponseSchema,
   sessionArtifactSchema,
+  type MediaArtifactType,
+  type PageArtifactMetadata,
   type ScreenshotArtifactMetadata,
   type SessionArtifact,
   type VideoArtifactMetadata,
@@ -58,9 +61,13 @@ async function parseErrorMessage(response: Response, fallback: string): Promise<
 export async function persistMediaArtifact(input: {
   sessionId: string;
   artifactId: string;
-  artifactType: "screenshot" | "video";
+  artifactType: MediaArtifactType;
   objectKey: string;
-  metadata: ScreenshotArtifactMetadata | VideoArtifactMetadata;
+  metadata:
+    | ScreenshotArtifactMetadata
+    | VideoArtifactMetadata
+    | PageArtifactMetadata
+    | FileArtifactMetadata;
   storage: ObjectStorage;
   ctx: SessionRouteContext;
   parseFallback: string;

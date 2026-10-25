@@ -1003,7 +1003,7 @@ Expected code areas include:
 | Tier         | Files or modules                                                                    |
 | ------------ | ----------------------------------------------------------------------------------- |
 | Shared       | `packages/shared/src/types/skills.ts`, session request schemas and exports          |
-| D1           | New migration under `terraform/d1/migrations/`, integration cleanup                 |
+| D1           | New migration under `deploy/d1/migrations/`, integration cleanup                    |
 | Stores       | `packages/control-plane/src/db/skills.ts`, `skill-profiles.ts`                      |
 | Resolution   | `packages/control-plane/src/session/skill-resolution.ts`, session initialization    |
 | Routes       | Human CRUD/profile/preview routes and sandbox installation route                    |

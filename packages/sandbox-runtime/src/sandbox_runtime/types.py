@@ -73,10 +73,13 @@ class SessionConfig(BaseModel):
     # these fields.
     agent_session_id: str | None = None
     opencode_session_id: str | None = None
-    # Which agent runs the session; absent means the built-in OpenCode harness.
-    harness: str = "opencode"
+    # Which agent runs the session; absent means the default (Claude) harness.
+    harness: str = "claude"
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-6"
+    # The effort a prompt runs at unless it picks one; lets the runtime start
+    # the agent before the first prompt. Absent from older control planes.
+    reasoning_effort: str | None = None
     mcp_servers: list[McpServerConfig] | None = None
     # Ordered member list for multi-repo sessions; absent for scalar sessions
     # (the runtime synthesizes a one-entry list from repo_owner/repo_name).

@@ -1,4 +1,4 @@
-import type { ArtifactInfo } from "@open-inspect/shared/types/artifacts";
+import { isMediaArtifactType, type ArtifactInfo } from "@open-inspect/shared/types/artifacts";
 import type {
   ChildSessionDetail,
   ChildSessionFinalResponse,
@@ -276,7 +276,7 @@ function buildArtifactInfo(
   artifact: ArtifactRow,
   metadata: Record<string, unknown> | null
 ): ArtifactInfo | null {
-  if (artifact.type === "screenshot" || artifact.type === "video") return null;
+  if (isMediaArtifactType(artifact.type)) return null;
 
   return {
     type: artifact.type,

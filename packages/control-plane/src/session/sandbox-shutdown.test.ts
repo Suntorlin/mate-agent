@@ -211,6 +211,70 @@ describe("SandboxShutdownCoordinator", () => {
     });
   }
 
+  describe("releaseUnprompted", () => {
+    function releasable(overrides: Partial<SandboxProvider> = {}) {
+      const takeSnapshot = vi.fn(async () => ({ success: true as const, imageId: "im-1" }));
+      const stopSandbox = vi.fn(async () => ({ success: true as const }));
+      const f = fixture(provider({ takeSnapshot, stopSandbox, ...overrides }));
+      return { ...f, takeSnapshot, stopSandbox };
+    }
+
+    it("stops a ready sandbox without saving it, so the next prompt starts fresh", async () => {
+      const f = releasable();
+      await readyFinite(f);
+
+      await expect(f.shutdown.releaseUnprompted("unprompted_timeout")).resolves.toBe("released");
+
+      expect(f.stopSandbox).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          providerObjectId: "provider-object-1",
+          reason: "unprompted_timeout",
+          intent: "destroy",
+        })
+      );
+      expect(f.takeSnapshot).not.toHaveBeenCalled();
+      expect(f.deps.sandbox.discardSandboxState).toHaveBeenCalledWith(GENERATION);
+      expect(f.store.value).toMatchObject({ phase: "running", providerObjectId: null });
+      expect(f.store.value?.receipt).toBeUndefined();
+      expect(f.deps.retireAccess).toHaveBeenCalledOnce();
+      expect(f.shutdown.admissionDecision()).toBe("spawn_required");
+    });
+
+    it("leaves a sandbox alone while a message is processing", async () => {
+      const f = releasable();
+      await readyFinite(f);
+      f.deps.messages.getProcessingMessage.mockReturnValue({ id: "message-1" });
+
+      await expect(f.shutdown.releaseUnprompted("unprompted_timeout")).resolves.toBe("held");
+      expect(f.stopSandbox).not.toHaveBeenCalled();
+    });
+
+    it("keeps a sandbox it could not stop, reporting it held", async () => {
+      const f = releasable({
+        stopSandbox: vi.fn(async () => ({ success: false as const, error: "busy" })),
+      });
+      await readyFinite(f);
+
+      await expect(f.shutdown.releaseUnprompted("unprompted_timeout")).resolves.toBe("held");
+      expect(f.store.value?.providerObjectId).toBe("provider-object-1");
+      expect(f.deps.sandbox.discardSandboxState).not.toHaveBeenCalled();
+    });
+
+    it("hands legacy and unstoppable sandboxes back to the ordinary stop", async () => {
+      const legacy = releasable();
+      reserveGeneration(legacy, GENERATION, "legacy");
+      await expect(legacy.shutdown.releaseUnprompted("unprompted_timeout")).resolves.toBe(
+        "unmanaged"
+      );
+
+      const unstoppable = releasable({ stopSandbox: undefined });
+      await readyFinite(unstoppable);
+      await expect(unstoppable.shutdown.releaseUnprompted("unprompted_timeout")).resolves.toBe(
+        "unmanaged"
+      );
+    });
+  });
+
   it("admits a ready VM after its create response is lost", async () => {
     const f = pendingVmFixture();
     await pendingVmReady(f);
@@ -1691,5 +1755,186 @@ describe("SandboxShutdownCoordinator", () => {
       sourceRetired: false,
     });
     expect(f.shutdown.admissionDecision()).toBe("held");
+  });
+});
+
+describe("SandboxShutdownCoordinator lifetime extension", () => {
+  const MINUTE = 60_000;
+  const STEP_MS = 30 * MINUTE;
+  // Created at 100_000 with a two-hour lifetime and the fixture's ten-minute final buffer.
+  const EXPIRES_AT = 100_000 + 120 * MINUTE;
+  const DRAIN_AT = EXPIRES_AT - 10 * MINUTE;
+  const EXTEND_AT = DRAIN_AT - 10 * MINUTE;
+
+  function extendingFixture(
+    extendOverride?: SandboxProvider["extendSandboxLifetime"],
+    policy: { stepMs: number; activityWindowMs: number } | undefined = {
+      stepMs: STEP_MS,
+      activityWindowMs: 10 * MINUTE,
+    }
+  ) {
+    // By default the provider grants the whole step on top of the recorded expiry.
+    const extend =
+      extendOverride ??
+      vi.fn(async ({ extensionMs }: { extensionMs: number }) => ({
+        lifetime: {
+          kind: "finite" as const,
+          expiresAtMs: (f.store.value?.expiresAtMs ?? 0) + extensionMs,
+          observedAtMs: 0,
+          source: "provider" as const,
+        },
+        atCeiling: false,
+      }));
+    const f = fixture(provider({ extendSandboxLifetime: extend }));
+    Object.assign(f.deps, { lifetimeExtension: policy });
+    Object.assign(f.sandboxRow, { last_activity: null as number | null });
+    return Object.assign(f, { extend: vi.mocked(extend!) });
+  }
+
+  function processing(f: ReturnType<typeof fixture>) {
+    f.deps.messages.getProcessingMessage.mockReturnValue({ id: "message-1" });
+  }
+
+  it("first wakes at the extension point instead of the drain point", async () => {
+    const f = extendingFixture();
+    await readyFinite(f, EXPIRES_AT);
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(EXTEND_AT);
+
+    const plain = fixture();
+    await readyFinite(plain, EXPIRES_AT);
+    expect(plain.deps.alarm.schedule).toHaveBeenLastCalledWith(DRAIN_AT);
+  });
+
+  it("extends a sandbox with a prompt running by one step and moves its drain with it", async () => {
+    const f = extendingFixture();
+    await readyFinite(f, EXPIRES_AT);
+    processing(f);
+    f.setNow(EXTEND_AT);
+
+    await f.shutdown.handleAlarm();
+
+    expect(f.extend).toHaveBeenCalledTimes(1);
+    expect(f.extend).toHaveBeenCalledWith({
+      providerObjectId: "provider-object-1",
+      extensionMs: STEP_MS,
+    });
+    expect(f.store.value).toMatchObject({
+      phase: "running",
+      expiresAtMs: EXPIRES_AT + STEP_MS,
+      drainAtMs: DRAIN_AT + STEP_MS,
+    });
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(EXTEND_AT + STEP_MS);
+    expect(f.shutdown.admissionDecision()).toBe("ready");
+
+    // Each later window adds one more step; the work is never cut off at the old drain.
+    f.setNow(DRAIN_AT + 1);
+    await f.shutdown.handleAlarm();
+    expect(f.extend).toHaveBeenCalledTimes(1);
+    expect(f.store.value?.phase).toBe("running");
+    f.setNow(EXTEND_AT + STEP_MS);
+    await f.shutdown.handleAlarm();
+    expect(f.store.value?.expiresAtMs).toBe(EXPIRES_AT + 2 * STEP_MS);
+  });
+
+  it("counts activity within the window as in use", async () => {
+    const f = extendingFixture();
+    await readyFinite(f, EXPIRES_AT);
+    f.setNow(EXTEND_AT);
+    Object.assign(f.sandboxRow, { last_activity: EXTEND_AT - 9 * MINUTE });
+
+    await f.shutdown.handleAlarm();
+
+    expect(f.extend).toHaveBeenCalledTimes(1);
+    expect(f.store.value?.expiresAtMs).toBe(EXPIRES_AT + STEP_MS);
+  });
+
+  it("does not extend an idle sandbox, which still drains on time", async () => {
+    const f = extendingFixture();
+    await readyFinite(f, EXPIRES_AT);
+    Object.assign(f.sandboxRow, { last_activity: EXTEND_AT - 11 * MINUTE });
+    f.setNow(EXTEND_AT);
+
+    await f.shutdown.handleAlarm();
+
+    expect(f.extend).not.toHaveBeenCalled();
+    expect(f.store.value?.expiresAtMs).toBe(EXPIRES_AT);
+    // Looked at again shortly in case work resumes before the drain.
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(EXTEND_AT + MINUTE);
+
+    f.setNow(DRAIN_AT);
+    await f.shutdown.handleAlarm();
+    expect(f.extend).not.toHaveBeenCalled();
+    expect(f.store.value).toMatchObject({ phase: "draining", reason: "sandbox_lifetime_expiring" });
+  });
+
+  it("does not extend before the extension point", async () => {
+    const f = extendingFixture();
+    await readyFinite(f, EXPIRES_AT);
+    processing(f);
+    f.setNow(EXTEND_AT - 1);
+
+    await f.shutdown.handleAlarm();
+
+    expect(f.extend).not.toHaveBeenCalled();
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(EXTEND_AT);
+  });
+
+  it("stops asking once the provider reports its ceiling, then drains at the final expiry", async () => {
+    const ceiling = EXPIRES_AT + 5 * MINUTE;
+    const f = extendingFixture(
+      vi.fn(async () => ({
+        lifetime: {
+          kind: "finite" as const,
+          expiresAtMs: ceiling,
+          observedAtMs: 0,
+          source: "provider" as const,
+        },
+        atCeiling: true,
+      }))
+    );
+    await readyFinite(f, EXPIRES_AT);
+    processing(f);
+    f.setNow(EXTEND_AT);
+
+    await f.shutdown.handleAlarm();
+
+    expect(f.store.value).toMatchObject({ expiresAtMs: ceiling, drainAtMs: ceiling - 10 * MINUTE });
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(ceiling - 10 * MINUTE);
+    f.setNow(ceiling - 10 * MINUTE);
+    await f.shutdown.handleAlarm();
+    expect(f.extend).toHaveBeenCalledTimes(1);
+    expect(f.store.value).toMatchObject({ phase: "draining", reason: "sandbox_lifetime_expiring" });
+  });
+
+  it("keeps the original drain when the provider refuses the extension", async () => {
+    const f = extendingFixture(
+      vi.fn(async () => {
+        throw new Error("Vercel Sandbox API error: 503");
+      })
+    );
+    await readyFinite(f, EXPIRES_AT);
+    processing(f);
+    f.setNow(EXTEND_AT);
+
+    await f.shutdown.handleAlarm();
+    expect(f.store.value).toMatchObject({ phase: "running", expiresAtMs: EXPIRES_AT });
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(EXTEND_AT + MINUTE);
+
+    f.setNow(DRAIN_AT);
+    await f.shutdown.handleAlarm();
+    expect(f.extend).toHaveBeenCalledTimes(2);
+    expect(f.store.value?.phase).toBe("draining");
+  });
+
+  it("does nothing when extension is turned off", async () => {
+    const f = extendingFixture(undefined, { stepMs: 0, activityWindowMs: 10 * MINUTE });
+    await readyFinite(f, EXPIRES_AT);
+    processing(f);
+    expect(f.deps.alarm.schedule).toHaveBeenLastCalledWith(DRAIN_AT);
+    f.setNow(EXTEND_AT);
+
+    await f.shutdown.handleAlarm();
+
+    expect(f.extend).not.toHaveBeenCalled();
   });
 });

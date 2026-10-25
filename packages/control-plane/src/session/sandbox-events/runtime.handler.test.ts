@@ -26,6 +26,7 @@ function createHandler() {
   const scheduleInactivityCheck = vi.fn(async () => {});
   const backgroundTasks = createTestBackgroundTasks();
   const processMessageQueue = vi.fn(async () => {});
+  const reconcileProcessingMessage = vi.fn();
   const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: vi.fn() };
   const lifecycle = { onRuntimeReady: vi.fn<SandboxReadiness["onRuntimeReady"]>(() => true) };
   const handler = new SandboxRuntimeEventHandler(
@@ -39,7 +40,7 @@ function createHandler() {
     refreshSlackActivity,
     scheduleInactivityCheck,
     backgroundTasks,
-    { processMessageQueue },
+    { processMessageQueue, reconcileProcessingMessage },
     log,
     lifecycle
   );
@@ -54,6 +55,7 @@ function createHandler() {
     scheduleInactivityCheck,
     backgroundTasks,
     processMessageQueue,
+    reconcileProcessingMessage,
     log,
   };
 }
@@ -128,6 +130,22 @@ describe("SandboxRuntimeEventHandler.handleReady", () => {
     expect(h.scheduleInactivityCheck).not.toHaveBeenCalled();
     expect(h.backgroundTasks.submissions).toEqual([]);
     expect(h.processMessageQueue).not.toHaveBeenCalled();
+  });
+
+  it("asks about the turn in flight after every ready, a repeated one included", async () => {
+    const h = createHandler();
+    const order: string[] = [];
+    h.lifecycle.onRuntimeReady.mockImplementation(() => {
+      order.push("ready");
+      return false;
+    });
+    h.reconcileProcessingMessage.mockImplementation(() => {
+      order.push("reconcile");
+    });
+
+    await h.handler.handleReady(readyEvent, context);
+
+    expect(order).toEqual(["ready", "reconcile"]);
   });
 
   it("delegates readiness and wakes work before a fallible inactivity schedule", async () => {

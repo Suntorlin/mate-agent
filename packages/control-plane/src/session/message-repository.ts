@@ -1,5 +1,6 @@
 import type { SandboxEvent } from "@open-inspect/shared/types/sandbox-events";
 import type { PromptQueueItem } from "@open-inspect/shared/types/server-messages";
+import type { CardDismissedEvent } from "@open-inspect/shared/types/session-cards";
 import {
   messageStatusSchema,
   type MessageSource,
@@ -23,12 +24,15 @@ const messageStopConfirmationRowSchema = messageRowSchema
   .extend({ stop_confirmation_deadline: z.number() });
 const messageCreatedAtRowSchema = messageRowSchema.pick({ id: true, created_at: true });
 
+/** How a turn ended: it finished, it failed, or someone stopped it. */
+export type TerminalMessageStatus = Extract<MessageStatus, "completed" | "failed" | "stopped">;
+
 export interface RecordedMessageCompletion {
   messageId: string;
   messageCreatedAt: number;
   messageStartedAt: number | null;
   completedAt: number;
-  status: "completed" | "failed";
+  status: TerminalMessageStatus;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -49,6 +53,14 @@ function parseMessageStatus(value: unknown): MessageStatus | null {
 }
 
 /** Data for creating a message. */
+/** The processing turn, as the session budget sees it. */
+export interface RunningTurnCost {
+  readonly messageId: string;
+  readonly startedAt: number;
+  /** The highest cost reported for the turn, already counted in the session total. */
+  readonly reportedCostUsd: number;
+}
+
 export interface CreateMessageData {
   id: string;
   authorId: string;
@@ -98,6 +110,9 @@ export interface ListMessagesOptions {
   status?: string | null;
 }
 
+/** How many of the first prompts a fallback title can have come from. */
+const EARLIEST_MESSAGES_LIMIT = 20;
+
 /** Persistence for messages scoped to one session. */
 export class MessageRepository {
   constructor(
@@ -130,6 +145,16 @@ export class MessageRepository {
 
   getProcessingMessage(): { id: string } | null {
     const result = this.sql.exec(`SELECT id FROM messages WHERE status = 'processing' LIMIT 1`);
+    const rows = parseStorageRows(result.toArray(), messageIdRowSchema);
+    return rows[0] ?? null;
+  }
+
+  /** The processing message a sandbox runs, not an inline turn the control plane runs. */
+  getProcessingSandboxMessage(): { id: string } | null {
+    const result = this.sql.exec(
+      `SELECT id FROM messages
+       WHERE status = 'processing' AND (runtime IS NULL OR runtime != 'inline') LIMIT 1`
+    );
     const rows = parseStorageRows(result.toArray(), messageIdRowSchema);
     return rows[0] ?? null;
   }
@@ -186,6 +211,23 @@ export class MessageRepository {
     return rows[0] ?? null;
   }
 
+  /**
+   * The running turn: its message, when it started and the highest cost reported for it
+   * (already counted in the session total). Null when no turn is running or it has no start.
+   */
+  getRunningTurnCost(): RunningTurnCost | null {
+    const rows = this.sql
+      .exec(
+        `SELECT id, started_at, reported_cost_usd FROM messages
+         WHERE status = 'processing' AND started_at IS NOT NULL LIMIT 1`
+      )
+      .toArray() as Array<{ id: string; started_at: number; reported_cost_usd: number }>;
+    const row = rows[0];
+    return row
+      ? { messageId: row.id, startedAt: row.started_at, reportedCostUsd: row.reported_cost_usd }
+      : null;
+  }
+
   getProcessingMessageWithStartedAt(): { id: string; started_at: number } | null {
     const result = this.sql.exec(
       `SELECT id, started_at FROM messages WHERE status = 'processing' LIMIT 1`
@@ -226,6 +268,15 @@ export class MessageRepository {
   getMessageContent(messageId: string): string | null {
     const result = this.sql.exec(`SELECT content FROM messages WHERE id = ? LIMIT 1`, messageId);
     return (result.toArray() as Array<{ content: string }>)[0]?.content ?? null;
+  }
+
+  /** The text of the session's first prompts, oldest first. */
+  getEarliestMessageContents(limit = EARLIEST_MESSAGES_LIMIT): string[] {
+    const result = this.sql.exec(
+      `SELECT content FROM messages ORDER BY created_at ASC, id ASC LIMIT ?`,
+      limit
+    );
+    return (result.toArray() as Array<{ content: string }>).map((row) => row.content);
   }
 
   getMessageStatus(messageId: string): MessageStatus | null {
@@ -396,6 +447,15 @@ export class MessageRepository {
     });
   }
 
+  /**
+   * Cards closed since the last prompt was dispatched: what the next prompt
+   * must tell the agent. `startMessageProcessing` records that prompt's
+   * `user_message`, after which these count as told.
+   */
+  listCardDismissalsSinceLastPrompt(): CardDismissedEvent[] {
+    return this.eventRepository.listCardDismissalsSinceLastPrompt();
+  }
+
   startMessageProcessing(
     messageId: string,
     startedAt: number,
@@ -457,7 +517,11 @@ export class MessageRepository {
       const messageStatus = parseMessageStatus(message?.status);
       if (!message || messageStatus !== expectedStatus) return null;
 
-      const status = event.success ? "completed" : "failed";
+      const status: TerminalMessageStatus = event.success
+        ? "completed"
+        : event.stopped
+          ? "stopped"
+          : "failed";
       this.sql.exec(
         `UPDATE messages SET status = ?, completed_at = ?, error_message = ? WHERE id = ?`,
         status,
@@ -513,12 +577,64 @@ export class MessageRepository {
   getLatestTerminalMessage(): MessageRow | null {
     const result = this.sql.exec(
       `SELECT * FROM messages
-       WHERE status IN ('completed', 'failed')
+       WHERE status IN ('completed', 'failed', 'stopped')
        ORDER BY COALESCE(completed_at, started_at, created_at) DESC, created_at DESC, id DESC
        LIMIT 1`
     );
     const rows = parseMessageRows(result.toArray());
     return rows[0] ?? null;
+  }
+
+  /** Record which runtime ran a message: `inline` (the control plane) or `sandbox`. */
+  setMessageRuntime(messageId: string, runtime: "inline" | "sandbox"): void {
+    this.sql.exec(`UPDATE messages SET runtime = ? WHERE id = ?`, runtime, messageId);
+  }
+
+  /**
+   * The completed turns before `messageId`, oldest first, with the agent's reply text: the
+   * conversation an inline turn continues.
+   */
+  listConversationBefore(
+    messageId: string,
+    limit: number
+  ): Array<{ content: string; reply: string | null }> {
+    const rows = this.sql
+      .exec(
+        `SELECT id, content FROM messages
+         WHERE status = 'completed'
+           AND created_at < (SELECT created_at FROM messages WHERE id = ?)
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`,
+        messageId,
+        limit
+      )
+      .toArray() as Array<{ id: string; content: string }>;
+    return rows.reverse().map((row) => ({
+      content: row.content,
+      reply: this.eventRepository.listTurnText(row.id).text,
+    }));
+  }
+
+  /**
+   * Inline turns completed since the last turn a sandbox ran, oldest first: what a sandbox's
+   * agent has not seen and must be told before its next prompt.
+   */
+  listInlineTurnsSinceSandbox(limit: number): Array<{ content: string; reply: string | null }> {
+    const rows = this.sql
+      .exec(
+        `SELECT id, content FROM messages
+         WHERE status = 'completed' AND runtime = 'inline'
+           AND created_at > COALESCE(
+             (SELECT MAX(created_at) FROM messages WHERE runtime = 'sandbox'), 0)
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`,
+        limit
+      )
+      .toArray() as Array<{ id: string; content: string }>;
+    return rows.reverse().map((row) => ({
+      content: row.content,
+      reply: this.eventRepository.listTurnText(row.id).text,
+    }));
   }
 
   getProcessingMessageAuthor(): { author_id: string } | null {

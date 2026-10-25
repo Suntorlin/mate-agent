@@ -1,0 +1,63 @@
+name: Public safety
+
+# This repository is public. Fail when a push or pull request adds a secret, a private name, a
+# personal path or a private address. The same check runs in the pre-commit hook and in
+# `npm run verify`: scripts/check-public-safety.ts.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Private names to block, kept out of the public repository (comma separated).
+      PUBLIC_SAFETY_PRIVATE_TERMS: ${{ secrets.PUBLIC_SAFETY_PRIVATE_TERMS }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          cd "$RUNNER_TEMP"
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          curl -sSfLO "$base/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt" | grep linux_x64.tar.gz | sha256sum -c -
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+      - name: The rules still fire
+        run: node scripts/check-public-safety.ts --self-test
+      - name: Check every tracked file
+        run: node scripts/check-public-safety.ts --tree
+      - name: Check the new commits
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            range="$BEFORE..$AFTER"
+          else
+            # A new branch or a force push: what the default branch does not have yet.
+            range="$(git merge-base "$AFTER" "origin/$DEFAULT_BRANCH")..$AFTER"
+          fi
+          if [ "${range%%..*}" = "${range##*..}" ]; then echo "Nothing new to check"; exit 0; fi
+          echo "Checking $range"
+          node scripts/check-public-safety.ts --range "$range"

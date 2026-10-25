@@ -1,0 +1,8 @@
+#!/bin/sh
+# The runtime's own interpreter: a bare python3 may be a project venv the agent made.
+python=/opt/openinspect/python/bin/python3
+[ -x "$python" ] || python=python3
+# The file itself rather than `-m sandbox_runtime.memory`: importing the package loads
+# pydantic, and `mem recall` runs before every prompt reaches the model. PYTHONSAFEPATH keeps
+# the script's directory off sys.path, where the runtime's types.py would shadow the stdlib's.
+exec env PYTHONSAFEPATH=1 "$python" /app/sandbox_runtime/memory.py "$@"

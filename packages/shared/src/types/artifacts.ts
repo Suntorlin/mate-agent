@@ -1,7 +1,28 @@
 import { z } from "zod";
 
-export const artifactTypeSchema = z.enum(["pr", "screenshot", "video", "preview", "branch"]);
+export const artifactTypeSchema = z.enum([
+  "pr",
+  "screenshot",
+  "video",
+  "page",
+  "file",
+  "preview",
+  "branch",
+]);
 export type ArtifactType = z.infer<typeof artifactTypeSchema>;
+
+/** Artifacts stored in session media storage and served only by the protected media endpoint. */
+export const MEDIA_ARTIFACT_TYPES = [
+  "screenshot",
+  "video",
+  "page",
+  "file",
+] as const satisfies readonly ArtifactType[];
+export type MediaArtifactType = (typeof MEDIA_ARTIFACT_TYPES)[number];
+
+export function isMediaArtifactType(type: string): type is MediaArtifactType {
+  return (MEDIA_ARTIFACT_TYPES as readonly string[]).includes(type);
+}
 
 // Artifact created by session
 export const sessionArtifactSchema = z.object({
@@ -119,8 +140,8 @@ export interface VideoArtifactMetadata {
   dimensions: { width: number; height: number };
   /** Whether recording stopped at the maximum duration */
   truncated: boolean;
-  /** Recordings must not include audio */
-  hasAudio?: false;
+  /** Whether the video has an audio track; browser recordings never do, rendered videos may. */
+  hasAudio?: boolean;
   /** Captured surface for v1 */
   captureSurface?: "browser";
   /** Artifact source */
@@ -129,6 +150,44 @@ export interface VideoArtifactMetadata {
   sourceUrl?: string;
   /** URL when recording stopped */
   endUrl?: string;
+}
+
+/** Metadata stored on page artifacts: a self-contained HTML page the agent made for the user. */
+export interface PageArtifactMetadata {
+  /** R2 object key */
+  objectKey: string;
+  /** Pages are always served as UTF-8 HTML. */
+  mimeType: "text/html";
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Title shown for the page */
+  caption?: string;
+}
+
+/**
+ * What a file artifact is: a deliverable the agent hands over (`file`) or a bundle of the whole
+ * project folder (`project`), which the preview pane offers as "Download project".
+ */
+export type FileArtifactKind = "file" | "project";
+
+/**
+ * Metadata stored on file artifacts: any file the agent hands over for download (documents,
+ * archives, editing-app project files, masters in any codec). File artifacts are uploaded straight
+ * to the object store and are always served as attachments, never rendered in the app.
+ */
+export interface FileArtifactMetadata {
+  /** Object store key */
+  objectKey: string;
+  /** The name the file downloads under. */
+  filename: string;
+  /** Declared content type; only ever used as a hint, the file is always served as an attachment. */
+  mimeType: string;
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Title shown for the file */
+  caption?: string;
+  /** Defaults to "file". */
+  kind?: FileArtifactKind;
 }
 
 // Pull request info

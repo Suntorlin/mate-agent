@@ -470,24 +470,30 @@ describe("session inbox", () => {
     expect(finishedBody.items.map((item) => item.rootSession.id)).toEqual(["failed-with-output"]);
   });
 
-  it("keeps a never-prompted draft out of in progress", async () => {
+  it("keeps a never-prompted draft out of every category", async () => {
     await serviceFetch("https://example.com/sessions/inbox?category=finished");
     const store = new SessionIndexStore(env.DB);
     await store.create(session("draft", { status: "created", updatedAt: 3000 }));
-
-    const inProgress = await serviceFetch(
-      "https://example.com/sessions/inbox?category=in_progress"
+    await store.create(
+      session("app-draft", {
+        status: "created",
+        spawnSource: "app",
+        updatedAt: 2500,
+      })
     );
-    const inProgressBody = (await inProgress.json()) as {
-      items: Array<{ rootSession: { id: string } }>;
-    };
-    expect(inProgressBody.items).toEqual([]);
+    await store.create(session("prompted", { status: "completed", updatedAt: 2000 }));
 
-    const finished = await serviceFetch("https://example.com/sessions/inbox?category=finished");
-    const finishedBody = (await finished.json()) as {
-      items: Array<{ rootSession: { id: string } }>;
-    };
-    expect(finishedBody.items.map((item) => item.rootSession.id)).toEqual(["draft"]);
+    for (const category of ["needs_attention", "in_progress", "finished"]) {
+      const response = await serviceFetch(
+        `https://example.com/sessions/inbox?category=${category}`
+      );
+      const body = (await response.json()) as {
+        items: Array<{ rootSession: { id: string } }>;
+      };
+      expect(body.items.map((item) => item.rootSession.id)).toEqual(
+        category === "finished" ? ["prompted"] : []
+      );
+    }
   });
 
   it("does not promote a hierarchy into in progress for a draft descendant", async () => {
@@ -764,11 +770,6 @@ describe("inbox category conformance", () => {
       name: "single unread session",
       tree: [{ status: "completed", unread: true }],
       expected: "needs_attention",
-    },
-    {
-      name: "single draft",
-      tree: [{ status: "created", unread: false }],
-      expected: "finished",
     },
     {
       name: "single failed session",

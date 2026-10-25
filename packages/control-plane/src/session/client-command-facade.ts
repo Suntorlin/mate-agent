@@ -65,8 +65,8 @@ export class SessionClientCommandFacade implements SessionClientCommands<
     return this.recover(action);
   }
 
-  notifyTyping(): Promise<void> {
-    return this.presence.handleTyping();
+  notifyTyping(): void {
+    this.presence.handleTyping();
   }
 
   updatePresence(client: ClientInfo, message: ClientPresence): void {
@@ -85,6 +85,6 @@ export class SessionClientCommandFacade implements SessionClientCommands<
     client: ClientInfo,
     action: SessionAction
   ): Promise<ClientCommandAuthorization> {
-    return this.authenticator.authorizeClientCommand(connection, client.userId, action);
+    return this.authenticator.authorizeClientCommand(connection, client, action);
   }
 }

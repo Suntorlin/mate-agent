@@ -7,18 +7,22 @@ import {
   NODE_HOST_VARIABLE_NAMES,
   REQUIRED_ENV_CONFIG_KEY_NAMES,
 } from "./config";
-import { AWS_CREDENTIAL_VARIABLE_NAMES, OBJECT_STORAGE_VARIABLE_NAMES } from "./s3-object-storage";
+import { OBJECT_TRANSFER_VARIABLE_NAMES } from "../storage/s3/s3-large-object-transfers";
+import {
+  AWS_CREDENTIAL_VARIABLE_NAMES,
+  OBJECT_STORAGE_VARIABLE_NAMES,
+} from "../storage/s3/s3-object-storage";
 
 /** The repository's `.env.example`, the documented configuration of a Node host. */
 const ENV_EXAMPLE_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../.env.example"
+  "../../../../deploy/compose/.env.example"
 );
 
 /** The compose file, which has required variables of its own beyond the host's. */
 const COMPOSE_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../docker-compose.yml"
+  "../../../../deploy/compose/docker-compose.yml"
 );
 
 /** The document whose quick start is the bring-up a clean checkout is expected to follow. */
@@ -121,6 +125,7 @@ describe(".env.example", () => {
       ...ENV_CONFIG_KEY_NAMES,
       ...NODE_HOST_VARIABLE_NAMES,
       ...OBJECT_STORAGE_VARIABLE_NAMES,
+      ...OBJECT_TRANSFER_VARIABLE_NAMES,
       ...AWS_CREDENTIAL_VARIABLE_NAMES,
       ...COMPOSE_VARIABLES,
     ];

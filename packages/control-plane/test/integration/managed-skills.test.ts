@@ -89,6 +89,57 @@ describe("managed skills persistence and resolution", () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
+  it("resolves an explicit id selection and persists it with the manifest", async () => {
+    const skills = new SkillStore(env.DB);
+    const picked = await skills.create(
+      { name: "picked-skill", content, assignments: [{ type: "global" }] },
+      "user_1"
+    );
+    await skills.create(
+      { name: "unpicked-skill", content, assignments: [{ type: "global" }] },
+      "user_1"
+    );
+
+    // Duplicates collapse, unknown ids are kept in the selection but reported
+    // as ignored, and only the named applicable skill is resolved.
+    const manifest = await resolveManagedSkills(
+      env.DB,
+      { repositories: [], environmentId: null },
+      { mode: "ids", skillIds: [picked.id, picked.id, "skill_absent"] },
+      "user_1"
+    );
+    expect(manifest.selection).toEqual({
+      mode: "ids",
+      skillIds: [picked.id, "skill_absent"].sort(),
+    });
+    expect(manifest.skills.map((skill) => skill.name)).toEqual(["picked-skill"]);
+    expect(manifest.ignoredProfileSkillIds).toEqual(["skill_absent"]);
+    expect(manifest.manifestSha256).toBe(
+      await hashSessionSkillManifest(manifest.selection, manifest.skills)
+    );
+
+    const sessions = new SessionIndexStore(env.DB);
+    await sessions.create({
+      id: "ids-session",
+      title: null,
+      ownerTeamId: null,
+      visibility: "workspace",
+      repoOwner: null,
+      repoName: null,
+      model: "anthropic/claude-haiku-4-5",
+      reasoningEffort: null,
+      baseBranch: null,
+      status: "created",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      skillManifest: manifest,
+    });
+    const view = await new SessionSkillStore(env.DB).getSessionSkillsView("ids-session");
+    expect(view?.selection).toEqual(manifest.selection);
+    expect(view?.manifestSha256).toBe(manifest.manifestSha256);
+    expect(view?.skills.map((skill) => skill.skillId)).toEqual([picked.id]);
+  });
+
   it("reports concurrent same-name creation as a conflict", async () => {
     const skills = new SkillStore(env.DB);
     const results = await Promise.allSettled([
@@ -225,6 +276,7 @@ describe("managed skills persistence and resolution", () => {
       manifestSha256,
       skills: [],
       nextCursor: null,
+      disabledBundledSkills: [],
     });
 
     const response = await serviceFetch("https://test.local/sessions/legacy-without-skills/skills");

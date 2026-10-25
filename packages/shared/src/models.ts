@@ -533,6 +533,22 @@ export function getDefaultReasoningEffort(model: string): ReasoningEffort | unde
 }
 
 /**
+ * Not an effort but a request for one: the control plane picks it per prompt, "low" for a
+ * message that only asks for a small tweak, a question or a confirmation, and the session's
+ * default effort otherwise. Accepted wherever a prompt or a session names its effort, for a
+ * model that has "low".
+ */
+export const AUTO_REASONING_EFFORT = "auto";
+
+/** Whether `effort` may be requested for `model`: one of its efforts, or "auto". */
+export function isRequestableReasoningEffort(model: string, effort: string): boolean {
+  if (effort === AUTO_REASONING_EFFORT) {
+    return getReasoningConfig(model)?.efforts.includes("low") ?? false;
+  }
+  return isValidReasoningEffort(model, effort);
+}
+
+/**
  * Check if a reasoning effort is valid for a given model.
  */
 export function isValidReasoningEffort(model: string, effort: string): boolean {

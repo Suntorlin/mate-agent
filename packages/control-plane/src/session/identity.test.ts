@@ -100,6 +100,13 @@ describe("parseAuthorId", () => {
     });
   });
 
+  it("parses app authorId", () => {
+    expect(parseAuthorId("app:uid-42")).toEqual({
+      provider: "app",
+      providerUserId: "uid-42",
+    });
+  });
+
   it("returns null for plain user ID (web client)", () => {
     expect(parseAuthorId("user-id-123")).toBeNull();
   });

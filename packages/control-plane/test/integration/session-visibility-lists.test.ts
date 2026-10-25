@@ -1,16 +1,12 @@
 import { checkSessionAccess, type SessionViewer } from "@open-inspect/shared";
 import { applyD1Migrations, env } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { AnalyticsStore } from "../../src/db/analytics-store";
-import { PrAutofixFeedbackStore } from "../../src/db/pr-autofix-feedback-store";
 import { SessionExportStore } from "../../src/db/session-export-store";
 import { SessionIndexStore, type SessionEntry } from "../../src/db/session-index";
-import { SessionRunStore } from "../../src/db/session-run-store";
 import { cleanD1Tables } from "./cleanup";
 
 const USERS = ["owner", "admin", "viewer", "collaborator", "outsider"] as const;
 const PUBLIC_IDS = ["workspace-root", "alpha-root", "beta-root", "beta-child"];
-const FILTERS = { startAt: 1000, endAt: 2000, scope: "all" as const };
 
 function userViewer(
   userId: (typeof USERS)[number],
@@ -123,6 +119,8 @@ async function seedFixture(): Promise<void> {
       activeDurationMs: 0,
       messageCount: 0,
       prCount: 0,
+      cover: null,
+      mediaCount: 0,
       inputTokens: row.cost,
       outputTokens: 0,
       reasoningTokens: 0,
@@ -141,24 +139,6 @@ async function seedFixture(): Promise<void> {
       terminalMessageCompletedAt: 1100,
     });
   }
-  await env.DB.batch(
-    [...rows.map(({ id }) => id), "unattached"].map((id, position) =>
-      env.DB.prepare(
-        `INSERT INTO pr_autofix_feedback
-         (feedback_key, provider_object_kind, provider_object_id, delivery_id,
-          repository_external_id, repo_owner, repo_name, pr_number, session_id,
-          decision, first_received_at, last_received_at)
-         VALUES (?, 'pr_comment', ?, ?, '1', 'acme', 'widgets', 1, ?, 'received', ?, ?)`
-      ).bind(
-        `feedback-${id}`,
-        id,
-        `delivery-${id}`,
-        id === "unattached" ? null : id,
-        1200 + position,
-        1200 + position
-      )
-    )
-  );
 }
 
 describe("cross-reader D1 session visibility", () => {
@@ -169,7 +149,7 @@ describe("cross-reader D1 session visibility", () => {
   });
   afterEach(cleanD1Tables);
 
-  it("agrees across lists, inbox, both exports, and analytics for each viewer and mode", async () => {
+  it("agrees across lists, inbox, and both exports for each viewer and mode", async () => {
     const index = new SessionIndexStore(env.DB);
     const exports = new SessionExportStore(env.DB);
     expect(
@@ -244,7 +224,7 @@ describe("cross-reader D1 session visibility", () => {
       },
     ];
 
-    for (const { viewer, mode, ids, publicIds, cost, attention } of cases) {
+    for (const { viewer, mode, ids, attention } of cases) {
       const expected = [...ids].sort();
       const label = `${viewer.kind === "user" ? viewer.userId : "service"}/${mode}`;
       const listed = await index.list({ readScope: viewer, mode, limit: 20 });
@@ -291,43 +271,6 @@ describe("cross-reader D1 session visibility", () => {
       expect(runsPage.sessions.map(({ id }) => id).sort(), label).toEqual(expected);
       expect(sessionsPage.nextCursor, label).toBeNull();
       expect(runsPage.nextCursor, label).toBeNull();
-
-      const analytics = new AnalyticsStore(env.DB, viewer, mode);
-      const summary = await analytics.getSummary(FILTERS);
-      const breakdown = await analytics.getBreakdown(FILTERS, "repo");
-      const byUser = await analytics.getBreakdown(FILTERS, "user");
-      expect(summary, label).toMatchObject({
-        totalSessions: publicIds.length,
-        totalCost: cost,
-        inputTokens: cost,
-        privateSessionsCostUsd:
-          viewer.roleKey === "owner" || viewer.roleKey === "administrator" ? 112 : null,
-      });
-      expect(breakdown.entries, label).toMatchObject([
-        { key: "acme/widgets", sessions: publicIds.length, cost, inputTokens: cost },
-      ]);
-      expect(
-        byUser.entries.reduce((sum, entry) => sum + entry.sessions, 0),
-        label
-      ).toBe(publicIds.length);
-      expect(
-        byUser.entries.reduce((sum, entry) => sum + entry.cost, 0),
-        label
-      ).toBe(cost);
-
-      const runs = await new SessionRunStore(env.DB, viewer, mode).list({
-        ...FILTERS,
-        orderBy: "cost",
-        limit: 20,
-      });
-      expect(
-        runs.reduce((sum, run) => sum + run.sessionCount, 0),
-        label
-      ).toBe(publicIds.length);
-      expect(
-        runs.reduce((sum, run) => sum + run.totalCost, 0),
-        label
-      ).toBe(cost);
     }
 
     expect(
@@ -342,7 +285,7 @@ describe("cross-reader D1 session visibility", () => {
     ).toEqual(["alpha-root"]);
   });
 
-  it("keeps private rows out of service lists and autofix activity, including before paging", async () => {
+  it("keeps private rows out of service lists, including before paging", async () => {
     const index = new SessionIndexStore(env.DB);
     const exports = new SessionExportStore(env.DB);
     for (const [viewer, expected] of [
@@ -362,15 +305,5 @@ describe("cross-reader D1 session visibility", () => {
         ).toEqual([...PUBLIC_IDS].sort());
       }
     }
-
-    const activity = new PrAutofixFeedbackStore(env.DB);
-    const sessionIds: Array<string | null> = [];
-    let cursor: string | null = null;
-    do {
-      const page = await activity.listActivity({ limit: 2, cursor });
-      sessionIds.push(...page.records.map(({ sessionId }) => sessionId));
-      cursor = page.nextCursor;
-    } while (cursor);
-    expect(sessionIds).toEqual([null, "beta-child", "beta-root", "alpha-root", "workspace-root"]);
   });
 });

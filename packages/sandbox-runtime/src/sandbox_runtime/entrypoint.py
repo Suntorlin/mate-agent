@@ -51,6 +51,7 @@ def build_harness_process(
     log: Any,
     warnings: BootEventLog,
     claude_config_dir: Path | None,
+    managed_skills: ManagedSkillsMaterializer | None = None,
 ) -> HarnessProcessOwner:
     """The supervisor-half registry: pick the process owner for the session's harness."""
     match config.harness:
@@ -62,7 +63,16 @@ def build_harness_process(
                 warnings.record,
             )
         case HarnessId.CLAUDE:
-            return ClaudeStager(config.claude_stager_config(), log, config_dir=claude_config_dir)
+            return ClaudeStager(
+                config.claude_stager_config(),
+                log,
+                config_dir=claude_config_dir,
+                disabled_bundled_skills=(
+                    (lambda: managed_skills.disabled_bundled_skills)
+                    if managed_skills is not None
+                    else None
+                ),
+            )
     raise ValueError(f"Unsupported harness: {config.harness}")
 
 
@@ -129,7 +139,7 @@ def build_supervisor(shutdown_event: asyncio.Event) -> SandboxSupervisor:
             log,
         )
     harness_process = build_harness_process(
-        config, shutdown_event, log, warnings, claude_config_dir
+        config, shutdown_event, log, warnings, claude_config_dir, managed_skills
     )
     agent_bridge = AgentBridgeProcess(config.bridge_process_config(), log)
     code_server = CodeServer(log)

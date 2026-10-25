@@ -57,7 +57,7 @@ function createHarness() {
     cancelPrompt: vi.fn(async () => undefined),
     stopExecution: vi.fn(async () => undefined),
     recoverShutdown: vi.fn(async () => undefined),
-    notifyTyping: vi.fn(async () => undefined),
+    notifyTyping: vi.fn(),
     updatePresence: vi.fn(),
     getHistoryPage: vi.fn(() => ({ items: [], hasMore: false, cursor: null })),
     authorize: vi.fn(async () => ({ kind: "allowed" as const })),

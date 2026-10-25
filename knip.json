@@ -6,6 +6,7 @@
     ".": {
       "entry": [
         "scripts/cf-logs.ts",
+        "scripts/local/e2e-ui.mjs",
         "scripts/merge-split-users.ts",
         "vitest.workspace.ts",
         "packages/sandbox-runtime/src/sandbox_runtime/bin/upload-media.js",
@@ -32,39 +33,15 @@
       "entry": ["test/integration/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
     },
-    "packages/github-bot": {
+    "packages/gateway": {
       "entry": ["test/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
-    },
-    "packages/linear-bot": {
-      "project": ["src/**/*.ts"]
-    },
-    "packages/slack-bot": {
-      "project": ["src/**/*.ts"]
     },
     "packages/opencomputer-infra": {
       "project": ["src/**/*.ts"]
     },
     "packages/vercel-infra": {
       "project": ["src/**/*.ts"]
-    },
-    "packages/web": {
-      "next": true,
-      "entry": [
-        "open-next.config.ts",
-        "public/hljs-themes/atom-one-dark.css",
-        "public/hljs-themes/atom-one-light.css",
-        "public/hljs-themes/github-dark.css",
-        "public/hljs-themes/github.css",
-        "src/**/*.test.ts",
-        "src/**/*.test.tsx"
-      ],
-      "project": ["src/**/*.{ts,tsx,css}"]
-    },
-    "packages/docs": {
-      "next": true,
-      "entry": ["src/**/*.test.ts", "source.config.ts"],
-      "project": ["src/**/*.{ts,tsx,css}", "source.config.ts"]
     }
   }
 }

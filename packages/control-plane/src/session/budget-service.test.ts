@@ -32,6 +32,7 @@ function session(overrides: Partial<SessionRow> = {}): SessionRow {
     total_cost: 8,
     sandbox_settings: null,
     max_cost_usd: 10,
+    permission_mode: "full_auto",
     budget_exhausted: 0,
     environment_id: null,
     created_at: 1,
@@ -56,6 +57,7 @@ function createService(row = session()) {
       current = {
         ...current,
         max_cost_usd: maxCostUsd,
+        permission_mode: "full_auto",
         budget_exhausted: exhausted ? 1 : 0,
       };
     }),
@@ -64,6 +66,8 @@ function createService(row = session()) {
     createEvent: vi.fn(),
   };
   const reportedCosts = new Map<string, number>();
+  /** The processing turn, if any. */
+  const turn: { runningMessageId: string | null } = { runningMessageId: "message-1" };
   const messageRepository = {
     raiseReportedCost: vi.fn((messageId: string, reported: number) => {
       const previous = reportedCosts.get(messageId) ?? 0;
@@ -71,6 +75,15 @@ function createService(row = session()) {
       reportedCosts.set(messageId, reported);
       return reported - previous;
     }),
+    getRunningTurnCost: vi.fn(() =>
+      turn.runningMessageId === null
+        ? null
+        : {
+            messageId: turn.runningMessageId,
+            startedAt: 1,
+            reportedCostUsd: reportedCosts.get(turn.runningMessageId) ?? 0,
+          }
+    ),
   };
   const broadcast = vi.fn();
   const preparation: ExecutionStopPreparation = {
@@ -107,6 +120,7 @@ function createService(row = session()) {
   );
   return {
     service,
+    turn,
     repository,
     messageRepository,
     eventRepository,
@@ -488,5 +502,83 @@ describe("SessionBudgetService", () => {
     expect(h.repository.setSessionBudget).toHaveBeenCalledWith(11, true, 1000);
     expect(h.prepareBudgetStop).not.toHaveBeenCalled();
     expect(h.eventRepository.createEvent).not.toHaveBeenCalled();
+  });
+
+  describe("observeRunningTurnSpend", () => {
+    it("counts the running turn's spend so far and stops it once the cap is crossed", async () => {
+      // 130,000 credits at 65,000 per USD: a $2 cap, nothing stored before the turn.
+      const h = createService(
+        session({ total_cost: 0, max_cost_usd: 2, permission_mode: "auto_within_budget" })
+      );
+
+      await h.service.observeRunningTurnSpend("message-1", 1.2, 1000);
+      expect(h.repository.getSession().total_cost).toBeCloseTo(1.2);
+      expect(h.prepareBudgetStop).not.toHaveBeenCalled();
+      expect(h.broadcast).toHaveBeenLastCalledWith(
+        expect.objectContaining({ type: "budget_status", budgetExhausted: false })
+      );
+
+      await h.service.observeRunningTurnSpend("message-1", 2.05, 2000);
+      expect(h.repository.getSession().total_cost).toBeCloseTo(2.05);
+      expect(h.repository.markBudgetExhausted).toHaveBeenCalledOnce();
+      expect(h.prepareBudgetStop).toHaveBeenCalledOnce();
+      expect(h.prepareBudgetStop).toHaveBeenCalledWith(
+        expect.stringMatching(/^Session cost limit reached: \$2\.05/),
+        2000
+      );
+      expect(h.deliverBudgetStop).toHaveBeenCalledOnce();
+
+      // A later look at the same turn, and the runtime's own report when the turn ends, add only
+      // what is still missing and never stop it twice.
+      await h.service.observeRunningTurnSpend("message-1", 2.2, 3000);
+      await h.service.ingestStepFinish(
+        {
+          type: "step_finish",
+          messageId: "message-1",
+          sandboxId: "sandbox-1",
+          timestamp: 4,
+          messageCostUsd: 2.3,
+        },
+        "message-1",
+        4000
+      );
+      expect(h.repository.getSession().total_cost).toBeCloseTo(2.3);
+      expect(h.prepareBudgetStop).toHaveBeenCalledOnce();
+      expect(h.deliverBudgetStop).toHaveBeenCalledOnce();
+    });
+
+    it("leaves the total alone when the runtime already reported more", async () => {
+      const h = createService(session({ total_cost: 0, max_cost_usd: 10 }));
+      await h.service.ingestStepFinish(
+        {
+          type: "step_finish",
+          messageId: "message-1",
+          sandboxId: "sandbox-1",
+          timestamp: 1,
+          messageCostUsd: 3,
+        },
+        "message-1",
+        1000
+      );
+      h.broadcast.mockClear();
+
+      await h.service.observeRunningTurnSpend("message-1", 2.5, 2000);
+
+      expect(h.repository.getSession().total_cost).toBe(3);
+      expect(h.broadcast).not.toHaveBeenCalled();
+    });
+
+    it("ignores the spend of a turn that is no longer running", async () => {
+      const h = createService(session({ total_cost: 9, max_cost_usd: 10 }));
+      h.turn.runningMessageId = "message-2";
+
+      await h.service.observeRunningTurnSpend("message-1", 5, 1000);
+      h.turn.runningMessageId = null;
+      await h.service.observeRunningTurnSpend("message-1", 5, 1000);
+
+      expect(h.messageRepository.raiseReportedCost).not.toHaveBeenCalled();
+      expect(h.repository.getSession().total_cost).toBe(9);
+      expect(h.prepareBudgetStop).not.toHaveBeenCalled();
+    });
   });
 });

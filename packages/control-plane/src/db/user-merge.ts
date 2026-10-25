@@ -18,8 +18,6 @@ import type { SqlDatabase, SqlResult, SqlStatement } from "./sql-database";
  *   `session_read_states` (survivor's row wins on a `(user_id, session_id)`
  *   collision) and `user_identities` (survivor's row wins under
  *   `idx_user_identities_provider`).
- * - `automations.created_by` is re-pointed value-conditionally: legacy rows
- *   store GitHub numeric ids, which must never be rewritten.
  * - Idempotent: re-running a completed merge is a zero-count no-op. The
  *   execute path requires an atomic SqlDatabase batch so no partial graph can
  *   become externally visible.
@@ -66,8 +64,6 @@ const USER_MERGE_COUNT_KEYS = [
   "sessionCollaboratorsRepointed",
   "sessionsRepointed",
   "authSessionsDeleted",
-  "automationsOwnedRepointed",
-  "automationsCreatedRepointed",
   "scmTokensRepointed",
   "skillProfileItemsMerged",
   "skillProfilesDeduped",
@@ -84,8 +80,12 @@ const USER_MERGE_COUNT_KEYS = [
   "skillRevisionsCreatedRepointed",
   "skillAssignmentsCreatedRepointed",
   "skillCatalogGenerationsAdvanced",
-  "keyboardShortcutPreferencesDeduped",
-  "keyboardShortcutPreferencesRepointed",
+  "userFilesRepointed",
+  "userMemoryEntriesSuperseded",
+  "userMemoryEntriesRepointed",
+  "userMemoryOpsRepointed",
+  "userMemorySettingsDeduped",
+  "userMemorySettingsRepointed",
   "auditEventsCreated",
   "canonicalEmailBackfilled",
   "usersDeleted",
@@ -199,8 +199,6 @@ const BEFORE_SKILL_PROFILE_OPERATIONS = [
   }),
   regularRepoint("sessionsRepointed", "sessions"),
   regularDelete("authSessionsDeleted", "auth_sessions", "userId"),
-  regularRepoint("automationsOwnedRepointed", "automations"),
-  regularRepoint("automationsCreatedRepointed", "automations", "created_by"),
   regularRepoint("scmTokensRepointed", "user_scm_tokens"),
 ] as const satisfies readonly MergeOperation[];
 
@@ -234,6 +232,28 @@ const SKILL_CATALOG_GENERATION_OPERATION: MergeOperation = {
       .bind(loserId),
 };
 
+/** The loser's latest memory versions of keys the survivor also holds, which become history. */
+const USER_MEMORY_SUPERSEDED = `owner_user_id = ? AND is_latest = 1
+  AND EXISTS (
+    SELECT 1 FROM user_memory_entries AS survivor_entry
+    WHERE survivor_entry.owner_user_id = ?
+      AND survivor_entry.container = user_memory_entries.container
+      AND survivor_entry.key = user_memory_entries.key
+      AND survivor_entry.is_latest = 1
+  )`;
+
+const USER_MEMORY_SUPERSEDE_OPERATION: MergeOperation = {
+  key: "userMemoryEntriesSuperseded",
+  execute: (db, survivorId, loserId) =>
+    db
+      .prepare(`UPDATE user_memory_entries SET is_latest = 0 WHERE ${USER_MEMORY_SUPERSEDED}`)
+      .bind(loserId, survivorId),
+  preview: (db, survivorId, loserId) =>
+    db
+      .prepare(`SELECT COUNT(*) AS count FROM user_memory_entries WHERE ${USER_MEMORY_SUPERSEDED}`)
+      .bind(loserId, survivorId),
+};
+
 const FINAL_REPOINT_OPERATIONS = [
   regularRepoint("providerAccountAuthorizationsRepointed", "model_provider_account_authorizations"),
   regularRepoint(
@@ -256,11 +276,20 @@ const FINAL_REPOINT_OPERATIONS = [
   regularRepoint("skillsUpdatedRepointed", "skills", "updated_by"),
   regularRepoint("skillRevisionsCreatedRepointed", "skill_revisions", "created_by"),
   regularRepoint("skillAssignmentsCreatedRepointed", "skill_assignments", "created_by"),
+  // User files follow their owner.
+  regularRepoint("userFilesRepointed", "user_files", "owner_user_id"),
+  // User memory follows its owner with its history and op log. Where both
+  // hold a key, the survivor's version stays the key's latest and the
+  // loser's becomes history, before the repoint could break the
+  // one-latest-per-key index. The survivor's pause switch wins.
+  USER_MEMORY_SUPERSEDE_OPERATION,
+  regularRepoint("userMemoryEntriesRepointed", "user_memory_entries", "owner_user_id"),
+  regularRepoint("userMemoryOpsRepointed", "user_memory_ops", "owner_user_id"),
   ...dedupeThenRepoint({
-    dedupeKey: "keyboardShortcutPreferencesDeduped",
-    repointKey: "keyboardShortcutPreferencesRepointed",
-    table: "keyboard_shortcut_preferences",
-    collision: `EXISTS (SELECT 1 FROM keyboard_shortcut_preferences WHERE user_id = ?)`,
+    dedupeKey: "userMemorySettingsDeduped",
+    repointKey: "userMemorySettingsRepointed",
+    table: "user_memory_settings",
+    collision: `EXISTS (SELECT 1 FROM user_memory_settings WHERE user_id = ?)`,
   }),
 ] as const satisfies readonly MergeOperation[];
 

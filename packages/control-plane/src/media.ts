@@ -7,12 +7,66 @@ import {
 
 export { SESSION_ATTACHMENT_IMAGE_MAX_BYTES };
 
-export const SCREENSHOT_MAX_BYTES = 10 * 1024 * 1024;
+const MiB = 1024 * 1024;
+const GiB = 1024 * MiB;
+
+export const SCREENSHOT_MAX_BYTES = 10 * MiB;
 export const SCREENSHOT_UPLOAD_LIMIT_PER_SESSION = 100;
-export const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
-export const VIDEO_UPLOAD_LIMIT_PER_SESSION = 20;
-const VIDEO_MAX_DURATION_MS = 90_000;
+/**
+ * Videos are previews: H.264 MP4 the browser plays in place. Up to VIDEO_INLINE_MAX_BYTES they may
+ * be posted through the host as a multipart form; anything larger goes straight to the object store
+ * (a direct upload) up to VIDEO_MAX_BYTES. Deliverables in any other codec, or longer and larger
+ * than this, are file artifacts.
+ */
+export const VIDEO_INLINE_MAX_BYTES = 100 * MiB;
+export const VIDEO_MAX_BYTES = 1 * GiB;
+export const VIDEO_MAX_DURATION_MS = 10 * 60_000;
+export const VIDEO_UPLOAD_LIMIT_PER_SESSION = 200;
 const VIDEO_TIMESTAMP_TOLERANCE_MS = 1_000;
+/**
+ * Files are deliverables of any type (documents, archives, editing-app project files, masters in
+ * any codec). They only ever travel directly between the sandbox or browser and the object store.
+ */
+export const FILE_MAX_BYTES = 4 * GiB;
+export const FILE_UPLOAD_LIMIT_PER_SESSION = 200;
+export const FILE_FALLBACK_CONTENT_TYPE = "application/octet-stream";
+/**
+ * Direct uploads go up in parts of this size. 64 MiB keeps a 4 GiB file at 64 parts and each part
+ * under the 100 MB request-body ceiling of proxies such as Cloudflare in front of the store.
+ */
+export const DIRECT_UPLOAD_PART_BYTES = 64 * MiB;
+/** How long the sandbox has to send each part of a direct upload. */
+export const DIRECT_UPLOAD_URL_TTL_SECONDS = 2 * 60 * 60;
+/** How long a signed download link handed to the browser stays valid. */
+export const DIRECT_DOWNLOAD_URL_TTL_SECONDS = 15 * 60;
+export const PAGE_MAX_BYTES = 10 * MiB;
+export const PAGE_UPLOAD_LIMIT_PER_SESSION = 50;
+export const PAGE_CONTENT_TYPE = "text/html; charset=utf-8";
+
+/**
+ * Agent-made pages run their own scripts, so they are served as their own opaque origin: the CSP
+ * sandbox (without allow-same-origin) applies even when the page is opened directly, keeping it
+ * away from the viewer's cookies and the app around it. Self-contained pages may still pull fonts,
+ * scripts and media over HTTPS, open links in a new tab, and save files they make (data: and blob:
+ * links with `download`).
+ */
+export const PAGE_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
+  "Content-Security-Policy": [
+    "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads",
+    "default-src 'none'",
+    "script-src 'unsafe-inline' 'unsafe-eval' https: data: blob:",
+    "style-src 'unsafe-inline' https: data:",
+    "img-src https: data: blob:",
+    "media-src https: data: blob:",
+    "font-src https: data:",
+    "connect-src https: data: blob:",
+    "frame-src https:",
+    "form-action 'none'",
+    "base-uri 'none'",
+  ].join("; "),
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+};
 
 // Allows multipart boundaries and headers while rejecting oversized requests
 // before request.formData() buffers them when Content-Length is available.
@@ -101,6 +155,17 @@ export function detectVideoFileType(bytes: Uint8Array): VideoFileType | null {
   }
 
   return null;
+}
+
+/** A page upload is UTF-8 text; anything binary (or carrying NUL bytes) is refused. */
+export function isPageFile(bytes: Uint8Array): boolean {
+  if (bytes.includes(0)) return false;
+  try {
+    new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export type SessionAttachmentFileType = {
@@ -272,9 +337,6 @@ export function parseVideoUploadMetadata(
   const sourceUrl = parseOptionalUrl(fields.get("sourceUrl"), "sourceUrl");
   const endUrl = parseOptionalUrl(fields.get("endUrl"), "endUrl");
   const hasAudio = parseOptionalBoolean(fields.get("hasAudio"));
-  if (hasAudio === true) {
-    throw new Error("hasAudio must be false");
-  }
 
   return {
     caption,
@@ -286,10 +348,68 @@ export function parseVideoUploadMetadata(
     truncated,
     ...(sourceUrl ? { sourceUrl } : {}),
     ...(endUrl ? { endUrl } : {}),
-    ...(hasAudio === false ? { hasAudio: false } : {}),
+    ...(hasAudio === undefined ? {} : { hasAudio }),
     captureSurface: "browser",
     source: "agent",
   };
+}
+
+export function buildFileObjectKey(
+  sessionId: string,
+  artifactId: string,
+  filename: string
+): string {
+  const extension = fileExtension(filename);
+  return `sessions/${sessionId}/files/${artifactId}${extension ? `.${extension}` : ""}`;
+}
+
+const FILENAME_MAX_LENGTH = 180;
+
+/**
+ * The name a file downloads under: the last path segment, without control characters, path
+ * separators or characters filesystems refuse, and at most FILENAME_MAX_LENGTH characters with
+ * its extension kept. Returns null when nothing usable is left.
+ */
+export function sanitizeFilename(value: string): string | null {
+  const base = value.split(/[\\/]/).pop() ?? "";
+  // eslint-disable-next-line no-control-regex
+  let name = base.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "").trim();
+  name = name.replace(/^\.+/, "").trim();
+  if (!name) return null;
+  if (name.length > FILENAME_MAX_LENGTH) {
+    const extension = fileExtension(name);
+    const keep = FILENAME_MAX_LENGTH - (extension ? extension.length + 1 : 0);
+    name = extension ? `${name.slice(0, keep)}.${extension}` : name.slice(0, FILENAME_MAX_LENGTH);
+  }
+  return name;
+}
+
+/** The lowercase extension when it is a short alphanumeric one (`fcpxml`, `mov`), else "". */
+export function fileExtension(filename: string): string {
+  const match = /\.([A-Za-z0-9]{1,10})$/.exec(filename);
+  return match ? match[1].toLowerCase() : "";
+}
+
+/**
+ * `Content-Disposition` that always downloads, under the original name: an ASCII `filename` for
+ * old clients and the exact UTF-8 name in `filename*` (RFC 6266 / RFC 8187).
+ */
+export function attachmentContentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  const encoded = encodeURIComponent(filename).replace(
+    /['()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/** A declared content type when it is a plain `type/subtype`, else the generic binary type. */
+export function normalizeFileContentType(value: unknown): string {
+  if (typeof value !== "string") return FILE_FALLBACK_CONTENT_TYPE;
+  const mime = value.split(";")[0].trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(mime)
+    ? mime
+    : FILE_FALLBACK_CONTENT_TYPE;
 }
 
 function hasPrefix(bytes: Uint8Array, prefix: number[]): boolean {

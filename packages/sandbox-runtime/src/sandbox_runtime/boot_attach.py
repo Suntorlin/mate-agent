@@ -48,6 +48,7 @@ class BootAttach:
         send_event: Callable[[dict[str, Any]], Awaitable[bool]],
         end_run: Callable[[], Awaitable[None]],
         record_fatal_error: Callable[[str], None],
+        on_attached: Callable[[AgentHarness], None] | None = None,
     ) -> None:
         self.early_connect = early_connect
         self._harness_factory = harness_factory
@@ -65,6 +66,7 @@ class BootAttach:
         self._send_event = send_event
         self._end_run = end_run
         self._record_fatal_error = record_fatal_error
+        self._on_attached = on_attached
         self._boot_ready = asyncio.Event()
         if not early_connect:
             self._boot_ready.set()
@@ -225,6 +227,8 @@ class BootAttach:
         await self._send_event(self._build_ready_event())
         self._boot_ready.set()
         self.log.info("bridge.harness_attached", harness=harness.id.value)
+        if self._on_attached is not None:
+            self._on_attached(harness)
 
     async def _open_harness(self, harness: AgentHarness) -> None:
         try:

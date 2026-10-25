@@ -7,8 +7,13 @@ import type { Logger } from "../logger";
 import { JOB_CLAIM_LEASE_MS, LEASE_SWEEP_INTERVAL_MS, NodeJobs } from "./job-queue";
 import { openJobStore, type JobStore } from "./job-store";
 
-const KIND = "image_build.finalize" as const;
-const PAYLOAD = { version: 1 as const, buildId: "build-1", completionHash: "a".repeat(64) };
+const KIND = "user_memory.extract" as const;
+const PAYLOAD = {
+  version: 1 as const,
+  sessionId: "session-1",
+  ownerUserId: "user-1",
+  messageId: "message-1",
+};
 const { maxAttempts, retryDelayMs } = JOB_KINDS[KIND].retry;
 
 let dataDir: string;

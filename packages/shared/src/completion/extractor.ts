@@ -13,7 +13,7 @@ import type {
   MediaArtifactInfo,
   ArtifactType,
 } from "../types/artifacts";
-import { listArtifactsResponseSchema } from "../types/artifacts";
+import { isMediaArtifactType, listArtifactsResponseSchema } from "../types/artifacts";
 import type { EventResponse } from "../types/sandbox-events";
 import { listEventsResponseSchema } from "../types/sandbox-events";
 import type { Logger } from "../logger";
@@ -291,7 +291,7 @@ async function fetchSessionArtifacts(
     }
     const data = parsed.data;
     return data.artifacts
-      .filter((artifact) => artifact.type !== "screenshot" && artifact.type !== "video")
+      .filter((artifact) => !isMediaArtifactType(artifact.type))
       .filter((artifact) => isArtifactInEventRange(artifact.createdAt, eventRange))
       .map((artifact) => ({
         type: artifact.type,
@@ -395,7 +395,7 @@ export function getArtifactLabelFromArtifact(
  */
 export function toEventArtifactInfo(data: Record<string, unknown>): ArtifactInfo | null {
   const type = toArtifactType(data.artifactType);
-  if (!type || type === "screenshot" || type === "video") return null;
+  if (!type || isMediaArtifactType(type)) return null;
 
   return {
     type,
@@ -438,6 +438,8 @@ export function toArtifactType(value: unknown): ArtifactType | null {
   return value === "pr" ||
     value === "screenshot" ||
     value === "video" ||
+    value === "page" ||
+    value === "file" ||
     value === "preview" ||
     value === "branch"
     ? value

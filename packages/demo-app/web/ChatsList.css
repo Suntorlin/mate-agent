@@ -1,0 +1,26 @@
+.chats-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chats-list__items {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 8px;
+  overflow-y: auto;
+}
+
+.chats-list__items .ui-list-row {
+  border-radius: var(--radius-card);
+}
+
+.chats-list__empty {
+  padding: 24px 12px;
+  color: var(--social-fg-muted);
+  font-size: var(--text-small);
+  text-align: center;
+}

@@ -43,7 +43,11 @@ export interface SessionInternalRouteHandlers {
   wsToken: SessionInternalRouteHandler;
   updateTitle: SessionInternalRouteHandler;
   budget: SessionInternalRouteHandler;
+  permissionMode: SessionInternalRouteHandler;
+  dismissCard: SessionInternalRouteHandler;
+  spend: SessionInternalRouteHandler;
   archive: SessionInternalRouteHandler;
+  workflowActivity: SessionInternalRouteHandler;
   unarchive: SessionInternalRouteHandler;
   expireDraft: SessionInternalRouteHandler;
   verifySandboxToken: SessionInternalRouteHandler;
@@ -57,6 +61,10 @@ export interface SessionInternalRouteHandlers {
   parentPrompt: SessionInternalRouteHandler;
   cancel: SessionInternalRouteHandler;
   childSessionUpdate: SessionInternalRouteHandler;
+  userMemoryEvent: SessionInternalRouteHandler;
+  question: SessionInternalRouteHandler;
+  questionAnswer: SessionInternalRouteHandler;
+  mediaGeneration: SessionInternalRouteHandler;
   diffState: SessionInternalRouteHandler;
   diffStore: SessionInternalRouteHandler;
   diffFailure: SessionInternalRouteHandler;
@@ -114,7 +122,19 @@ export function createSessionInternalRoutes(
     { method: "POST", path: SessionInternalPaths.wsToken, handler: handlers.wsToken },
     { method: "POST", path: SessionInternalPaths.updateTitle, handler: handlers.updateTitle },
     { method: "POST", path: SessionInternalPaths.budget, handler: handlers.budget },
+    {
+      method: "POST",
+      path: SessionInternalPaths.permissionMode,
+      handler: handlers.permissionMode,
+    },
+    { method: "POST", path: SessionInternalPaths.dismissCard, handler: handlers.dismissCard },
+    { method: "GET", path: SessionInternalPaths.spend, handler: handlers.spend },
     { method: "POST", path: SessionInternalPaths.archive, handler: handlers.archive },
+    {
+      method: "POST",
+      path: SessionInternalPaths.workflowActivity,
+      handler: handlers.workflowActivity,
+    },
     { method: "POST", path: SessionInternalPaths.unarchive, handler: handlers.unarchive },
     { method: "POST", path: SessionInternalPaths.expireDraft, handler: handlers.expireDraft },
     {
@@ -151,6 +171,22 @@ export function createSessionInternalRoutes(
       method: "POST",
       path: SessionInternalPaths.childSessionUpdate,
       handler: handlers.childSessionUpdate,
+    },
+    {
+      method: "POST",
+      path: SessionInternalPaths.userMemoryEvent,
+      handler: handlers.userMemoryEvent,
+    },
+    { method: "POST", path: SessionInternalPaths.question, handler: handlers.question },
+    {
+      method: "POST",
+      path: SessionInternalPaths.questionAnswer,
+      handler: handlers.questionAnswer,
+    },
+    {
+      method: "POST",
+      path: SessionInternalPaths.mediaGeneration,
+      handler: handlers.mediaGeneration,
     },
     { method: "GET", path: SessionInternalPaths.diffState, handler: handlers.diffState },
     { method: "POST", path: SessionInternalPaths.diffStore, handler: handlers.diffStore },

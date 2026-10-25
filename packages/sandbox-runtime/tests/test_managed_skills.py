@@ -262,6 +262,40 @@ async def test_materializer_installs_every_page(tmp_path):
     ]
 
 
+async def test_materializer_records_the_bundled_skills_the_owner_switched_off(tmp_path):
+    first = json.loads(_page(["alpha"], next_cursor="1"))
+    first["disabledBundledSkills"] = ["viral-remake", "memory"]
+    second = json.loads(_page(["beta"]))
+    second["disabledBundledSkills"] = ["ignored-on-later-pages"]
+    client = MagicMock()
+    client.fetch_installation = AsyncMock(
+        side_effect=[json.dumps(first).encode(), json.dumps(second).encode()]
+    )
+    materializer = ManagedSkillsMaterializer(
+        client, tmp_path / "skills", MagicMock(), bundled_skills_path=tmp_path / "none"
+    )
+    assert materializer.disabled_bundled_skills == frozenset()
+
+    await materializer.materialize((), tmp_path / "workspace")
+
+    assert materializer.disabled_bundled_skills == frozenset({"viral-remake", "memory"})
+
+
+def test_installation_validates_disabled_bundled_skills():
+    document = _installation()
+    assert validate_installation(json.dumps(document).encode()).disabled_bundled_skills == (
+        frozenset()
+    )
+    document["disabledBundledSkills"] = ["viral-remake"]
+    assert validate_installation(json.dumps(document).encode()).disabled_bundled_skills == (
+        frozenset({"viral-remake"})
+    )
+    for bad in ("viral-remake", ["../escape"], [3]):
+        document["disabledBundledSkills"] = bad
+        with pytest.raises(ManagedSkillsError):
+            validate_installation(json.dumps(document).encode())
+
+
 async def test_materializer_keeps_previous_install_when_a_later_page_fails(tmp_path):
     client = MagicMock()
     client.fetch_installation = AsyncMock(
@@ -439,7 +473,7 @@ def test_supervisor_derives_managed_skill_paths_from_global_config(config_variab
     )
     environment = {
         "CONTROL_PLANE_URL": "https://control.example",
-        "SESSION_CONFIG": '{"session_id":"session-1"}',
+        "SESSION_CONFIG": '{"session_id":"session-1","harness":"opencode"}',
         config_variable: str(configured_path),
     }
 

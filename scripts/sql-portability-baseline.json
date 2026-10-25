@@ -25,12 +25,6 @@
         "reason": "The audit row's before/requested/after payload is assembled from subqueries inside the same batch as the mutation, so it observes exactly the state the write saw. Building it in TypeScript would need a separate read and lose that. Postgres form is json_build_object."
       }
     },
-    "packages/control-plane/src/db/automation-store.ts": {
-      "collate-nocase": {
-        "occurrences": ["COLLATE NOCASE"],
-        "reason": "Case-insensitive automation name search. Portable form is LOWER(name) LIKE LOWER(?), deferred with the rest of the name-search query."
-      }
-    },
     "packages/control-plane/src/db/user-merge.ts": {
       "json-function": {
         "occurrences": [
@@ -45,10 +39,22 @@
         "reason": "Merge audit payload, same constraint as authorization-store: before/after state is read inside the mutating batch. Postgres form is json_build_object."
       }
     },
-    "terraform/d1/migrations/0076_anthropic_provider_accounts.sql": {
+    "deploy/d1/migrations/0076_anthropic_provider_accounts.sql": {
       "create-trigger": {
         "occurrences": ["CREATE TRIGGER"],
         "reason": "sessions_seed_legacy_provider_auth (already in 0064, re-created with a third row) covers sessions the previous worker inserts between the migration and the new worker deploy, which the new worker rejects as incomplete without an anthropic row."
+      }
+    },
+    "deploy/d1/migrations/0100_anthropic_only_provider_auth.sql": {
+      "create-trigger": {
+        "occurrences": ["CREATE TRIGGER"],
+        "reason": "Re-creates sessions_seed_legacy_provider_auth (0064, 0076) with the Anthropic row only: the trigger cannot be dropped in the same release, since a worker still running the previous code inserts sessions without provider rows, and the OpenAI and xAI rows it used to add are ones the Claude-only schema rejects."
+      }
+    },
+    "deploy/d1/migrations/0102_restore_openai_xai_provider_auth.sql": {
+      "create-trigger": {
+        "occurrences": ["CREATE TRIGGER"],
+        "reason": "Re-creates sessions_seed_legacy_provider_auth with the OpenAI, xAI and Anthropic rows of 0076 again: OpenAI and xAI are back, the control plane requires a row per subscription provider, and a worker still running the previous code inserts sessions without them."
       }
     }
   },

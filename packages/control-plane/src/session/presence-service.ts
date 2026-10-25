@@ -15,7 +15,7 @@ import type {
 } from "@open-inspect/shared/types/server-messages";
 import type { ClientInfo } from "../types";
 import type { SessionMessenger } from "./messenger";
-import type { SessionWebSocket } from "../platform-ports";
+import type { BackgroundTasks, SessionWebSocket } from "../platform-ports";
 
 /** Project one participant per identity from one or more client connections. */
 function projectConnectedParticipants(connections: Iterable<ClientInfo>): ParticipantPresence[] {
@@ -50,6 +50,7 @@ export interface PresenceServiceDeps {
   getSandboxSocket: () => SessionWebSocket | null;
   isSpawning: () => boolean;
   spawnSandbox: () => Promise<void>;
+  backgroundTasks: BackgroundTasks;
   log: Logger;
 }
 
@@ -102,12 +103,14 @@ export class PresenceService {
   /**
    * Handle typing indicator (warm sandbox proactively).
    */
-  async handleTyping(): Promise<void> {
-    if (!this.deps.getSandboxSocket()) {
-      if (!this.deps.isSpawning()) {
-        this.deps.messenger.broadcast({ type: "sandbox_warming" });
-        await this.deps.spawnSandbox();
-      }
-    }
+  /**
+   * Start the sandbox for a user about to send. Not awaited: a socket's messages run one at a
+   * time, and the prompt that follows must not wait behind a restore that takes seconds. It
+   * queues at once and runs when the sandbox this started is ready.
+   */
+  handleTyping(): void {
+    if (this.deps.getSandboxSocket() || this.deps.isSpawning()) return;
+    this.deps.messenger.broadcast({ type: "sandbox_warming" });
+    this.deps.backgroundTasks.submit(() => this.deps.spawnSandbox(), { name: "sandbox.warm" });
   }
 }

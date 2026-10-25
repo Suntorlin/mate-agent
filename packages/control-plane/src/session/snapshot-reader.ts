@@ -43,6 +43,8 @@ export interface SessionSnapshotReaderDeps {
   durableObjectId: string;
   /** DO storage transaction so the snapshot reads are a consistent cut. */
   transaction: <T>(closure: () => T) => T;
+  /** USD of the session's media generations, shown as spent with the model's cost. */
+  getMediaCostUsd?: () => number;
   log: Logger;
 }
 
@@ -108,9 +110,11 @@ export class SessionSnapshotReader {
       reasoningEffort: session.reasoning_effort ?? undefined,
       isProcessing: this.getIsProcessing(),
       parentSessionId: session.parent_session_id,
-      totalCost: session.total_cost ?? 0,
+      // What counts against the budget: the model's cost and the media's.
+      totalCost: (session.total_cost ?? 0) + (this.deps.getMediaCostUsd?.() ?? 0),
       maxSessionCostUsd: session.max_cost_usd,
       budgetExhausted: session.budget_exhausted === 1,
+      permissionMode: session.permission_mode,
       codeServerUrl: sandbox?.code_server_url ?? null,
       vncUrl: sandbox?.vnc_url ?? null,
       tunnelUrls: sandbox?.tunnel_urls

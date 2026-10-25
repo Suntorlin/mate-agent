@@ -14,6 +14,7 @@ import {
   getReasoningConfig,
   getValidModelOrDefault,
   isValidModel,
+  isRequestableReasoningEffort,
   isValidReasoningEffort,
   normalizeModelId,
   normalizeValidModels,
@@ -94,36 +95,36 @@ const GO_MODELS = [
 const DEEPSEEK_MODELS = ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"] as const;
 const ZAI_CODING_PLAN_MODELS = ["zai-coding-plan/glm-5.2", "zai-coding-plan/glm-5.3"] as const;
 
-it.each([
-  "../../../docs/AVAILABLE_MODELS.md",
-  "../../../packages/docs/content/docs/models/choosing-a-model.mdx",
-])("keeps the model inventory in %s aligned with the catalog", (file) => {
-  const rows = readFileSync(new URL(file, import.meta.url), "utf8")
-    .split("\n")
-    .filter((line) => /^\| `[^`]+`/.test(line))
-    .map((line) =>
-      line
-        .split("|")
-        .slice(1, -1)
-        .map((cell) => cell.trim())
-    );
-  const models = MODEL_CATALOG.flatMap((group) => group.models);
+it.each(["../../../docs/AVAILABLE_MODELS.md"])(
+  "keeps the model inventory in %s aligned with the catalog",
+  (file) => {
+    const rows = readFileSync(new URL(file, import.meta.url), "utf8")
+      .split("\n")
+      .filter((line) => /^\| `[^`]+`/.test(line))
+      .map((line) =>
+        line
+          .split("|")
+          .slice(1, -1)
+          .map((cell) => cell.trim())
+      );
+    const models = MODEL_CATALOG.flatMap((group) => group.models);
 
-  expect(rows.map(([id]) => id).sort()).toEqual(models.map(({ id }) => `\`${id}\``).sort());
-  for (const model of models) {
-    const row = rows.find(([id]) => id === `\`${model.id}\``);
-    expect(row?.[1]).toBe(model.name);
-    if (file.endsWith("AVAILABLE_MODELS.md")) {
-      expect(row?.[2]).toBe(model.description);
-    }
-    if ("reasoning" in model) {
-      expect(row?.at(-2)).toBe(model.reasoning.efforts.join(", "));
-      expect(row?.at(-1)).toBe(model.reasoning.default ?? "Not set");
-    } else {
-      expect(row?.at(-1)).toBe("N/A");
+    expect(rows.map(([id]) => id).sort()).toEqual(models.map(({ id }) => `\`${id}\``).sort());
+    for (const model of models) {
+      const row = rows.find(([id]) => id === `\`${model.id}\``);
+      expect(row?.[1]).toBe(model.name);
+      if (file.endsWith("AVAILABLE_MODELS.md")) {
+        expect(row?.[2]).toBe(model.description);
+      }
+      if ("reasoning" in model) {
+        expect(row?.at(-2)).toBe(model.reasoning.efforts.join(", "));
+        expect(row?.at(-1)).toBe(model.reasoning.default ?? "Not set");
+      } else {
+        expect(row?.at(-1)).toBe("N/A");
+      }
     }
   }
-});
+);
 
 describe("model utilities", () => {
   it("derives every public model view from the authoritative catalog", () => {
@@ -480,6 +481,14 @@ describe("model utilities", () => {
     });
     expect(getReasoningConfig("xai/grok-build-0.1")).toBeUndefined();
     expect(getReasoningConfig("deepseek/deepseek-v4-flash")).toBeUndefined();
+  });
+
+  it("accepts auto where the model has low, which the control plane resolves per prompt", () => {
+    expect(isRequestableReasoningEffort("anthropic/claude-opus-5-5", "auto")).toBe(true);
+    expect(isRequestableReasoningEffort("anthropic/claude-opus-5-5", "medium")).toBe(true);
+    // No "low" to pick, so no "auto".
+    expect(isRequestableReasoningEffort("anthropic/claude-sonnet-4-5", "auto")).toBe(false);
+    expect(isValidReasoningEffort("anthropic/claude-opus-5-5", "auto")).toBe(false);
   });
 
   it("validates reasoning efforts per model", () => {

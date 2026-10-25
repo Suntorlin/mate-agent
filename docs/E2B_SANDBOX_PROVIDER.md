@@ -85,9 +85,9 @@ export E2B_TEMPLATE_ID=open-inspect-sandbox
 uv run python build-template.py
 ```
 
-Optional build knobs: `E2B_TEMPLATE_CPU` (default `2`), `E2B_TEMPLATE_MEMORY_MB` (default `4096`) —
+Optional build knobs: `E2B_TEMPLATE_CPU` (default `4`), `E2B_TEMPLATE_MEMORY_MB` (default `8192`) —
 these apply to **manual** builds; Terraform-managed templates are sized by the `e2b_template_cpu` /
-`e2b_template_memory_mb` variables (same defaults). See
+`e2b_template_memory_mb` variables (defaults `2` / `4096`). See
 [`packages/e2b-infra/README.md`](../packages/e2b-infra/README.md) for details on the template
 tooling.
 
@@ -102,8 +102,9 @@ the runtime the same way Open-Inspect does on every other provider:
 2. the control plane starts the supervisor (`python -m sandbox_runtime.entrypoint`) via envd,
    detached, with stdout/stderr in `/tmp/oi-supervisor.log`; the template itself runs nothing (its
    start command is inert, and a prebuilt image's snapshot resume never re-runs it anyway)
-3. the supervisor clones or syncs the selected repositories, starts OpenCode and code-server, and
-   connects the Open-Inspect bridge back to the control plane
+3. the supervisor clones or syncs the selected repositories, starts code-server and the session's
+   agent harness (the Claude agent, or OpenCode), and connects the Open-Inspect bridge back to the
+   control plane
 4. agent events stream back through the control plane; readiness is the bridge phoning home, and the
    shared connecting timeout fails the session otherwise
 
@@ -168,9 +169,10 @@ After `terraform apply`, verify:
    ```
 
 If a session starts but never produces agent output, check the control-plane Worker logs for runtime
-startup, bridge connection, and OpenCode health events. E2B's platform logs never contain process
-output (envd reports byte counts only); the in-sandbox forensics file is `/tmp/oi-supervisor.log`
-(reachable via the session's code-server terminal while the sandbox is alive).
+startup, bridge connection, and agent harness (or OpenCode health) events. E2B's platform logs never
+contain process output (envd reports byte counts only); the in-sandbox forensics file is
+`/tmp/oi-supervisor.log` (reachable via the session's code-server terminal while the sandbox is
+alive).
 
 ## Upgrading from the launcher-based template
 
@@ -202,8 +204,8 @@ debugging E2B.
 
 ### LLM/API Key Problems
 
-E2B sandboxes get every model credential from Open-Inspect's secrets settings. If OpenCode reports a
-model or provider error, confirm the key for the selected model is saved at a scope the session
+E2B sandboxes get every model credential from Open-Inspect's secrets settings. If the agent reports
+a model or provider error, confirm the key for the selected model is saved at a scope the session
 inherits, and that the model is available for that account.
 
 ## References

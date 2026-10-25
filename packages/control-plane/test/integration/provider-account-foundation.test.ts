@@ -1,11 +1,9 @@
 import { env } from "cloudflare:test";
-import { sqlDatabase } from "./helpers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { generateEncryptionKey } from "../../src/auth/crypto";
 import { ModelProviderAccountStore } from "../../src/db/model-provider-accounts";
 import { ProviderCredentialStore } from "../../src/db/provider-account-credentials";
 import { ProviderDefaultStore } from "../../src/db/provider-account-defaults";
-import { AutomationModelProviderAuthStore } from "../../src/db/automation-model-provider-auth";
 import { D1ModelProviderAccountAtomicWriter } from "../../src/db/model-provider-account-atomic-writer";
 import { cleanD1Tables } from "./cleanup";
 
@@ -22,35 +20,21 @@ async function seedSession(id: string): Promise<void> {
     .run();
 }
 
-async function seedAutomation(id: string): Promise<void> {
-  await env.DB.prepare(
-    `INSERT INTO automations
-       (id, name, instructions, trigger_type, schedule_tz, model, enabled,
-        consecutive_failures, created_by, created_at, updated_at)
-     VALUES (?, 'Provider test', 'Test', 'schedule', 'UTC', 'openai/gpt-5', 1, 0,
-             'test-user', ?, ?)`
-  )
-    .bind(id, now, now)
-    .run();
-}
-
 describe("provider account migration and stores", () => {
   beforeEach(cleanD1Tables);
 
-  it("creates all five provider-account tables", async () => {
+  it("creates all four provider-account tables", async () => {
     const result = await env.DB.prepare(
       `SELECT name FROM sqlite_master
        WHERE type = 'table' AND name IN (
          'model_provider_accounts',
          'model_provider_account_credentials',
          'model_provider_account_defaults',
-         'session_model_provider_auth',
-         'automation_model_provider_auth'
+         'session_model_provider_auth'
        ) ORDER BY name`
     ).all<{ name: string }>();
 
     expect(result.results.map((row) => row.name)).toEqual([
-      "automation_model_provider_auth",
       "model_provider_account_credentials",
       "model_provider_account_defaults",
       "model_provider_accounts",
@@ -493,7 +477,7 @@ describe("provider account migration and stores", () => {
     ).toEqual({ acquired: true, generation: 3 });
   });
 
-  it("stores defaults and automation auth", async () => {
+  it("stores defaults", async () => {
     const accounts = new ModelProviderAccountStore(env.DB);
     await accounts.create({
       id: "account-auth",
@@ -511,20 +495,5 @@ describe("provider account migration and stores", () => {
         unattendedMode: "api_key",
       })
     );
-
-    await seedAutomation("automation-auth");
-    const automationAuth = new AutomationModelProviderAuthStore(env.DB);
-    await sqlDatabase(env.DB).batch(
-      automationAuth.bindReplace(
-        "automation-auth",
-        { openai: { mode: "provider_account", accountId: "account-auth" } },
-        now
-      )
-    );
-    expect(await automationAuth.list("automation-auth")).toEqual([
-      expect.objectContaining({ provider: "openai", provider_account_id: "account-auth" }),
-    ]);
-    await sqlDatabase(env.DB).batch(automationAuth.bindReplace("automation-auth", {}, now + 1));
-    expect(await automationAuth.list("automation-auth")).toEqual([]);
   });
 });
