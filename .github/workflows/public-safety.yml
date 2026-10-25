@@ -20,11 +20,11 @@ jobs:
       # Private names to block, kept out of the public repository (comma separated).
       PUBLIC_SAFETY_PRIVATE_TERMS: ${{ secrets.PUBLIC_SAFETY_PRIVATE_TERMS }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version-file: ".nvmrc"
       - name: Install gitleaks
