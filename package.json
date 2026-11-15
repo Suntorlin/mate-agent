@@ -40,19 +40,19 @@
     "prepare": "node -e \"if (process.env.CI) process.exit(0)\" && husky"
   },
   "devDependencies": {
-    "@eslint/js": "^9.18.0",
-    "@types/node": "^24.0.0",
-    "eslint": "^9.18.0",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.0.1",
-    "globals": "^15.14.0",
+    "globals": "^17.14.0",
     "husky": "^9.1.7",
-    "knip": "^6.32.1",
-    "lint-staged": "^16.2.7",
-    "playwright-core": "1.64.1",
-    "prettier": "^3.4.2",
-    "typescript": "^5.7.2",
-    "typescript-eslint": "^8.21.0",
-    "wrangler": "^4.103.0"
+    "knip": "^6.45.1",
+    "lint-staged": "^17.6.0",
+    "playwright-core": "1.65.0",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2",
+    "typescript-eslint": "^8.72.2",
+    "wrangler": "^4.161.0"
   },
   "engines": {
     "node": ">=24.0.0"
